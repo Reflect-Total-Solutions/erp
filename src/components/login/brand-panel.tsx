@@ -1,11 +1,11 @@
 "use client";
 
+import Image from "next/image";
 import {
   TrendingUp,
   Users,
   FileText,
   Package,
-  BarChart3,
   ArrowUpRight,
   Activity,
 } from "lucide-react";
@@ -84,13 +84,20 @@ export function BrandPanel() {
 
       <div className="relative z-10 flex flex-col h-full">
         {/* Logo */}
-        <div className="flex items-center gap-3 mb-16 xl:mb-20">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#2563EB] shadow-lg shadow-blue-500/20">
-            <BarChart3 className="h-5 w-5 text-white" />
+        <div className="flex items-center gap-3.5 mb-16 xl:mb-20">
+          <div className="relative flex h-11 w-18 items-center justify-center rounded-xl bg-white p-1 shadow-lg shadow-black/20 overflow-hidden border border-white/10">
+            <Image
+              src="/logo.png"
+              alt="Reflect Total Solutions Logo"
+              width={72}
+              height={44}
+              className="h-full w-auto object-contain"
+              priority
+            />
           </div>
           <div>
             <span className="text-base font-bold text-white tracking-tight">
-              YOUR COMPANY
+              Reflect Total Solutions
             </span>
             <span className="text-[10px] font-semibold text-blue-400 tracking-[0.2em] block -mt-0.5">
               ERP
@@ -175,7 +182,7 @@ export function BrandPanel() {
         {/* Bottom */}
         <div className="mt-auto pt-8">
           <p className="text-[11px] text-slate-500">
-            © 2026 Your Company. All rights reserved.
+            © 2026 Reflect Total Solutions. All rights reserved.
           </p>
         </div>
       </div>

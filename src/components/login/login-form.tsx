@@ -1,22 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { Mail, Loader2, BarChart3 } from "lucide-react";
+import Image from "next/image";
+import { useRouter } from "next/navigation";
+import { Mail, Lock, Loader2, ArrowLeft, CheckCircle2, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PasswordInput } from "@/components/login/password-input";
-import { SecurityMessage } from "@/components/login/security-message";
-
-// Simple inline SVG for Microsoft logo
-function MicrosoftLogo() {
-  return (
-    <svg className="h-4 w-4 mr-2" viewBox="0 0 21 21" fill="none">
-      <rect x="1" y="1" width="9" height="9" fill="#F25022" />
-      <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
-      <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
-      <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
-    </svg>
-  );
-}
 
 interface FormErrors {
   email?: string;
@@ -25,264 +14,320 @@ interface FormErrors {
 }
 
 export function LoginForm() {
+  const router = useRouter();
+
+  // Mode: "login" | "forgot"
+  const [viewMode, setViewMode] = React.useState<"login" | "forgot">("login");
+
+  // Login form state
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [rememberMe, setRememberMe] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [errors, setErrors] = React.useState<FormErrors>({});
-  const [isSuccess, setIsSuccess] = React.useState(false);
 
-  const validateForm = (): boolean => {
+  // Forgot password form state
+  const [forgotEmail, setForgotEmail] = React.useState("");
+  const [forgotError, setForgotError] = React.useState("");
+  const [forgotLoading, setForgotLoading] = React.useState(false);
+  const [forgotSuccess, setForgotSuccess] = React.useState(false);
+
+  const validateLoginForm = (): boolean => {
     const newErrors: FormErrors = {};
 
     if (!email.trim()) {
       newErrors.email = "Email or username is required";
-    } else if (
-      email.includes("@") &&
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    ) {
-      newErrors.email = "Please enter a valid email address";
     }
 
     if (!password) {
       newErrors.password = "Password is required";
-    } else if (password.length < 6) {
-      newErrors.password = "Password must be at least 6 characters";
     }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!validateForm()) return;
+    if (!validateLoginForm()) return;
 
     setIsLoading(true);
     setErrors({});
 
-    // Simulate authentication
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Simulate login verification
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // Simulate error for demo (use admin@company.com / password123 to succeed)
-    if (email === "admin@company.com" && password === "password123") {
-      setIsSuccess(true);
-      // In production, redirect to dashboard
-    } else {
-      setErrors({
-        general: "Invalid credentials. Please check your email and password.",
-      });
-      setIsLoading(false);
-    }
+    // Allow user to login to admin dashboard directly
+    setIsLoading(false);
+    router.push("/admin");
   };
 
-  if (isSuccess) {
-    return (
-      <div className="flex min-h-full items-center justify-center p-6">
-        <div className="text-center animate-fade-in-up">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50">
-            <svg
-              className="h-7 w-7 text-emerald-500"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2.5}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M5 13l4 4L19 7"
-              />
-            </svg>
-          </div>
-          <h2 className="text-xl font-semibold text-[#0F172A] mb-1">
-            Welcome back!
-          </h2>
-          <p className="text-sm text-[#64748B]">
-            Redirecting to your dashboard...
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotError("");
+
+    if (!forgotEmail.trim()) {
+      setForgotError("Please enter your registered email address");
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(forgotEmail)) {
+      setForgotError("Please enter a valid email address");
+      return;
+    }
+
+    setForgotLoading(true);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    setForgotLoading(false);
+    setForgotSuccess(true);
+  };
 
   return (
-    <div className="flex min-h-full w-full flex-col justify-center px-6 py-10 sm:px-10 lg:px-14 xl:px-20">
-      <div className="w-full max-w-[400px] mx-auto">
-        {/* Mobile logo */}
-        <div className="flex items-center gap-2.5 mb-10 lg:hidden">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#2563EB] shadow-sm">
-            <BarChart3 className="h-4.5 w-4.5 text-white" />
+    <div className="flex min-h-screen w-full items-center justify-center bg-slate-50/80 px-4 py-8">
+      <div className="w-full max-w-[390px] rounded-2xl border border-slate-200 bg-white p-7 shadow-xs">
+        {/* Brand Logo & Name */}
+        <div className="flex flex-col items-center justify-center text-center mb-6 pb-5 border-b border-slate-100">
+          <div className="relative flex h-12 w-20 items-center justify-center rounded-xl bg-white p-1.5 border border-slate-200 shadow-2xs overflow-hidden mb-2.5">
+            <Image
+              src="/logo.png"
+              alt="Reflect Total Solutions"
+              width={80}
+              height={48}
+              className="h-full w-auto object-contain"
+              priority
+            />
           </div>
           <div>
-            <span className="text-sm font-bold text-[#0F172A] tracking-tight">
-              YOUR COMPANY
+            <span className="text-sm font-bold text-slate-900 tracking-tight block">
+              Reflect Total Solutions
             </span>
-            <span className="text-[9px] font-semibold text-[#2563EB] tracking-[0.15em] block -mt-0.5">
-              ERP
+            <span className="text-[10px] font-semibold text-blue-600 tracking-wider">
+              ERP SYSTEM
             </span>
           </div>
         </div>
 
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#0F172A] tracking-tight mb-1.5">
-            Welcome Back
-          </h1>
-          <p className="text-sm text-[#64748B]">
-            Sign in to your ERP account to continue.
-          </p>
-        </div>
+        {/* ================= VIEW: LOGIN ================= */}
+        {viewMode === "login" && (
+          <div>
+            <div className="mb-5">
+              <h1 className="text-lg font-bold text-slate-900">Sign In</h1>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Enter your credentials to access the ERP panel
+              </p>
+            </div>
 
-        {/* Error banner */}
-        {errors.general && (
-          <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 animate-fade-in-up">
-            <p className="text-sm text-red-600">{errors.general}</p>
+            {/* Error Message */}
+            {errors.general && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-600">
+                {errors.general}
+              </div>
+            )}
+
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
+              {/* Email / Username */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="email"
+                  className="block text-xs font-semibold text-slate-700"
+                >
+                  Email or Username
+                </label>
+                <div className="relative">
+                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                    <Mail className="h-3.5 w-3.5" />
+                  </div>
+                  <input
+                    id="email"
+                    type="text"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
+                    }}
+                    placeholder="admin@company.com"
+                    autoComplete="username"
+                    disabled={isLoading}
+                    className={cn(
+                      "flex h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-colors",
+                      errors.email && "border-red-500 focus:border-red-500"
+                    )}
+                  />
+                </div>
+                {errors.email && (
+                  <p className="text-[11px] text-red-500 mt-0.5">{errors.email}</p>
+                )}
+              </div>
+
+              {/* Password */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="password"
+                  className="block text-xs font-semibold text-slate-700"
+                >
+                  Password
+                </label>
+                <PasswordInput
+                  id="password"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (errors.password)
+                      setErrors((prev) => ({ ...prev, password: undefined }));
+                  }}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  disabled={isLoading}
+                  error={errors.password}
+                  className="h-9 text-xs"
+                />
+              </div>
+
+              {/* Remember Me & Forgot Password */}
+              <div className="flex items-center justify-between text-xs pt-0.5">
+                <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span>Remember me</span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setViewMode("forgot");
+                    setForgotSuccess(false);
+                    setForgotError("");
+                  }}
+                  className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                >
+                  Forgot password?
+                </button>
+              </div>
+
+              {/* Sign In Button */}
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="mt-2 flex h-9 w-full items-center justify-center rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] active:bg-[#1e40af] disabled:opacity-70 transition-colors"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                    Signing in...
+                  </>
+                ) : (
+                  "Sign In"
+                )}
+              </button>
+            </form>
           </div>
         )}
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-5" noValidate>
-          {/* Email field */}
-          <div className="space-y-1.5">
-            <label
-              htmlFor="email"
-              className="block text-sm font-medium text-[#0F172A]"
-            >
-              Email or Username
-            </label>
-            <div className="relative">
-              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8] pointer-events-none">
-                <Mail className="h-4 w-4" />
-              </div>
-              <input
-                id="email"
-                type="text"
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
-                }}
-                placeholder="Enter your email or username"
-                autoComplete="username"
-                autoFocus
-                disabled={isLoading}
-                className={cn(
-                  "flex h-10 w-full rounded-xl border border-[#E2E8F0] bg-white pl-9 pr-3 py-2 text-sm text-[#0F172A] ring-offset-white placeholder:text-[#94A3B8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/20 focus-visible:border-[#2563EB] disabled:cursor-not-allowed disabled:opacity-50 transition-colors duration-200",
-                  errors.email &&
-                    "border-red-500 focus-visible:ring-red-500/20 focus-visible:border-red-500"
-                )}
-                aria-invalid={!!errors.email}
-                aria-describedby={errors.email ? "email-error" : undefined}
-              />
-            </div>
-            {errors.email && (
-              <p id="email-error" className="text-xs text-red-500 mt-1">
-                {errors.email}
-              </p>
-            )}
-          </div>
-
-          {/* Password field */}
-          <div className="space-y-1.5">
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-[#0F172A]"
-            >
-              Password
-            </label>
-            <PasswordInput
-              id="password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                if (errors.password)
-                  setErrors((prev) => ({ ...prev, password: undefined }));
-              }}
-              placeholder="Enter your password"
-              autoComplete="current-password"
-              disabled={isLoading}
-              error={errors.password}
-              aria-invalid={!!errors.password}
-              aria-describedby={errors.password ? "password-error" : undefined}
-            />
-          </div>
-
-          {/* Remember me & Forgot password */}
-          <div className="flex items-center justify-between">
-            <label className="flex items-center gap-2 cursor-pointer select-none group">
-              <input
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="peer h-4 w-4 shrink-0 rounded border border-[#E2E8F0] shadow-sm accent-[#2563EB] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/20 cursor-pointer transition-colors duration-200"
-              />
-              <span className="text-sm text-[#64748B] group-hover:text-[#475569] transition-colors duration-200">
-                Remember me
-              </span>
-            </label>
+        {/* ================= VIEW: FORGOT PASSWORD ================= */}
+        {viewMode === "forgot" && (
+          <div>
             <button
               type="button"
-              className="text-sm font-medium text-[#2563EB] hover:text-[#1d4ed8] transition-colors duration-200"
+              onClick={() => {
+                setViewMode("login");
+                setForgotSuccess(false);
+              }}
+              className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-blue-600 mb-4 transition-colors"
             >
-              Forgot password?
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Back to Login
             </button>
-          </div>
 
-          {/* Submit button */}
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="relative flex w-full items-center justify-center h-10 rounded-xl bg-[#2563EB] text-sm font-medium text-white shadow-sm hover:bg-[#1d4ed8] active:bg-[#1e40af] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/50 focus-visible:ring-offset-2 disabled:opacity-70 disabled:cursor-not-allowed transition-all duration-200"
-          >
-            {isLoading ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                Signing in...
-              </>
+            <div className="mb-5">
+              <h1 className="text-lg font-bold text-slate-900">Forgot Password</h1>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Enter your work email and we will send you a password reset link.
+              </p>
+            </div>
+
+            {forgotSuccess ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 text-center space-y-2">
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                  <CheckCircle2 className="h-5 w-5" />
+                </div>
+                <h3 className="text-xs font-bold text-emerald-900">Reset Link Sent</h3>
+                <p className="text-[11px] text-emerald-700 leading-relaxed">
+                  We have sent instructions to <strong>{forgotEmail}</strong>. Please check your inbox.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setViewMode("login");
+                    setForgotSuccess(false);
+                  }}
+                  className="mt-2 inline-block text-xs font-semibold text-blue-600 hover:underline"
+                >
+                  Return to Sign In
+                </button>
+              </div>
             ) : (
-              "Sign In"
+              <form onSubmit={handleForgotSubmit} className="space-y-4">
+                {forgotError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-600">
+                    {forgotError}
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <label
+                    htmlFor="forgot-email"
+                    className="block text-xs font-semibold text-slate-700"
+                  >
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                      <Mail className="h-3.5 w-3.5" />
+                    </div>
+                    <input
+                      id="forgot-email"
+                      type="email"
+                      value={forgotEmail}
+                      onChange={(e) => {
+                        setForgotEmail(e.target.value);
+                        if (forgotError) setForgotError("");
+                      }}
+                      placeholder="name@company.com"
+                      autoFocus
+                      disabled={forgotLoading}
+                      className="flex h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={forgotLoading}
+                  className="flex h-9 w-full items-center justify-center rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] disabled:opacity-70 transition-colors"
+                >
+                  {forgotLoading ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                      Sending reset link...
+                    </>
+                  ) : (
+                    "Send Reset Link"
+                  )}
+                </button>
+              </form>
             )}
-          </button>
-        </form>
-
-        {/* Divider */}
-        <div className="relative my-6">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-[#E2E8F0]" />
           </div>
-          <div className="relative flex justify-center text-xs">
-            <span className="bg-white px-3 text-[#94A3B8] font-medium">
-              OR
-            </span>
-          </div>
-        </div>
+        )}
 
-        {/* SSO Button */}
-        <button
-          type="button"
-          disabled={isLoading}
-          className="flex w-full items-center justify-center h-10 rounded-xl border border-[#E2E8F0] bg-white text-sm font-medium text-[#0F172A] shadow-sm hover:bg-[#F8FAFC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/20 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
-        >
-          <MicrosoftLogo />
-          Continue with Microsoft
-        </button>
-
-        {/* Help text */}
-        <p className="mt-8 text-center text-xs text-[#94A3B8]">
-          Need help?{" "}
-          <button
-            type="button"
-            className="font-medium text-[#64748B] hover:text-[#0F172A] transition-colors duration-200"
-          >
-            Contact your administrator
-          </button>
-        </p>
-
-        {/* Security message */}
-        <div className="mt-6">
-          <SecurityMessage />
+        {/* Security badge at bottom */}
+        <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
+          <ShieldCheck className="h-3.5 w-3.5 text-slate-400" />
+          <span>Reflect Enterprise ERP • Secure Portal</span>
         </div>
       </div>
     </div>

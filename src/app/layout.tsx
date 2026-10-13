@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Sign In — Your Company ERP",
+  title: "Sign In — Reflect Total Solutions ERP",
   description:
     "Sign in to your ERP account. Manage operations, resources, and team productivity.",
 };
