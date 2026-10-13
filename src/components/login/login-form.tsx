@@ -88,12 +88,12 @@ export function LoginForm() {
       <div className="w-full max-w-[390px] rounded-2xl border border-slate-200 bg-white p-7 shadow-xs">
         {/* Brand Logo & Name */}
         <div className="flex flex-col items-center justify-center text-center mb-6 pb-5 border-b border-slate-100">
-          <div className="relative flex h-12 w-20 items-center justify-center rounded-xl bg-white p-1.5 border border-slate-200 shadow-2xs overflow-hidden mb-2.5">
+          <div className="relative flex h-14 w-auto items-center justify-center overflow-hidden mb-2">
             <Image
               src="/logo.png"
               alt="Reflect Total Solutions"
-              width={80}
-              height={48}
+              width={100}
+              height={56}
               className="h-full w-auto object-contain"
               priority
             />

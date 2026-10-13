@@ -49,14 +49,18 @@ export default function AdminLayout({
     <AdminDataProvider>
       <div className="flex min-h-screen bg-[#F8FAFC]">
         {/* Left Sidebar */}
-        <AdminSidebar
-          isOpen={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
-        />
+        <React.Suspense fallback={<aside className="hidden lg:block w-64 bg-white border-r border-slate-200" />}>
+          <AdminSidebar
+            isOpen={sidebarOpen}
+            onClose={() => setSidebarOpen(false)}
+          />
+        </React.Suspense>
 
         {/* Main Content Area */}
         <div className="flex flex-1 flex-col min-w-0">
-          <AdminHeader onOpenSidebar={() => setSidebarOpen(true)} />
+          <React.Suspense fallback={<div className="h-16 w-full border-b border-slate-200 bg-white" />}>
+            <AdminHeader onOpenSidebar={() => setSidebarOpen(true)} />
+          </React.Suspense>
 
           <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
             {children}

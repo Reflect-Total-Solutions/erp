@@ -102,7 +102,7 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
         {/* Brand Header */}
         <div className="flex h-16 items-center justify-between px-5 border-b border-slate-200">
           <Link href="/admin" className="flex items-center gap-2.5">
-            <div className="relative h-8 w-12 rounded border border-slate-200 p-0.5 overflow-hidden flex items-center justify-center bg-white shrink-0">
+            <div className="relative h-8 w-12 overflow-hidden flex items-center justify-center shrink-0">
               <Image
                 src="/logo.png"
                 alt="Reflect Total Solutions"

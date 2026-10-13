@@ -1,12 +1,23 @@
-"use client";
-
-import React from "react";
-import { useParams } from "next/navigation";
+import React, { Suspense } from "react";
 import { JobDetailsView } from "@/components/admin/views/job-details-view";
 
-export default function JobDetailsPage() {
-  const params = useParams();
-  const id = typeof params?.id === "string" ? params.id : Array.isArray(params?.id) ? params.id[0] : "";
+interface PageProps {
+  params: Promise<{ id: string }>;
+}
 
-  return <JobDetailsView jobId={id} />;
+export default async function JobDetailsPage({ params }: PageProps) {
+  const resolvedParams = await params;
+  const id = resolvedParams.id || "";
+
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-48 items-center justify-center text-xs text-slate-500">
+          Loading job details...
+        </div>
+      }
+    >
+      <JobDetailsView jobId={id} />
+    </Suspense>
+  );
 }
