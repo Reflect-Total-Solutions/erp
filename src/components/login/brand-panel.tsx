@@ -85,14 +85,13 @@ export function BrandPanel() {
       <div className="relative z-10 flex flex-col h-full">
         {/* Logo */}
         <div className="flex items-center gap-3.5 mb-16 xl:mb-20">
-          <div className="relative flex h-11 w-18 items-center justify-center rounded-xl bg-white p-1 shadow-lg shadow-black/20 overflow-hidden border border-white/10">
+          <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-white p-1.5 shadow-lg shadow-black/20 shrink-0">
             <Image
               src="/logo.png"
               alt="Reflect Total Solutions Logo"
-              width={72}
-              height={44}
+              width={52}
+              height={45}
               className="h-full w-auto object-contain"
-              style={{ width: "auto", height: "auto" }}
               priority
             />
           </div>

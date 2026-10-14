@@ -100,16 +100,15 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
         )}
       >
         {/* Brand Header */}
-        <div className="flex h-16 items-center justify-between px-5 border-b border-slate-200">
-          <Link href="/admin" className="flex items-center gap-2.5">
-            <div className="relative h-8 w-12 overflow-hidden flex items-center justify-center shrink-0">
+        <div className="flex h-16 items-center justify-between px-4 border-b border-slate-200">
+          <Link href="/admin" className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center">
               <Image
                 src="/logo.png"
                 alt="Reflect Total Solutions"
-                width={48}
-                height={32}
-                className="h-full w-auto object-contain"
-                style={{ width: "auto", height: "auto" }}
+                width={40}
+                height={35}
+                className="h-9 w-auto object-contain dark:bg-white/95 dark:p-0.5 dark:rounded"
                 priority
               />
             </div>

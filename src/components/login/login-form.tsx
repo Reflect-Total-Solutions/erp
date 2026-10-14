@@ -113,14 +113,13 @@ export function LoginForm() {
       <div className="w-full max-w-[390px] rounded-2xl border border-slate-200 bg-white p-7 shadow-xs">
         {/* Brand Logo & Name */}
         <div className="flex flex-col items-center justify-center text-center mb-6 pb-5 border-b border-slate-100">
-          <div className="relative flex h-14 w-auto items-center justify-center overflow-hidden mb-2">
+          <div className="flex items-center justify-center mb-2.5">
             <Image
               src="/logo.png"
               alt="Reflect Total Solutions"
-              width={100}
-              height={56}
-              className="h-full w-auto object-contain"
-              style={{ width: "auto", height: "auto" }}
+              width={140}
+              height={122}
+              className="h-24 w-auto object-contain dark:bg-white/95 dark:p-1.5 dark:rounded-xl transition-all"
               priority
             />
           </div>
@@ -128,8 +127,8 @@ export function LoginForm() {
             <span className="text-sm font-bold text-slate-900 tracking-tight block">
               Reflect Total Solutions
             </span>
-            <span className="text-[10px] font-semibold text-blue-600 tracking-wider">
-              ERP SYSTEM
+            <span className="text-[10px] font-semibold text-blue-600 tracking-wider block mt-0.5">
+              ENTERPRISE ERP
             </span>
           </div>
         </div>
