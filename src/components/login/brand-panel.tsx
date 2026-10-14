@@ -92,6 +92,7 @@ export function BrandPanel() {
               width={72}
               height={44}
               className="h-full w-auto object-contain"
+              style={{ width: "auto", height: "auto" }}
               priority
             />
           </div>

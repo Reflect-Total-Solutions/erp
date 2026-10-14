@@ -3,7 +3,8 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, LogOut, User } from "lucide-react";
+import { Menu, LogOut, Sun, Moon } from "lucide-react";
+import { useTheme } from "@/context/theme-context";
 
 interface HeaderProps {
   onOpenSidebar: () => void;
@@ -11,6 +12,7 @@ interface HeaderProps {
 
 export function AdminHeader({ onOpenSidebar }: HeaderProps) {
   const pathname = usePathname();
+  const { theme, toggleTheme } = useTheme();
 
   const getPageTitle = () => {
     if (pathname === "/admin") return "Dashboard";
@@ -45,9 +47,27 @@ export function AdminHeader({ onOpenSidebar }: HeaderProps) {
         </h1>
       </div>
 
-      {/* Right: User status & Sign Out */}
-      <div className="flex items-center gap-3">
-        
+      {/* Right: Theme Toggle & Sign Out */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
+          title={theme === "dark" ? "Switch to White (Light) mode" : "Switch to Dark mode"}
+          aria-label="Toggle theme"
+        >
+          {theme === "dark" ? (
+            <>
+              <Sun className="h-3.5 w-3.5 text-amber-400" />
+              <span>Light</span>
+            </>
+          ) : (
+            <>
+              <Moon className="h-3.5 w-3.5 text-slate-600" />
+              <span>Dark</span>
+            </>
+          )}
+        </button>
 
         <Link
           href="/"

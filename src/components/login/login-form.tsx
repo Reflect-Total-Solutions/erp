@@ -3,9 +3,10 @@
 import * as React from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { Mail, Lock, Loader2, ArrowLeft, CheckCircle2, ShieldCheck } from "lucide-react";
+import { Mail, Lock, Loader2, ArrowLeft, CheckCircle2, ShieldCheck, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PasswordInput } from "@/components/login/password-input";
+import { useTheme } from "@/context/theme-context";
 
 interface FormErrors {
   email?: string;
@@ -15,6 +16,7 @@ interface FormErrors {
 
 export function LoginForm() {
   const router = useRouter();
+  const { theme, toggleTheme } = useTheme();
 
   // Mode: "login" | "forgot"
   const [viewMode, setViewMode] = React.useState<"login" | "forgot">("login");
@@ -84,7 +86,30 @@ export function LoginForm() {
   };
 
   return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-slate-50/80 px-4 py-8">
+    <div className="relative flex min-h-screen w-full items-center justify-center bg-slate-50/80 px-4 py-8">
+      {/* Theme Toggle Top Right */}
+      <div className="absolute top-4 right-4">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 bg-white border border-slate-200 shadow-2xs hover:bg-slate-100 transition-colors cursor-pointer"
+          title={theme === "dark" ? "Switch to White (Light) mode" : "Switch to Dark mode"}
+          aria-label="Toggle theme"
+        >
+          {theme === "dark" ? (
+            <>
+              <Sun className="h-3.5 w-3.5 text-amber-400" />
+              <span>Light</span>
+            </>
+          ) : (
+            <>
+              <Moon className="h-3.5 w-3.5 text-slate-600" />
+              <span>Dark</span>
+            </>
+          )}
+        </button>
+      </div>
+
       <div className="w-full max-w-[390px] rounded-2xl border border-slate-200 bg-white p-7 shadow-xs">
         {/* Brand Logo & Name */}
         <div className="flex flex-col items-center justify-center text-center mb-6 pb-5 border-b border-slate-100">
@@ -95,6 +120,7 @@ export function LoginForm() {
               width={100}
               height={56}
               className="h-full w-auto object-contain"
+              style={{ width: "auto", height: "auto" }}
               priority
             />
           </div>
