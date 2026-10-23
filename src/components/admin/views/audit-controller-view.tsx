@@ -27,6 +27,8 @@ import {
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
+import { Pagination } from "@/components/admin/ui/pagination";
+import { SearchField } from "@/components/admin/ui/search-field";
 
 export type AuditStatus = "Verified" | "Flagged" | "Pending";
 export type AuditModule = "Invoices" | "Excel Uploads" | "Jobs" | "Suppliers" | "Access Control";
@@ -238,6 +240,10 @@ export function AuditControllerView() {
   const [moduleFilter, setModuleFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
   // Inspection modal state
   const [inspectingRecord, setInspectingRecord] = useState<AuditRecord | null>(null);
   const [inspectNotes, setInspectNotes] = useState("");
@@ -257,6 +263,13 @@ export function AuditControllerView() {
       return matchSearch && matchModule && matchStatus;
     });
   }, [records, searchTerm, moduleFilter, statusFilter]);
+
+  // Pagination calculations
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
+  const paginatedRecords = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredRecords.slice(start, start + pageSize);
+  }, [filteredRecords, currentPage, pageSize]);
 
   // Statistics
   const totalAudited = records.length;
@@ -456,22 +469,23 @@ export function AuditControllerView() {
           <div className="bg-white rounded-xl border border-slate-200 p-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
               {/* Search */}
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search ref, item, staff..."
-                  className="h-9 w-full rounded-lg border border-slate-200 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
+              <SearchField
+                value={searchTerm}
+                onChange={(val) => {
+                  setSearchTerm(val);
+                  setCurrentPage(1);
+                }}
+                placeholder="Search ref, item, staff..."
+              />
 
               {/* Module Filter */}
               <div>
                 <select
                   value={moduleFilter}
-                  onChange={(e) => setModuleFilter(e.target.value)}
+                  onChange={(e) => {
+                    setModuleFilter(e.target.value);
+                    setCurrentPage(1);
+                  }}
                   className="h-9 w-full rounded-lg border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
                 >
                   <option value="all">All Modules</option>
@@ -486,7 +500,10 @@ export function AuditControllerView() {
               <div>
                 <select
                   value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
+                  onChange={(e) => {
+                    setStatusFilter(e.target.value);
+                    setCurrentPage(1);
+                  }}
                   className="h-9 w-full rounded-lg border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
                 >
                   <option value="all">All Audit Statuses</option>
@@ -505,6 +522,7 @@ export function AuditControllerView() {
                       setSearchTerm("");
                       setModuleFilter("all");
                       setStatusFilter("all");
+                      setCurrentPage(1);
                     }}
                     className="text-blue-600 hover:underline font-semibold"
                   >
@@ -538,7 +556,7 @@ export function AuditControllerView() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredRecords.map((rec) => {
+                  {paginatedRecords.map((rec) => {
                     return (
                       <tr key={rec.id} className="hover:bg-slate-50/80 transition-colors">
                         {/* Ref & Time */}
@@ -648,6 +666,19 @@ export function AuditControllerView() {
               </table>
             )}
           </div>
+
+          {/* Pagination */}
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filteredRecords.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize);
+              setCurrentPage(1);
+            }}
+          />
         </div>
       )}
 

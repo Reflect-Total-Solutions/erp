@@ -20,6 +20,9 @@ import {
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { Modal } from "@/components/admin/ui/modal";
+import { Pagination } from "@/components/admin/ui/pagination";
+import { SearchField } from "@/components/admin/ui/search-field";
+import { FilterSelect, FilterDate } from "@/components/admin/ui/filter-controls";
 import { CreateJobModal } from "@/components/admin/modals/create-job-modal";
 import { Job, JobStatus } from "@/types/admin";
 import {
@@ -48,6 +51,10 @@ export function JobsView() {
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   // Bulk Selection
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
@@ -113,6 +120,12 @@ export function JobsView() {
     });
   }, [jobs, searchTerm, dateFilter, statusFilter]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
+  const paginatedJobs = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredJobs.slice(start, start + pageSize);
+  }, [filteredJobs, currentPage, pageSize]);
+
   return (
     <div className="space-y-5">
       {/* Page Header */}
@@ -146,70 +159,62 @@ export function JobsView() {
         </div>
       </div>
 
-      {/* Filter Toolbar */}
+      {/* Reusable Filter Toolbar */}
       <div className="bg-white rounded-xl border border-slate-200 p-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
           {/* Search */}
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by job name..."
-              className="h-9 w-full rounded-lg border border-slate-200 pl-8 pr-7 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-            />
-            {searchTerm && (
-              <button
-                type="button"
-                onClick={() => setSearchTerm("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
+          <SearchField
+            value={searchTerm}
+            onChange={(val) => {
+              setSearchTerm(val);
+              setCurrentPage(1);
+            }}
+            placeholder="Search by job name, code, description..."
+          />
 
           {/* Date Filter */}
-          <div className="relative">
-            <input
-              type="date"
-              value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
-              className="h-9 w-full rounded-lg border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-            />
-          </div>
+          <FilterDate
+            value={dateFilter}
+            onChange={(val) => {
+              setDateFilter(val);
+              setCurrentPage(1);
+            }}
+          />
 
           {/* Status Filter */}
-          <div>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="h-9 w-full rounded-lg border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-            >
-              <option value="all">All Statuses</option>
-              <option value="Active">Active</option>
-              <option value="In Review">In Review</option>
-              <option value="Pending">Pending</option>
-              <option value="Completed">Completed</option>
-            </select>
-          </div>
+          <FilterSelect
+            value={statusFilter}
+            onChange={(val) => {
+              setStatusFilter(val);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: "all", label: "All Statuses" },
+              { value: "Active", label: "Active" },
+              { value: "In Review", label: "In Review" },
+              { value: "Pending", label: "Pending" },
+              { value: "Completed", label: "Completed" },
+            ]}
+          />
 
           {/* Reset Filters */}
           <div className="flex items-center justify-between">
-            {(searchTerm || dateFilter || statusFilter !== "all") ? (
+            {searchTerm || dateFilter || statusFilter !== "all" ? (
               <button
                 type="button"
                 onClick={() => {
                   setSearchTerm("");
                   setDateFilter("");
                   setStatusFilter("all");
+                  setCurrentPage(1);
                 }}
                 className="text-xs text-blue-600 hover:underline font-medium"
               >
                 Clear Filters
               </button>
-            ) : <span />}
+            ) : (
+              <span />
+            )}
 
             <span className="text-xs text-slate-500">
               Total: <strong>{filteredJobs.length}</strong> jobs
@@ -266,7 +271,8 @@ export function JobsView() {
             No jobs match your search. Click "Create New Job" above to add one.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
                 <tr>
@@ -305,7 +311,7 @@ export function JobsView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredJobs.map((job) => {
+                {paginatedJobs.map((job) => {
                   const val = getJobTotalInvoiceValue(job.id);
                   const invCount = getJobInvoices(job.id).length;
                   const isSelected = selectedJobIds.includes(job.id);
@@ -461,7 +467,20 @@ export function JobsView() {
               </tbody>
             </table>
           </div>
-        )}
+
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filteredJobs.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize);
+              setCurrentPage(1);
+            }}
+          />
+        </>
+      )}
       </div>
 
       {/* Create Job Modal */}

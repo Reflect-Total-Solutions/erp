@@ -15,6 +15,7 @@ import {
   CheckCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAdminData } from "@/context/admin-data-context";
 
 const NAV_ITEMS = [
   {
@@ -69,6 +70,7 @@ interface SidebarProps {
 export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const [mounted, setMounted] = React.useState(false);
+  const { pendingApprovalsCount } = useAdminData();
 
   React.useEffect(() => {
     setMounted(true);
@@ -137,6 +139,7 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
           {NAV_ITEMS.map((item) => {
             const active = mounted ? isLinkActive(item.href, item.exact) : false;
             const Icon = item.icon;
+            const isApprovals = item.name === "Approvals";
 
             return (
               <Link
@@ -150,7 +153,7 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
                 className={cn(
                   "flex items-center justify-between rounded-lg px-3 py-2 text-xs font-medium transition-colors",
                   active
-                    ? "bg-[#2563EB] text-white font-semibold"
+                    ? "bg-[#2563EB] text-white font-semibold shadow-sm"
                     : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
                 )}
               >
@@ -158,6 +161,18 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
                   <Icon className={cn("h-4 w-4", active ? "text-white" : "text-slate-500")} />
                   <span>{item.name}</span>
                 </div>
+                {isApprovals && pendingApprovalsCount > 0 && (
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-0.5 text-[10px] font-bold tracking-tight transition-colors",
+                      active
+                        ? "bg-white text-blue-700 font-extrabold"
+                        : "bg-amber-100 text-amber-800"
+                    )}
+                  >
+                    {pendingApprovalsCount}
+                  </span>
+                )}
               </Link>
             );
           })}

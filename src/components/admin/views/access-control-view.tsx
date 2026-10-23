@@ -30,6 +30,8 @@ import {
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
+import { Pagination } from "@/components/admin/ui/pagination";
+import { SearchField } from "@/components/admin/ui/search-field";
 import { Role, UserAccess, UserStatus, ModulePermission } from "@/types/admin";
 
 export function AccessControlView() {
@@ -56,6 +58,15 @@ export function AccessControlView() {
   const [userSearch, setUserSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [deptFilter, setDeptFilter] = useState("all");
+
+  // Pagination states for Users
+  const [userPage, setUserPage] = useState(1);
+  const [userPageSize, setUserPageSize] = useState(10);
+
+  // Search & Pagination for Audit Tab
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(10);
 
   // Modals state
   const [isInviteUserOpen, setIsInviteUserOpen] = useState(false);
@@ -90,6 +101,32 @@ export function AccessControlView() {
       return matchSearch && matchRole && matchDept;
     });
   }, [usersAccess, userSearch, roleFilter, deptFilter]);
+
+  // Paginated Users
+  const totalUserPages = Math.max(1, Math.ceil(filteredUsers.length / userPageSize));
+  const paginatedUsers = useMemo(() => {
+    const start = (userPage - 1) * userPageSize;
+    return filteredUsers.slice(start, start + userPageSize);
+  }, [filteredUsers, userPage, userPageSize]);
+
+  // Filtered & Paginated Audit Logs
+  const filteredAuditLogs = useMemo(() => {
+    if (!auditSearch) return auditLogs;
+    const term = auditSearch.toLowerCase();
+    return auditLogs.filter(
+      (log) =>
+        log.user.toLowerCase().includes(term) ||
+        log.action.toLowerCase().includes(term) ||
+        log.target.toLowerCase().includes(term) ||
+        log.ipAddress.toLowerCase().includes(term)
+    );
+  }, [auditLogs, auditSearch]);
+
+  const totalAuditPages = Math.max(1, Math.ceil(filteredAuditLogs.length / auditPageSize));
+  const paginatedAuditLogs = useMemo(() => {
+    const start = (auditPage - 1) * auditPageSize;
+    return filteredAuditLogs.slice(start, start + auditPageSize);
+  }, [filteredAuditLogs, auditPage, auditPageSize]);
 
   // Unique departments for filter
   const departments = useMemo(() => {
@@ -693,22 +730,23 @@ export function AccessControlView() {
           <div className="bg-white rounded-xl border border-slate-200 p-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
               {/* Search */}
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                <input
-                  type="text"
-                  value={userSearch}
-                  onChange={(e) => setUserSearch(e.target.value)}
-                  placeholder="Search user name or email..."
-                  className="h-9 w-full rounded-lg border border-slate-200 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
+              <SearchField
+                value={userSearch}
+                onChange={(val) => {
+                  setUserSearch(val);
+                  setUserPage(1);
+                }}
+                placeholder="Search user name or email..."
+              />
 
               {/* Department Filter */}
               <div>
                 <select
                   value={deptFilter}
-                  onChange={(e) => setDeptFilter(e.target.value)}
+                  onChange={(e) => {
+                    setDeptFilter(e.target.value);
+                    setUserPage(1);
+                  }}
                   className="h-9 w-full rounded-lg border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
                 >
                   <option value="all">All Departments</option>
@@ -724,7 +762,10 @@ export function AccessControlView() {
               <div>
                 <select
                   value={roleFilter}
-                  onChange={(e) => setRoleFilter(e.target.value)}
+                  onChange={(e) => {
+                    setRoleFilter(e.target.value);
+                    setUserPage(1);
+                  }}
                   className="h-9 w-full rounded-lg border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
                 >
                   <option value="all">All Security Roles</option>
@@ -745,6 +786,7 @@ export function AccessControlView() {
                       setUserSearch("");
                       setDeptFilter("all");
                       setRoleFilter("all");
+                      setUserPage(1);
                     }}
                     className="text-blue-600 hover:underline font-semibold"
                   >
@@ -777,7 +819,7 @@ export function AccessControlView() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredUsers.map((user) => {
+                  {paginatedUsers.map((user) => {
                     const assignedRole = roles.find((r) => r.id === user.roleId);
                     const initials = user.name
                       .split(" ")
@@ -896,12 +938,58 @@ export function AccessControlView() {
               </table>
             )}
           </div>
+
+          {/* Users Pagination */}
+          <Pagination
+            currentPage={userPage}
+            totalPages={totalUserPages}
+            totalItems={filteredUsers.length}
+            pageSize={userPageSize}
+            onPageChange={setUserPage}
+            onPageSizeChange={(newSize) => {
+              setUserPageSize(newSize);
+              setUserPage(1);
+            }}
+          />
         </div>
       )}
 
       {/* ================= TAB 3: ACCESS AUDIT LOGS ================= */}
       {activeTab === "audit" && (
         <div className="space-y-4">
+          {/* Search Toolbar */}
+          <div className="bg-white rounded-xl border border-slate-200 p-3">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="w-full sm:max-w-md">
+                <SearchField
+                  value={auditSearch}
+                  onChange={(val) => {
+                    setAuditSearch(val);
+                    setAuditPage(1);
+                  }}
+                  placeholder="Search audit trail by user, action, target..."
+                />
+              </div>
+              <div className="flex items-center gap-3 text-xs text-slate-500 self-end sm:self-auto">
+                {auditSearch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuditSearch("");
+                      setAuditPage(1);
+                    }}
+                    className="text-blue-600 hover:underline font-semibold"
+                  >
+                    Clear Search
+                  </button>
+                )}
+                <span>
+                  Showing: <strong>{filteredAuditLogs.length}</strong> logged events
+                </span>
+              </div>
+            </div>
+          </div>
+
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
             <div className="px-5 py-3 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between">
               <div>
@@ -910,49 +998,65 @@ export function AccessControlView() {
                   Chronological event log tracking role modifications, user permissions, and logins.
                 </p>
               </div>
-              <span className="text-[11px] text-slate-500">
-                Total <strong>{auditLogs.length}</strong> logged events
-              </span>
             </div>
 
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
-                <tr>
-                  <th className="px-5 py-3">Timestamp</th>
-                  <th className="px-4 py-3">Initiated By</th>
-                  <th className="px-4 py-3">Security Action</th>
-                  <th className="px-4 py-3">Target / Policy</th>
-                  <th className="px-4 py-3 text-right">IP Address</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {auditLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="h-3.5 w-3.5 text-slate-400" />
-                        <span>{log.timestamp}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 font-semibold text-slate-900">
-                      {log.user}
-                    </td>
-                    <td className="px-4 py-3.5 text-slate-700">
-                      <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded text-[11px] font-medium">
-                        {log.action}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3.5 font-mono text-[11px] text-blue-700">
-                      {log.target}
-                    </td>
-                    <td className="px-4 py-3.5 text-right font-mono text-[11px] text-slate-500">
-                      {log.ipAddress}
-                    </td>
+            {filteredAuditLogs.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-500">
+                No security log events found matching your search.
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="px-5 py-3">Timestamp</th>
+                    <th className="px-4 py-3">Initiated By</th>
+                    <th className="px-4 py-3">Security Action</th>
+                    <th className="px-4 py-3">Target / Policy</th>
+                    <th className="px-4 py-3 text-right">IP Address</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {paginatedAuditLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="h-3.5 w-3.5 text-slate-400" />
+                          <span>{log.timestamp}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 font-semibold text-slate-900">
+                        {log.user}
+                      </td>
+                      <td className="px-4 py-3.5 text-slate-700">
+                        <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded text-[11px] font-medium">
+                          {log.action}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 font-mono text-[11px] text-blue-700">
+                        {log.target}
+                      </td>
+                      <td className="px-4 py-3.5 text-right font-mono text-[11px] text-slate-500">
+                        {log.ipAddress}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
+
+          {/* Audit Logs Pagination */}
+          <Pagination
+            currentPage={auditPage}
+            totalPages={totalAuditPages}
+            totalItems={filteredAuditLogs.length}
+            pageSize={auditPageSize}
+            onPageChange={setAuditPage}
+            onPageSizeChange={(newSize) => {
+              setAuditPageSize(newSize);
+              setAuditPage(1);
+            }}
+          />
         </div>
       )}
 

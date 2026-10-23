@@ -23,6 +23,8 @@ import {
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { Modal } from "@/components/admin/ui/modal";
+import { Pagination } from "@/components/admin/ui/pagination";
+import { SearchField } from "@/components/admin/ui/search-field";
 import { Job, Invoice } from "@/types/admin";
 import { downloadMockInvoiceFile, downloadMockExcelFile, downloadSingleAttachment } from "@/lib/export-utils";
 
@@ -33,6 +35,7 @@ export function ApprovalsView() {
     suppliers,
     updateJob,
     updateInvoice,
+    showToast,
     getJobTotalInvoiceValue,
     getJobExcelFiles,
     getJobSuppliers,
@@ -45,9 +48,25 @@ export function ApprovalsView() {
   const [statusFilter, setStatusFilter] = useState<"pending" | "approved" | "all">("pending");
   const [searchTerm, setSearchTerm] = useState("");
 
+  // Pagination states
+  const [invoicePage, setInvoicePage] = useState(1);
+  const [invoicePageSize, setInvoicePageSize] = useState(10);
+  const [jobPage, setJobPage] = useState(1);
+  const [jobPageSize, setJobPageSize] = useState(10);
+
   // Inspect modal
   const [inspectingInvoice, setInspectingInvoice] = useState<Invoice | null>(null);
   const [inspectingJob, setInspectingJob] = useState<Job | null>(null);
+
+  // Action Dialog state (Approve / Reject confirmation)
+  const [actionConfirm, setActionConfirm] = useState<{
+    type: "approve_invoice" | "reject_invoice" | "approve_job" | "review_job";
+    id: string;
+    title: string;
+    subtitle?: string;
+    amount?: number;
+  } | null>(null);
+  const [actionNotes, setActionNotes] = useState("");
 
   // Invoices to display
   const filteredInvoices = useMemo(() => {
@@ -95,37 +114,45 @@ export function ApprovalsView() {
     [jobs]
   );
 
-  // Action Handlers
-  const handleApproveInvoice = (invoiceId: string) => {
-    updateInvoice(invoiceId, { status: "Approved" });
-    if (inspectingInvoice?.id === invoiceId) {
-      setInspectingInvoice(null);
-    }
-  };
+  // Pagination slices
+  const totalInvoicePages = Math.max(1, Math.ceil(filteredInvoices.length / invoicePageSize));
+  const paginatedInvoices = useMemo(() => {
+    const start = (invoicePage - 1) * invoicePageSize;
+    return filteredInvoices.slice(start, start + invoicePageSize);
+  }, [filteredInvoices, invoicePage, invoicePageSize]);
 
-  const handleRejectInvoice = (invoiceId: string) => {
-    updateInvoice(invoiceId, { status: "Under Review" });
-    if (inspectingInvoice?.id === invoiceId) {
-      setInspectingInvoice(null);
-    }
-  };
+  const totalJobPages = Math.max(1, Math.ceil(filteredJobs.length / jobPageSize));
+  const paginatedJobs = useMemo(() => {
+    const start = (jobPage - 1) * jobPageSize;
+    return filteredJobs.slice(start, start + jobPageSize);
+  }, [filteredJobs, jobPage, jobPageSize]);
 
-  const handleApproveJob = (jobId: string) => {
-    updateJob(jobId, { status: "Active" });
-    if (inspectingJob?.id === jobId) {
-      setInspectingJob(null);
-    }
-  };
+  // Action Confirmation Handlers
+  const handleExecuteAction = () => {
+    if (!actionConfirm) return;
 
-  const handleReviewJob = (jobId: string) => {
-    updateJob(jobId, { status: "In Review" });
-    if (inspectingJob?.id === jobId) {
-      setInspectingJob(null);
+    if (actionConfirm.type === "approve_invoice") {
+      updateInvoice(actionConfirm.id, { status: "Approved" });
+      showToast("Invoice Authorized", `Invoice "${actionConfirm.title}" approved successfully.`, "success");
+    } else if (actionConfirm.type === "reject_invoice") {
+      updateInvoice(actionConfirm.id, { status: "Under Review" });
+      showToast("Invoice Placed on Hold", `Invoice "${actionConfirm.title}" held for review.`, "info");
+    } else if (actionConfirm.type === "approve_job") {
+      updateJob(actionConfirm.id, { status: "Active" });
+      showToast("Job Authorized", `Job "${actionConfirm.title}" approved and activated.`, "success");
+    } else if (actionConfirm.type === "review_job") {
+      updateJob(actionConfirm.id, { status: "In Review" });
+      showToast("Job Under Review", `Job "${actionConfirm.title}" marked in review.`, "info");
     }
+
+    setActionConfirm(null);
+    setActionNotes("");
+    if (inspectingInvoice?.id === actionConfirm.id) setInspectingInvoice(null);
+    if (inspectingJob?.id === actionConfirm.id) setInspectingJob(null);
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5" suppressHydrationWarning>
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-2 border-b border-slate-200">
         <div>
@@ -195,14 +222,15 @@ export function ApprovalsView() {
       <div className="bg-white rounded-xl border border-slate-200 p-3">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           {/* Search bar */}
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-            <input
-              type="text"
+          <div className="w-full sm:w-72">
+            <SearchField
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(val) => {
+                setSearchTerm(val);
+                setInvoicePage(1);
+                setJobPage(1);
+              }}
               placeholder={activeTab === "invoices" ? "Search invoices..." : "Search jobs..."}
-              className="h-8 w-full rounded-lg border border-slate-200 pl-8 pr-3 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
             />
           </div>
 
@@ -253,7 +281,8 @@ export function ApprovalsView() {
               No invoices match your current filter.
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
                   <tr>
@@ -267,7 +296,7 @@ export function ApprovalsView() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredInvoices.map((inv) => {
+                  {paginatedInvoices.map((inv) => {
                     const job = jobs.find((j) => j.id === inv.jobId);
                     const sup = suppliers.find((s) => s.id === inv.supplierId);
                     const isPending = inv.status === "Pending" || inv.status === "Under Review";
@@ -361,7 +390,15 @@ export function ApprovalsView() {
                               <>
                                 <button
                                   type="button"
-                                  onClick={() => handleApproveInvoice(inv.id)}
+                                  onClick={() =>
+                                    setActionConfirm({
+                                      type: "approve_invoice",
+                                      id: inv.id,
+                                      title: inv.invoiceName,
+                                      subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
+                                      amount: inv.totalValue,
+                                    })
+                                  }
                                   className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
                                   title="Approve Invoice"
                                 >
@@ -370,7 +407,15 @@ export function ApprovalsView() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleRejectInvoice(inv.id)}
+                                  onClick={() =>
+                                    setActionConfirm({
+                                      type: "reject_invoice",
+                                      id: inv.id,
+                                      title: inv.invoiceName,
+                                      subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
+                                      amount: inv.totalValue,
+                                    })
+                                  }
                                   className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium text-[11px] flex items-center gap-1"
                                   title="Flag / Hold Invoice"
                                 >
@@ -381,7 +426,15 @@ export function ApprovalsView() {
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => handleRejectInvoice(inv.id)}
+                                onClick={() =>
+                                  setActionConfirm({
+                                    type: "reject_invoice",
+                                    id: inv.id,
+                                    title: inv.invoiceName,
+                                    subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
+                                    amount: inv.totalValue,
+                                  })
+                                }
                                 className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
                                 title="Re-open for Review"
                               >
@@ -396,9 +449,22 @@ export function ApprovalsView() {
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
-      )}
+
+            <Pagination
+              currentPage={invoicePage}
+              totalPages={totalInvoicePages}
+              totalItems={filteredInvoices.length}
+              pageSize={invoicePageSize}
+              onPageChange={setInvoicePage}
+              onPageSizeChange={(newSize) => {
+                setInvoicePageSize(newSize);
+                setInvoicePage(1);
+              }}
+            />
+          </>
+        )}
+      </div>
+    )}
 
       {/* ================= TAB 2: JOB APPROVALS ================= */}
       {activeTab === "jobs" && (
@@ -408,7 +474,8 @@ export function ApprovalsView() {
               No jobs match your current filter.
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
                   <tr>
@@ -422,7 +489,7 @@ export function ApprovalsView() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredJobs.map((job) => {
+                  {paginatedJobs.map((job) => {
                     const cost = getJobTotalInvoiceValue(job.id);
                     const excels = getJobExcelFiles(job.id);
                     const isPending = job.status === "Pending" || job.status === "In Review";
@@ -488,7 +555,15 @@ export function ApprovalsView() {
                               <>
                                 <button
                                   type="button"
-                                  onClick={() => handleApproveJob(job.id)}
+                                  onClick={() =>
+                                    setActionConfirm({
+                                      type: "approve_job",
+                                      id: job.id,
+                                      title: job.name,
+                                      subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
+                                      amount: cost,
+                                    })
+                                  }
                                   className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
                                   title="Authorize Job"
                                 >
@@ -497,7 +572,15 @@ export function ApprovalsView() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleReviewJob(job.id)}
+                                  onClick={() =>
+                                    setActionConfirm({
+                                      type: "review_job",
+                                      id: job.id,
+                                      title: job.name,
+                                      subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
+                                      amount: cost,
+                                    })
+                                  }
                                   className="px-2 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 font-medium text-[11px]"
                                   title="Mark In Review"
                                 >
@@ -507,7 +590,15 @@ export function ApprovalsView() {
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => handleReviewJob(job.id)}
+                                onClick={() =>
+                                  setActionConfirm({
+                                    type: "review_job",
+                                    id: job.id,
+                                    title: job.name,
+                                    subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
+                                    amount: cost,
+                                  })
+                                }
                                 className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
                                 title="Re-open Review"
                               >
@@ -522,9 +613,22 @@ export function ApprovalsView() {
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
-      )}
+
+            <Pagination
+              currentPage={jobPage}
+              totalPages={totalJobPages}
+              totalItems={filteredJobs.length}
+              pageSize={jobPageSize}
+              onPageChange={setJobPage}
+              onPageSizeChange={(newSize) => {
+                setJobPageSize(newSize);
+                setJobPage(1);
+              }}
+            />
+          </>
+        )}
+      </div>
+    )}
 
       {/* ================= MODAL: INSPECT INVOICE ================= */}
       {inspectingInvoice && (
@@ -587,14 +691,28 @@ export function ApprovalsView() {
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
               <button
                 type="button"
-                onClick={() => handleRejectInvoice(inspectingInvoice.id)}
+                onClick={() => {
+                  setActionConfirm({
+                    type: "reject_invoice",
+                    id: inspectingInvoice.id,
+                    title: inspectingInvoice.invoiceName,
+                    amount: inspectingInvoice.totalValue,
+                  });
+                }}
                 className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-semibold"
               >
                 Mark Hold / Under Review
               </button>
               <button
                 type="button"
-                onClick={() => handleApproveInvoice(inspectingInvoice.id)}
+                onClick={() => {
+                  setActionConfirm({
+                    type: "approve_invoice",
+                    id: inspectingInvoice.id,
+                    title: inspectingInvoice.invoiceName,
+                    amount: inspectingInvoice.totalValue,
+                  });
+                }}
                 className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs"
               >
                 Approve & Authorize Invoice
@@ -669,17 +787,109 @@ export function ApprovalsView() {
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
               <button
                 type="button"
-                onClick={() => handleReviewJob(inspectingJob.id)}
+                onClick={() => {
+                  setActionConfirm({
+                    type: "review_job",
+                    id: inspectingJob.id,
+                    title: inspectingJob.name,
+                    subtitle: `Job Code: ${inspectingJob.jobCode || "—"}`,
+                  });
+                }}
                 className="px-3 py-1.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 text-xs font-semibold"
               >
                 Mark In Review
               </button>
               <button
                 type="button"
-                onClick={() => handleApproveJob(inspectingJob.id)}
+                onClick={() => {
+                  setActionConfirm({
+                    type: "approve_job",
+                    id: inspectingJob.id,
+                    title: inspectingJob.name,
+                    subtitle: `Job Code: ${inspectingJob.jobCode || "—"}`,
+                  });
+                }}
                 className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs"
               >
                 Approve & Activate Job
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ================= MODAL: ACTION CONFIRMATION DIALOG ================= */}
+      {actionConfirm && (
+        <Modal
+          isOpen={true}
+          onClose={() => {
+            setActionConfirm(null);
+            setActionNotes("");
+          }}
+          title={
+            actionConfirm.type === "approve_invoice"
+              ? "Authorize Vendor Invoice"
+              : actionConfirm.type === "reject_invoice"
+              ? "Place Invoice on Hold"
+              : actionConfirm.type === "approve_job"
+              ? "Authorize Project Job"
+              : "Mark Job in Review"
+          }
+          maxWidth="sm"
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-1">
+              <p className="text-xs font-bold text-slate-900">{actionConfirm.title}</p>
+              {actionConfirm.subtitle && (
+                <p className="text-[11px] text-slate-500">{actionConfirm.subtitle}</p>
+              )}
+              {actionConfirm.amount !== undefined && (
+                <p className="text-sm font-bold text-blue-600 pt-1">
+                  Rs. {actionConfirm.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {actionConfirm.type.startsWith("approve")
+                  ? "Authorization Remarks (Optional)"
+                  : "Reason for Hold / Return (Required)"}
+              </label>
+              <textarea
+                rows={2}
+                value={actionNotes}
+                onChange={(e) => setActionNotes(e.target.value)}
+                placeholder={
+                  actionConfirm.type.startsWith("approve")
+                    ? "Add authorization comments..."
+                    : "Specify the discrepancy or reason for hold..."
+                }
+                className="w-full rounded-lg border border-slate-200 p-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => {
+                  setActionConfirm(null);
+                  setActionNotes("");
+                }}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteAction}
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold text-white shadow-xs transition-colors ${
+                  actionConfirm.type.startsWith("approve")
+                    ? "bg-emerald-600 hover:bg-emerald-700"
+                    : "bg-rose-600 hover:bg-rose-700"
+                }`}
+              >
+                {actionConfirm.type.startsWith("approve") ? "Confirm Authorization" : "Confirm Hold"}
               </button>
             </div>
           </div>

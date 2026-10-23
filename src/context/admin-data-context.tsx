@@ -83,6 +83,7 @@ interface AdminDataContextType {
   totalSuppliersCount: number;
   totalInvoicesCount: number;
   totalInvoiceValue: number;
+  pendingApprovalsCount: number;
 }
 
 const AdminDataContext = createContext<AdminDataContextType | undefined>(undefined);
@@ -446,6 +447,12 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     return invoices.reduce((acc, curr) => acc + curr.totalValue, 0);
   }, [invoices]);
 
+  const pendingApprovalsCount = useMemo(() => {
+    const invCount = invoices.filter((i) => i.status === "Pending" || i.status === "Under Review").length;
+    const jobCount = jobs.filter((j) => j.status === "Pending" || j.status === "In Review").length;
+    return invCount + jobCount;
+  }, [invoices, jobs]);
+
   const value = useMemo(
     () => ({
       jobs,
@@ -487,6 +494,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       totalSuppliersCount,
       totalInvoicesCount,
       totalInvoiceValue,
+      pendingApprovalsCount,
     }),
     [
       jobs,
@@ -528,6 +536,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       totalSuppliersCount,
       totalInvoicesCount,
       totalInvoiceValue,
+      pendingApprovalsCount,
     ]
   );
 

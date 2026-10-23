@@ -20,6 +20,9 @@ import {
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { Modal } from "@/components/admin/ui/modal";
+import { Pagination } from "@/components/admin/ui/pagination";
+import { SearchField } from "@/components/admin/ui/search-field";
+import { FilterSelect } from "@/components/admin/ui/filter-controls";
 import { BulkInvoiceUploadModal } from "@/components/admin/modals/bulk-invoice-upload-modal";
 import {
   exportInvoicesToCsv,
@@ -42,6 +45,10 @@ export function InvoicesView() {
   const [jobFilter, setJobFilter] = useState("all");
   const [supplierFilter, setSupplierFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   // Selection for Bulk Download
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
@@ -84,6 +91,12 @@ export function InvoicesView() {
       return matchSearch && matchJob && matchSupplier && matchStatus;
     });
   }, [invoices, searchTerm, jobFilter, supplierFilter, statusFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredInvoices.length / pageSize));
+  const paginatedInvoices = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredInvoices.slice(start, start + pageSize);
+  }, [filteredInvoices, currentPage, pageSize]);
 
   return (
     <div className="space-y-5">
@@ -147,76 +160,60 @@ export function InvoicesView() {
         </div>
       </div>
 
-      {/* Filter Bar */}
+      {/* Reusable Filter Bar */}
       <div className="bg-white rounded-xl border border-slate-200 p-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
           {/* Search */}
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search invoice name..."
-              className="h-9 w-full rounded-lg border border-slate-200 pl-8 pr-7 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-            />
-            {searchTerm && (
-              <button
-                type="button"
-                onClick={() => setSearchTerm("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
+          <SearchField
+            value={searchTerm}
+            onChange={(val) => {
+              setSearchTerm(val);
+              setCurrentPage(1);
+            }}
+            placeholder="Search invoice or file name..."
+          />
 
           {/* Job Filter */}
-          <div>
-            <select
-              value={jobFilter}
-              onChange={(e) => setJobFilter(e.target.value)}
-              className="h-9 w-full rounded-lg border border-slate-200 px-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-            >
-              <option value="all">All Jobs</option>
-              {jobs.map((j) => (
-                <option key={j.id} value={j.id}>
-                  {j.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <FilterSelect
+            value={jobFilter}
+            onChange={(val) => {
+              setJobFilter(val);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: "all", label: "All Jobs" },
+              ...jobs.map((j) => ({ value: j.id, label: j.name })),
+            ]}
+          />
 
           {/* Supplier Filter */}
-          <div>
-            <select
-              value={supplierFilter}
-              onChange={(e) => setSupplierFilter(e.target.value)}
-              className="h-9 w-full rounded-lg border border-slate-200 px-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-            >
-              <option value="all">All Suppliers</option>
-              {suppliers.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.code})
-                </option>
-              ))}
-            </select>
-          </div>
+          <FilterSelect
+            value={supplierFilter}
+            onChange={(val) => {
+              setSupplierFilter(val);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: "all", label: "All Suppliers" },
+              ...suppliers.map((s) => ({ value: s.id, label: `${s.name} (${s.code})` })),
+            ]}
+          />
 
           {/* Status Filter */}
-          <div>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="h-9 w-full rounded-lg border border-slate-200 px-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-            >
-              <option value="all">All Statuses</option>
-              <option value="Pending">Pending</option>
-              <option value="Approved">Approved</option>
-              <option value="Under Review">Under Review</option>
-              <option value="Paid">Paid</option>
-            </select>
-          </div>
+          <FilterSelect
+            value={statusFilter}
+            onChange={(val) => {
+              setStatusFilter(val);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: "all", label: "All Statuses" },
+              { value: "Pending", label: "Pending" },
+              { value: "Approved", label: "Approved" },
+              { value: "Under Review", label: "Under Review" },
+              { value: "Paid", label: "Paid" },
+            ]}
+          />
         </div>
       </div>
 
@@ -268,7 +265,8 @@ export function InvoicesView() {
             No invoices found. Click "Bulk Upload Invoices" to add some.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
                 <tr>
@@ -307,7 +305,7 @@ export function InvoicesView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredInvoices.map((inv) => {
+                {paginatedInvoices.map((inv) => {
                   const job = jobs.find((j) => j.id === inv.jobId);
                   const supplier = suppliers.find((s) => s.id === inv.supplierId);
                   const isSelected = selectedInvoiceIds.includes(inv.id);
@@ -451,7 +449,20 @@ export function InvoicesView() {
               </tbody>
             </table>
           </div>
-        )}
+
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filteredInvoices.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize);
+              setCurrentPage(1);
+            }}
+          />
+        </>
+      )}
       </div>
 
       {/* Bulk Upload Modal */}

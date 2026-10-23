@@ -3,13 +3,13 @@
 import React, { useState, useMemo } from "react";
 import {
   Plus,
-  Search,
   Edit2,
   Trash2,
-  X,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
+import { Pagination } from "@/components/admin/ui/pagination";
+import { SearchField } from "@/components/admin/ui/search-field";
 import { RegisterSupplierModal } from "@/components/admin/modals/register-supplier-modal";
 import { Supplier } from "@/types/admin";
 
@@ -18,6 +18,10 @@ export function SuppliersView() {
 
   // Search
   const [searchTerm, setSearchTerm] = useState("");
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   // Modals
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
@@ -78,6 +82,12 @@ export function SuppliersView() {
     );
   }, [suppliers, searchTerm]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredSuppliers.length / pageSize));
+  const paginatedSuppliers = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredSuppliers.slice(start, start + pageSize);
+  }, [filteredSuppliers, currentPage, pageSize]);
+
   return (
     <div className="space-y-5">
       {/* Header Bar */}
@@ -102,24 +112,15 @@ export function SuppliersView() {
       {/* Search Toolbar */}
       <div className="bg-white rounded-xl border border-slate-200 p-3">
         <div className="flex items-center justify-between gap-3">
-          <div className="relative w-full max-w-sm">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-            <input
-              type="text"
+          <div className="w-full max-w-sm">
+            <SearchField
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by name, code, contact..."
-              className="h-9 w-full rounded-lg border border-slate-200 pl-8 pr-7 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+              onChange={(val) => {
+                setSearchTerm(val);
+                setCurrentPage(1);
+              }}
+              placeholder="Search by name, code, contact person..."
             />
-            {searchTerm && (
-              <button
-                type="button"
-                onClick={() => setSearchTerm("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
           </div>
 
           <span className="text-xs text-slate-500 shrink-0">
@@ -135,7 +136,8 @@ export function SuppliersView() {
             No suppliers found. Click "Register New Supplier" to add one.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
                 <tr>
@@ -149,7 +151,7 @@ export function SuppliersView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredSuppliers.map((s) => {
+                {paginatedSuppliers.map((s) => {
                   const jobCount = jobs.filter((j) => j.supplierIds.includes(s.id)).length;
 
                   return (
@@ -205,7 +207,20 @@ export function SuppliersView() {
               </tbody>
             </table>
           </div>
-        )}
+
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filteredSuppliers.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize);
+              setCurrentPage(1);
+            }}
+          />
+        </>
+      )}
       </div>
 
       {/* Register Supplier Modal */}

@@ -1,14 +1,16 @@
-import React, { Suspense } from "react";
+import React, { Suspense, use } from "react";
 import { JobDetailsView } from "@/components/admin/views/job-details-view";
 
 interface PageProps {
   params: Promise<{ id: string }>;
 }
 
-export default async function JobDetailsPage({ params }: PageProps) {
-  const resolvedParams = await params;
-  const id = resolvedParams.id || "";
+function JobDetailsContent({ params }: PageProps) {
+  const { id } = use(params);
+  return <JobDetailsView jobId={id || ""} />;
+}
 
+export default function JobDetailsPage({ params }: PageProps) {
   return (
     <Suspense
       fallback={
@@ -17,7 +19,7 @@ export default async function JobDetailsPage({ params }: PageProps) {
         </div>
       }
     >
-      <JobDetailsView jobId={id} />
+      <JobDetailsContent params={params} />
     </Suspense>
   );
 }
