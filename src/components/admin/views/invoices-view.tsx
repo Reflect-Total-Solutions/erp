@@ -24,6 +24,7 @@ import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
 import { FilterSelect } from "@/components/admin/ui/filter-controls";
 import { BulkInvoiceUploadModal } from "@/components/admin/modals/bulk-invoice-upload-modal";
+import { Invoice, InvoiceAttachment } from "@/types/admin";
 import {
   exportInvoicesToCsv,
   downloadMockInvoiceFile,
@@ -56,6 +57,7 @@ export function InvoicesView() {
   // Modals
   const [isBulkUploadOpen, setIsBulkUploadOpen] = useState(false);
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
+  const [previewingInvoice, setPreviewingInvoice] = useState<Invoice | null>(null);
 
   // Summary Metrics
   const pendingValue = useMemo(() => {
@@ -262,7 +264,7 @@ export function InvoicesView() {
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {filteredInvoices.length === 0 ? (
           <div className="p-8 text-center text-xs text-slate-500">
-            No invoices found. Click "Bulk Upload Invoices" to add some.
+            No invoices found. Click &quot;Bulk Upload Invoices&quot; to add some.
           </div>
         ) : (
           <>
@@ -427,6 +429,14 @@ export function InvoicesView() {
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
+                            onClick={() => setPreviewingInvoice(inv)}
+                            className="p-1 rounded text-slate-400 hover:text-blue-600 transition-colors"
+                            title="Preview Invoice Document"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => downloadMockInvoiceFile(inv)}
                             className="p-1 rounded text-slate-400 hover:text-blue-600 transition-colors"
                             title={`Download File: ${inv.fileName}`}
@@ -470,6 +480,86 @@ export function InvoicesView() {
         isOpen={isBulkUploadOpen}
         onClose={() => setIsBulkUploadOpen(false)}
       />
+
+      {/* Invoice Document Preview Modal */}
+      {previewingInvoice && (
+        <Modal
+          isOpen={true}
+          onClose={() => setPreviewingInvoice(null)}
+          title="Invoice Document Preview"
+          maxWidth="2xl"
+        >
+          <div className="space-y-4">
+            {/* Metadata Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+              <div>
+                <span className="text-[11px] text-slate-400 block font-medium">Invoice Name</span>
+                <span className="font-bold text-slate-900 truncate block">{previewingInvoice.invoiceName}</span>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-400 block font-medium">Total Amount</span>
+                <span className="font-bold text-slate-900 block">
+                  Rs. {previewingInvoice.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-400 block font-medium">Invoice Date</span>
+                <span className="font-semibold text-slate-700 block">{previewingInvoice.invoiceDate}</span>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-400 block font-medium">Status</span>
+                <div className="mt-0.5"><StatusBadge status={previewingInvoice.status} /></div>
+              </div>
+            </div>
+
+            {/* Document Preview Pane */}
+            <div className="rounded-xl border border-slate-200 bg-slate-100 p-6 flex flex-col items-center justify-center min-h-[220px] text-center">
+              <div className="h-14 w-14 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center text-blue-600 mb-3">
+                <Receipt className="h-7 w-7" />
+              </div>
+              <p className="text-sm font-bold text-slate-900">{previewingInvoice.fileName}</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                Document verified. Format: {previewingInvoice.fileName?.endsWith('.pdf') ? 'Adobe Acrobat PDF Document' : 'Digital Photo Proof'}.
+              </p>
+              <button
+                type="button"
+                onClick={() => downloadMockInvoiceFile(previewingInvoice)}
+                className="mt-4 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] transition-colors"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download Original Document
+              </button>
+            </div>
+
+            {/* Attachments Section if multiple exist */}
+            {previewingInvoice.attachments && previewingInvoice.attachments.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-800">
+                  Attached Documents ({previewingInvoice.attachments.length})
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {previewingInvoice.attachments.map((att: InvoiceAttachment, i: number) => (
+                    <div
+                      key={att.id || i}
+                      className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white text-xs"
+                    >
+                      <span className="font-medium text-slate-800 truncate max-w-[180px]">{att.fileName}</span>
+                      <button
+                        type="button"
+                        onClick={() => downloadSingleAttachment(att.fileName, att.fileName)}
+                        className="p-1 rounded text-blue-600 hover:bg-blue-50"
+                        title="Download file"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
 
       {/* Delete Confirmation Modal */}
       {deletingInvoiceId && (

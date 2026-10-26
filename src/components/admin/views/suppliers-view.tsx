@@ -133,7 +133,7 @@ export function SuppliersView() {
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {filteredSuppliers.length === 0 ? (
           <div className="p-8 text-center text-xs text-slate-500">
-            No suppliers found. Click "Register New Supplier" to add one.
+            No suppliers found. Click &quot;Register New Supplier&quot; to add one.
           </div>
         ) : (
           <>

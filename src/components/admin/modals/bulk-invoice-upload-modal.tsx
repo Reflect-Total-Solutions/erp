@@ -54,14 +54,8 @@ export function BulkInvoiceUploadModal({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isDragging, setIsDragging] = useState(false);
 
-  // Sync selected job if prop changes
-  useEffect(() => {
-    if (preselectedJobId) {
-      setSelectedJobId(preselectedJobId);
-    } else if (jobs[0]?.id) {
-      setSelectedJobId(jobs[0].id);
-    }
-  }, [preselectedJobId, jobs]);
+  // Selected job id is synced directly from props or state
+  const activeJobId = preselectedJobId || selectedJobId || (jobs[0]?.id ?? "");
 
   // Handle file selection
   const handleFiles = (files: FileList | null) => {
@@ -87,7 +81,7 @@ export function BulkInvoiceUploadModal({
       const isImg = /\.(jpg|jpeg|png|webp)$/i.test(file.name);
 
       // Select default supplier if available
-      const job = jobs.find((j) => j.id === (preselectedJobId || selectedJobId));
+      const job = jobs.find((j) => j.id === (preselectedJobId || activeJobId));
       const firstSupplierId = (job?.supplierIds && job.supplierIds[0]) || suppliers[0]?.id || "";
 
       return {
@@ -101,7 +95,7 @@ export function BulkInvoiceUploadModal({
         invoiceDate: today,
         totalValue: "",
         supplierId: firstSupplierId,
-        jobId: preselectedJobId || selectedJobId,
+        jobId: preselectedJobId || activeJobId,
         status: "Pending" as InvoiceStatus,
       };
     });
@@ -213,7 +207,7 @@ export function BulkInvoiceUploadModal({
             <div className="relative">
               <Briefcase className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
               <select
-                value={selectedJobId}
+                value={activeJobId}
                 onChange={(e) => {
                   setSelectedJobId(e.target.value);
                   setStagedInvoices((prev) =>

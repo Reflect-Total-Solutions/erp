@@ -1,9 +1,8 @@
 "use client";
 
 import React from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Menu, LogOut, Sun, Moon } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Menu, LogOut, Sun, Moon, Loader2 } from "lucide-react";
 import { useTheme } from "@/context/theme-context";
 
 interface HeaderProps {
@@ -12,7 +11,9 @@ interface HeaderProps {
 
 export function AdminHeader({ onOpenSidebar }: HeaderProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const { theme, toggleTheme } = useTheme();
+  const [loggingOut, setLoggingOut] = React.useState(false);
 
   const getPageTitle = () => {
     if (pathname === "/admin") return "Dashboard";
@@ -24,6 +25,26 @@ export function AdminHeader({ onOpenSidebar }: HeaderProps) {
     if (pathname === "/admin/access-control") return "Access Control & Permissions";
     if (pathname === "/admin/audit-controller") return "Audit Controller & Compliance";
     return "Admin Panel";
+  };
+
+  const handleLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      // Ignore network errors on logout
+    } finally {
+      // Clear session cookie and storage
+      document.cookie = "erp_session=; path=/; max-age=0; SameSite=Lax";
+      try {
+        sessionStorage.clear();
+        localStorage.clear();
+      } catch {
+        // Ignore storage clear errors
+      }
+      window.location.replace("/?logged_out=1");
+    }
   };
 
   return (
@@ -69,13 +90,19 @@ export function AdminHeader({ onOpenSidebar }: HeaderProps) {
           )}
         </button>
 
-        <Link
-          href="/"
-          className="text-xs font-medium text-slate-600 hover:text-rose-600 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 flex items-center gap-1.5 transition-colors"
+        <button
+          type="button"
+          onClick={handleLogout}
+          disabled={loggingOut}
+          className="text-xs font-medium text-slate-600 hover:text-rose-600 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 flex items-center gap-1.5 transition-colors disabled:opacity-60"
         >
-          <LogOut className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Logout</span>
-        </Link>
+          {loggingOut ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <LogOut className="h-3.5 w-3.5" />
+          )}
+          <span className="hidden sm:inline">{loggingOut ? "Logging out..." : "Logout"}</span>
+        </button>
       </div>
     </header>
   );

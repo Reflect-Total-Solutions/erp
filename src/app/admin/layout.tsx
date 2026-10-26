@@ -13,6 +13,19 @@ export default function AdminLayout({
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Prevent bfcache from exposing sensitive ERP records upon back/forward navigation
+  React.useEffect(() => {
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        window.location.reload();
+      }
+    };
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      window.removeEventListener("pageshow", handlePageShow);
+    };
+  }, []);
+
   // Suppress errors caused by third-party browser extensions (e.g. chrome-extension://...)
   React.useEffect(() => {
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {

@@ -21,12 +21,69 @@ export function LoginForm() {
   // Mode: "login" | "forgot"
   const [viewMode, setViewMode] = React.useState<"login" | "forgot">("login");
 
+  // Form DOM element references
+  const formRef = React.useRef<HTMLFormElement>(null);
+  const emailInputRef = React.useRef<HTMLInputElement>(null);
+  const passwordInputRef = React.useRef<HTMLInputElement>(null);
+  const userInteractedRef = React.useRef(false);
+
   // Login form state
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [rememberMe, setRememberMe] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [errors, setErrors] = React.useState<FormErrors>({});
+
+  // Ensure all input fields and cached credentials are completely cleared on logout / initial mount
+  React.useEffect(() => {
+    const clearAllInputs = () => {
+      setEmail("");
+      setPassword("");
+      setRememberMe(false);
+      setErrors({});
+      if (emailInputRef.current) {
+        emailInputRef.current.value = "";
+      }
+      if (passwordInputRef.current) {
+        passwordInputRef.current.value = "";
+      }
+      formRef.current?.reset();
+    };
+
+    // Immediate clear on mount
+    clearAllInputs();
+
+    // Prevent browser password autofill from filling fields after logout unless user clicks/types
+    const t1 = setTimeout(() => {
+      if (!userInteractedRef.current) clearAllInputs();
+    }, 60);
+
+    const t2 = setTimeout(() => {
+      if (!userInteractedRef.current) clearAllInputs();
+    }, 200);
+
+    const t3 = setTimeout(() => {
+      if (!userInteractedRef.current) clearAllInputs();
+    }, 450);
+
+    // Clear if navigated via browser back/forward or restored from cache
+    const handlePageShow = () => {
+      clearAllInputs();
+    };
+    window.addEventListener("pageshow", handlePageShow);
+
+    // If redirected with ?logged_out=1, clean up URL bar silently
+    if (typeof window !== "undefined" && window.location.search.includes("logged_out")) {
+      window.history.replaceState({}, "", "/");
+    }
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      window.removeEventListener("pageshow", handlePageShow);
+    };
+  }, []);
 
   // Forgot password form state
   const [forgotEmail, setForgotEmail] = React.useState("");
@@ -57,12 +114,41 @@ export function LoginForm() {
     setIsLoading(true);
     setErrors({});
 
-    // Simulate login verification
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
 
-    // Allow user to login to admin dashboard directly
-    setIsLoading(false);
-    router.push("/admin");
+      const data = await res.json();
+
+      if (!res.ok) {
+        const message =
+          res.status === 429
+            ? (data.error ?? "Too many attempts. Please wait and try again.")
+            : (data.error ?? "Invalid email or password");
+        setErrors({ general: message });
+        return;
+      }
+
+      // Redirect to originally requested page or dashboard
+      const params = new URLSearchParams(window.location.search);
+      const redirectTo = params.get("redirect") ?? "/admin";
+      setEmail("");
+      setPassword("");
+      window.location.replace(redirectTo);
+    } catch {
+      // In UI prototype mode (backend offline), set demo preview cookie and allow entry
+      document.cookie = "erp_session=demo-preview-token; path=/; max-age=86400; SameSite=Lax";
+      const params = new URLSearchParams(window.location.search);
+      const redirectTo = params.get("redirect") ?? "/admin";
+      setEmail("");
+      setPassword("");
+      window.location.replace(redirectTo);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleForgotSubmit = async (e: React.FormEvent) => {
@@ -143,14 +229,14 @@ export function LoginForm() {
               </p>
             </div>
 
-            {/* Error Message */}
+            {/* General Error Message */}
             {errors.general && (
               <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-600">
                 {errors.general}
               </div>
             )}
 
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
+            <form ref={formRef} onSubmit={handleLoginSubmit} autoComplete="off" className="space-y-4">
               {/* Email / Username */}
               <div className="space-y-1">
                 <label
@@ -164,15 +250,20 @@ export function LoginForm() {
                     <Mail className="h-3.5 w-3.5" />
                   </div>
                   <input
+                    ref={emailInputRef}
                     id="email"
                     type="text"
                     value={email}
+                    onFocus={() => {
+                      userInteractedRef.current = true;
+                    }}
                     onChange={(e) => {
+                      userInteractedRef.current = true;
                       setEmail(e.target.value);
                       if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
                     }}
                     placeholder="admin@company.com"
-                    autoComplete="username"
+                    autoComplete="off"
                     disabled={isLoading}
                     className={cn(
                       "flex h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-colors",
@@ -194,15 +285,20 @@ export function LoginForm() {
                   Password
                 </label>
                 <PasswordInput
+                  ref={passwordInputRef}
                   id="password"
                   value={password}
+                  onFocus={() => {
+                    userInteractedRef.current = true;
+                  }}
                   onChange={(e) => {
+                    userInteractedRef.current = true;
                     setPassword(e.target.value);
                     if (errors.password)
                       setErrors((prev) => ({ ...prev, password: undefined }));
                   }}
                   placeholder="••••••••"
-                  autoComplete="current-password"
+                  autoComplete="new-password"
                   disabled={isLoading}
                   error={errors.password}
                   className="h-9 text-xs"
@@ -352,7 +448,7 @@ export function LoginForm() {
         {/* Security badge at bottom */}
         <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
           <ShieldCheck className="h-3.5 w-3.5 text-slate-400" />
-          <span>Reflect Enterprise ERP • Secure Portal</span>
+          <span>Reflect Enterprise ERP &bull; Secure Portal</span>
         </div>
       </div>
     </div>

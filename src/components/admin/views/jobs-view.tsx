@@ -268,7 +268,7 @@ export function JobsView() {
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {filteredJobs.length === 0 ? (
           <div className="p-8 text-center text-xs text-slate-500">
-            No jobs match your search. Click "Create New Job" above to add one.
+            No jobs match your search. Click &quot;Create New Job&quot; above to add one.
           </div>
         ) : (
           <>

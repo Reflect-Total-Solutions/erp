@@ -69,12 +69,12 @@ interface SidebarProps {
 
 export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
-  const [mounted, setMounted] = React.useState(false);
+  const mounted = React.useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
   const { pendingApprovalsCount } = useAdminData();
-
-  React.useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const isLinkActive = (itemHref: string, exact: boolean) => {
     if (exact) {

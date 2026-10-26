@@ -659,7 +659,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
             {jobSuppliers.length === 0 ? (
               <div className="p-6 text-center text-xs text-slate-500">
-                No suppliers assigned yet. Click "Add Supplier to Job" above.
+                No suppliers assigned yet. Click &quot;Add Supplier to Job&quot; above.
               </div>
             ) : (
               <table className="w-full text-left text-xs">

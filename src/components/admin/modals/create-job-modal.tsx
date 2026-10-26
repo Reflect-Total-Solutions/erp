@@ -45,7 +45,7 @@ const INITIAL_STAGED_ROW: StagedJobItem = {
 export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModalProps) {
   const { jobs, addJob, addExcelFiles } = useAdminData();
 
-  const [currentDate, setCurrentDate] = useState("");
+  const [currentDate] = useState(() => (typeof window !== "undefined" ? new Date().toISOString().split("T")[0] : "2026-10-23"));
   const [stagedItems, setStagedItems] = useState<StagedJobItem[]>([INITIAL_STAGED_ROW]);
   const [isDragging, setIsDragging] = useState(false);
   const [errors, setErrors] = useState<Record<string, { jobName?: string; jobDate?: string }>>({});
@@ -69,20 +69,12 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
     };
   };
 
-  // Safe client-side date initialization
-  useEffect(() => {
+  // Initialized without cascading effects
+  const resetRows = () => {
     const today = new Date().toISOString().split("T")[0];
-    setCurrentDate(today);
-  }, []);
-
-  // Reset or initialize when modal opens
-  useEffect(() => {
-    if (isOpen) {
-      const today = new Date().toISOString().split("T")[0];
-      setStagedItems([createEmptyRow(0, today)]);
-      setErrors({});
-    }
-  }, [isOpen]);
+    setStagedItems([createEmptyRow(0, today)]);
+    setErrors({});
+  };
 
   // Handle selecting multiple files in bulk
   const handleBulkFiles = (files: FileList | null) => {
