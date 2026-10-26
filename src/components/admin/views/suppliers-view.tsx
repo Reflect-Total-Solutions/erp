@@ -5,6 +5,16 @@ import {
   Plus,
   Edit2,
   Trash2,
+  RotateCcw,
+  AlertTriangle,
+  Building2,
+  Hash,
+  User,
+  Phone,
+  Mail,
+  MapPin,
+  Archive,
+  CheckCircle2,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
@@ -12,9 +22,21 @@ import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
 import { RegisterSupplierModal } from "@/components/admin/modals/register-supplier-modal";
 import { Supplier } from "@/types/admin";
+import { supplierCreateSchema } from "@/lib/validations/supplier";
 
 export function SuppliersView() {
-  const { suppliers, jobs, updateSupplier, deleteSupplier } = useAdminData();
+  const {
+    suppliers,
+    jobs,
+    updateSupplier,
+    softDeleteSupplier,
+    restoreSupplier,
+    permanentlyDeleteSupplier,
+    showToast,
+  } = useAdminData();
+
+  // Tab: "active" | "trash"
+  const [activeTab, setActiveTab] = useState<"active" | "trash">("active");
 
   // Search
   const [searchTerm, setSearchTerm] = useState("");
@@ -26,7 +48,8 @@ export function SuppliersView() {
   // Modals
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
-  const [deletingSupplierId, setDeletingSupplierId] = useState<string | null>(null);
+  const [softDeletingSupplier, setSoftDeletingSupplier] = useState<Supplier | null>(null);
+  const [permanentDeletingSupplier, setPermanentDeletingSupplier] = useState<Supplier | null>(null);
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -35,6 +58,7 @@ export function SuppliersView() {
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editAddress, setEditAddress] = useState("");
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
 
   const handleOpenEdit = (sup: Supplier) => {
     setEditingSupplier(sup);
@@ -44,43 +68,117 @@ export function SuppliersView() {
     setEditPhone(sup.phone);
     setEditEmail(sup.email);
     setEditAddress(sup.address);
+    setEditErrors({});
+  };
+
+  const validateEdit = (): boolean => {
+    if (!editingSupplier) return false;
+    const errs: Record<string, string> = {};
+
+    const trimmedCode = editCode.trim().toUpperCase();
+    const trimmedEmail = editEmail.trim().toLowerCase();
+
+    // 1. Deep Schema validation via Zod
+    const parsed = supplierCreateSchema.safeParse({
+      name: editName,
+      code: trimmedCode,
+      contactPerson: editContact,
+      phone: editPhone,
+      email: trimmedEmail,
+      address: editAddress,
+      isActive: true,
+    });
+
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        const key = issue.path[0] ? String(issue.path[0]) : "general";
+        if (!errs[key]) {
+          errs[key] = issue.message;
+        }
+      }
+    }
+
+    // 2. Uniqueness checks among other active suppliers
+    if (!errs.code) {
+      const duplicateCode = suppliers.some(
+        (s) => s.id !== editingSupplier.id && !s.isDeleted && s.code.toUpperCase() === trimmedCode
+      );
+      if (duplicateCode) {
+        errs.code = `Code "${trimmedCode}" is already in use by another active supplier.`;
+      }
+    }
+
+    if (!errs.email) {
+      const duplicateEmail = suppliers.some(
+        (s) => s.id !== editingSupplier.id && !s.isDeleted && s.email.toLowerCase() === trimmedEmail
+      );
+      if (duplicateEmail) {
+        errs.email = `Email "${trimmedEmail}" is already in use by another active supplier.`;
+      }
+    }
+
+    setEditErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      showToast("Validation Error", "Please correct the highlighted form errors.", "error");
+      return false;
+    }
+    return true;
   };
 
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingSupplier) return;
+    if (!validateEdit() || !editingSupplier) return;
 
     updateSupplier(editingSupplier.id, {
       name: editName.trim(),
       code: editCode.trim().toUpperCase(),
       contactPerson: editContact.trim(),
       phone: editPhone.trim(),
-      email: editEmail.trim(),
+      email: editEmail.trim().toLowerCase(),
       address: editAddress.trim(),
     });
     setEditingSupplier(null);
   };
 
-  const handleConfirmDelete = () => {
-    if (deletingSupplierId) {
-      deleteSupplier(deletingSupplierId);
-      setDeletingSupplierId(null);
+  const handleConfirmSoftDelete = () => {
+    if (softDeletingSupplier) {
+      softDeleteSupplier(softDeletingSupplier.id);
+      setSoftDeletingSupplier(null);
     }
   };
 
-  // Filtered suppliers
+  const handleConfirmPermanentDelete = () => {
+    if (permanentDeletingSupplier) {
+      permanentlyDeleteSupplier(permanentDeletingSupplier.id);
+      setPermanentDeletingSupplier(null);
+    }
+  };
+
+  // Counts
+  const activeCount = useMemo(() => suppliers.filter((s) => !s.isDeleted).length, [suppliers]);
+  const trashCount = useMemo(() => suppliers.filter((s) => s.isDeleted).length, [suppliers]);
+
+  // Filtered suppliers based on tab and search
+  const tabSuppliers = useMemo(() => {
+    if (activeTab === "active") {
+      return suppliers.filter((s) => !s.isDeleted);
+    }
+    return suppliers.filter((s) => s.isDeleted);
+  }, [suppliers, activeTab]);
+
   const filteredSuppliers = useMemo(() => {
     const q = searchTerm.toLowerCase().trim();
-    if (!q) return suppliers;
+    if (!q) return tabSuppliers;
 
-    return suppliers.filter(
+    return tabSuppliers.filter(
       (s) =>
         s.name.toLowerCase().includes(q) ||
         s.code.toLowerCase().includes(q) ||
         s.contactPerson.toLowerCase().includes(q) ||
-        s.email.toLowerCase().includes(q)
+        s.email.toLowerCase().includes(q) ||
+        s.phone.toLowerCase().includes(q)
     );
-  }, [suppliers, searchTerm]);
+  }, [tabSuppliers, searchTerm]);
 
   const totalPages = Math.max(1, Math.ceil(filteredSuppliers.length / pageSize));
   const paginatedSuppliers = useMemo(() => {
@@ -95,132 +193,211 @@ export function SuppliersView() {
         <div>
           <h2 className="text-xl font-bold text-slate-900">Supplier Registry</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Registered trade vendors and service contractors.
+            Registered trade vendors, contractors, and procurement partners.
           </p>
         </div>
 
         <button
           type="button"
           onClick={() => setIsRegisterOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors shrink-0"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors shrink-0 shadow-xs cursor-pointer"
         >
           <Plus className="h-4 w-4" />
           Register New Supplier
         </button>
       </div>
 
-      {/* Search Toolbar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="w-full max-w-sm">
+      {/* Tabs & Search Toolbar */}
+      <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          {/* Active vs Trash View Toggle */}
+          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("active");
+                setCurrentPage(1);
+              }}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === "active"
+                  ? "bg-white text-blue-600 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              <span>Active Suppliers</span>
+              <span className="rounded-full bg-blue-100 text-blue-700 px-1.5 py-0.2 text-[10px] font-bold">
+                {activeCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("trash");
+                setCurrentPage(1);
+              }}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === "trash"
+                  ? "bg-white text-rose-600 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Archive className="h-3.5 w-3.5" />
+              <span>Trash / Archived</span>
+              <span className="rounded-full bg-slate-200 text-slate-700 px-1.5 py-0.2 text-[10px] font-bold">
+                {trashCount}
+              </span>
+            </button>
+          </div>
+
+          <div className="w-full sm:w-72">
             <SearchField
               value={searchTerm}
               onChange={(val) => {
                 setSearchTerm(val);
                 setCurrentPage(1);
               }}
-              placeholder="Search by name, code, contact person..."
+              placeholder="Search by name, code, contact..."
             />
           </div>
-
-          <span className="text-xs text-slate-500 shrink-0">
-            Total: <strong>{filteredSuppliers.length}</strong> suppliers
-          </span>
         </div>
       </div>
 
       {/* Suppliers Table */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
         {filteredSuppliers.length === 0 ? (
-          <div className="p-8 text-center text-xs text-slate-500">
-            No suppliers found. Click &quot;Register New Supplier&quot; to add one.
+          <div className="p-10 text-center text-xs text-slate-500">
+            {activeTab === "active" ? (
+              <div>
+                <Building2 className="h-8 w-8 mx-auto text-slate-300 mb-2" />
+                <p className="font-semibold text-slate-700">No active suppliers found</p>
+                <p className="text-slate-400 mt-0.5">Click &quot;Register New Supplier&quot; to add your first supplier.</p>
+              </div>
+            ) : (
+              <div>
+                <Archive className="h-8 w-8 mx-auto text-slate-300 mb-2" />
+                <p className="font-semibold text-slate-700">Trash is empty</p>
+                <p className="text-slate-400 mt-0.5">No suppliers have been soft-deleted.</p>
+              </div>
+            )}
           </div>
         ) : (
           <>
             <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
-                <tr>
-                  <th className="px-5 py-3">Code</th>
-                  <th className="px-4 py-3">Supplier Name</th>
-                  <th className="px-4 py-3">Contact Person</th>
-                  <th className="px-4 py-3">Phone</th>
-                  <th className="px-4 py-3">Email</th>
-                  <th className="px-4 py-3 text-center">Assigned Jobs</th>
-                  <th className="px-5 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {paginatedSuppliers.map((s) => {
-                  const jobCount = jobs.filter((j) => j.supplierIds.includes(s.id)).length;
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="px-5 py-3">Code</th>
+                    <th className="px-4 py-3">Supplier Name</th>
+                    <th className="px-4 py-3">Contact Person</th>
+                    <th className="px-4 py-3">Phone</th>
+                    <th className="px-4 py-3">Email</th>
+                    <th className="px-4 py-3 text-center">Status</th>
+                    <th className="px-5 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {paginatedSuppliers.map((s) => {
+                    const jobCount = jobs.filter((j) => j.supplierIds.includes(s.id)).length;
 
-                  return (
-                    <tr key={s.id} className="hover:bg-slate-50">
-                      <td className="px-5 py-3.5 font-mono font-bold text-blue-600">
-                        {s.code}
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <span className="font-semibold text-slate-900 block">
-                          {s.name}
-                        </span>
-                        <span className="text-[10px] text-slate-400 truncate block max-w-xs">
-                          {s.address}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3.5 text-slate-700 font-medium">
-                        {s.contactPerson}
-                      </td>
-                      <td className="px-4 py-3.5 text-slate-600 font-mono">
-                        {s.phone}
-                      </td>
-                      <td className="px-4 py-3.5 text-slate-600">
-                        {s.email}
-                      </td>
-                      <td className="px-4 py-3.5 text-center">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">
-                          {jobCount}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3.5 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(s)}
-                            className="p-1 rounded text-slate-500 hover:text-slate-800 hover:bg-slate-100"
-                            title="Edit"
-                          >
-                            <Edit2 className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setDeletingSupplierId(s.id)}
-                            className="p-1 rounded text-slate-500 hover:text-rose-600 hover:bg-slate-100"
-                            title="Delete"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                    return (
+                      <tr key={s.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="px-5 py-3.5 font-mono font-bold text-blue-600">
+                          {s.code}
+                        </td>
+                        <td className="px-4 py-3.5">
+                          <span className="font-semibold text-slate-900 block">
+                            {s.name}
+                          </span>
+                          <span className="text-[10px] text-slate-400 truncate block max-w-xs">
+                            {s.address}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3.5 text-slate-700 font-medium">
+                          {s.contactPerson}
+                        </td>
+                        <td className="px-4 py-3.5 text-slate-600 font-mono">
+                          {s.phone}
+                        </td>
+                        <td className="px-4 py-3.5 text-slate-600">
+                          {s.email}
+                        </td>
+                        <td className="px-4 py-3.5 text-center">
+                          {s.isDeleted ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
+                              Soft-Deleted
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                              Active ({jobCount} {jobCount === 1 ? "Job" : "Jobs"})
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-5 py-3.5 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {!s.isDeleted ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEdit(s)}
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                                  title="Edit Supplier"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSoftDeletingSupplier(s)}
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  title="Soft Delete Supplier"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => restoreSupplier(s.id)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer"
+                                  title="Restore to Active"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  <span>Restore</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPermanentDeletingSupplier(s)}
+                                  className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  title="Permanently Delete"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
 
-          <Pagination
-            currentPage={currentPage}
-            totalPages={totalPages}
-            totalItems={filteredSuppliers.length}
-            pageSize={pageSize}
-            onPageChange={setCurrentPage}
-            onPageSizeChange={(newSize) => {
-              setPageSize(newSize);
-              setCurrentPage(1);
-            }}
-          />
-        </>
-      )}
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={filteredSuppliers.length}
+              pageSize={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={(newSize) => {
+                setPageSize(newSize);
+                setCurrentPage(1);
+              }}
+            />
+          </>
+        )}
       </div>
 
       {/* Register Supplier Modal */}
@@ -234,101 +411,164 @@ export function SuppliersView() {
         <Modal
           isOpen={true}
           onClose={() => setEditingSupplier(null)}
-          title="Edit Supplier"
+          title="Edit Supplier Details"
+          description={`Update verified credentials for ${editingSupplier.name}.`}
           maxWidth="md"
         >
-          <form onSubmit={handleSaveEdit} className="space-y-3">
+          <form onSubmit={handleSaveEdit} className="space-y-3.5" noValidate>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Supplier Name *
+                Supplier Name <span className="text-rose-500">*</span>
               </label>
-              <input
-                type="text"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                required
-                className="h-8 w-full rounded border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-              />
+              <div className="relative">
+                <Building2 className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => {
+                    setEditName(e.target.value);
+                    if (editErrors.name) setEditErrors((prev) => ({ ...prev, name: "" }));
+                  }}
+                  className={`h-9 w-full rounded-lg border bg-white pl-8 pr-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 transition-colors ${
+                    editErrors.name
+                      ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/20"
+                      : "border-slate-200 focus:border-blue-600 focus:ring-blue-600/20"
+                  }`}
+                />
+              </div>
+              {editErrors.name && <p className="mt-1 text-[11px] text-rose-600">{editErrors.name}</p>}
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Code *
+                  Supplier Code <span className="text-rose-500">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={editCode}
-                  onChange={(e) => setEditCode(e.target.value)}
-                  required
-                  className="h-8 w-full rounded border border-slate-200 px-2.5 text-xs font-mono uppercase text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <Hash className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={editCode}
+                    onChange={(e) => {
+                      setEditCode(e.target.value.toUpperCase());
+                      if (editErrors.code) setEditErrors((prev) => ({ ...prev, code: "" }));
+                    }}
+                    className={`h-9 w-full rounded-lg border bg-white pl-8 pr-2.5 text-xs font-mono uppercase text-slate-900 focus:outline-none focus:ring-2 transition-colors ${
+                      editErrors.code
+                        ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/20"
+                        : "border-slate-200 focus:border-blue-600 focus:ring-blue-600/20"
+                    }`}
+                  />
+                </div>
+                {editErrors.code && <p className="mt-1 text-[11px] text-rose-600">{editErrors.code}</p>}
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Contact Person *
+                  Contact Person <span className="text-rose-500">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={editContact}
-                  onChange={(e) => setEditContact(e.target.value)}
-                  required
-                  className="h-8 w-full rounded border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <User className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={editContact}
+                    onChange={(e) => {
+                      setEditContact(e.target.value);
+                      if (editErrors.contact) setEditErrors((prev) => ({ ...prev, contact: "" }));
+                    }}
+                    className={`h-9 w-full rounded-lg border bg-white pl-8 pr-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 transition-colors ${
+                      editErrors.contact
+                        ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/20"
+                        : "border-slate-200 focus:border-blue-600 focus:ring-blue-600/20"
+                    }`}
+                  />
+                </div>
+                {editErrors.contact && <p className="mt-1 text-[11px] text-rose-600">{editErrors.contact}</p>}
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Phone *
+                  Phone Number <span className="text-rose-500">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={editPhone}
-                  onChange={(e) => setEditPhone(e.target.value)}
-                  required
-                  className="h-8 w-full rounded border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <Phone className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={editPhone}
+                    onChange={(e) => {
+                      setEditPhone(e.target.value);
+                      if (editErrors.phone) setEditErrors((prev) => ({ ...prev, phone: "" }));
+                    }}
+                    className={`h-9 w-full rounded-lg border bg-white pl-8 pr-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 transition-colors ${
+                      editErrors.phone
+                        ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/20"
+                        : "border-slate-200 focus:border-blue-600 focus:ring-blue-600/20"
+                    }`}
+                  />
+                </div>
+                {editErrors.phone && <p className="mt-1 text-[11px] text-rose-600">{editErrors.phone}</p>}
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Email *
+                  Email Address <span className="text-rose-500">*</span>
                 </label>
-                <input
-                  type="email"
-                  value={editEmail}
-                  onChange={(e) => setEditEmail(e.target.value)}
-                  required
-                  className="h-8 w-full rounded border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <Mail className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="email"
+                    value={editEmail}
+                    onChange={(e) => {
+                      setEditEmail(e.target.value);
+                      if (editErrors.email) setEditErrors((prev) => ({ ...prev, email: "" }));
+                    }}
+                    className={`h-9 w-full rounded-lg border bg-white pl-8 pr-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 transition-colors ${
+                      editErrors.email
+                        ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/20"
+                        : "border-slate-200 focus:border-blue-600 focus:ring-blue-600/20"
+                    }`}
+                  />
+                </div>
+                {editErrors.email && <p className="mt-1 text-[11px] text-rose-600">{editErrors.email}</p>}
               </div>
             </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Address *
+                Business Address <span className="text-rose-500">*</span>
               </label>
-              <textarea
-                rows={2}
-                value={editAddress}
-                onChange={(e) => setEditAddress(e.target.value)}
-                required
-                className="w-full rounded border border-slate-200 p-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-              />
+              <div className="relative">
+                <MapPin className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                <textarea
+                  rows={2}
+                  value={editAddress}
+                  onChange={(e) => {
+                    setEditAddress(e.target.value);
+                    if (editErrors.address) setEditErrors((prev) => ({ ...prev, address: "" }));
+                  }}
+                  className={`w-full rounded-lg border bg-white pl-8 pr-2.5 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 transition-colors ${
+                    editErrors.address
+                      ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/20"
+                      : "border-slate-200 focus:border-blue-600 focus:ring-blue-600/20"
+                  }`}
+                />
+              </div>
+              {editErrors.address && <p className="mt-1 text-[11px] text-rose-600">{editErrors.address}</p>}
             </div>
 
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
               <button
                 type="button"
                 onClick={() => setEditingSupplier(null)}
-                className="h-8 px-3 rounded text-xs text-slate-600 hover:bg-slate-100"
+                className="h-8 px-3.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="h-8 px-3.5 rounded bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8]"
+                className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors cursor-pointer"
               >
                 Save Changes
               </button>
@@ -337,33 +577,78 @@ export function SuppliersView() {
         </Modal>
       )}
 
-      {/* Delete Confirmation */}
-      {deletingSupplierId && (
+      {/* Soft Delete Confirmation Modal */}
+      {softDeletingSupplier && (
         <Modal
           isOpen={true}
-          onClose={() => setDeletingSupplierId(null)}
-          title="Delete Supplier"
+          onClose={() => setSoftDeletingSupplier(null)}
+          title="Soft Delete Supplier"
           maxWidth="sm"
         >
           <div className="space-y-3">
-            <p className="text-xs text-slate-600">
-              Are you sure you want to remove this supplier? They will be unassigned from all jobs.
-            </p>
+            <div className="flex items-start gap-3 rounded-lg bg-amber-50 border border-amber-200 p-3">
+              <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="text-xs text-amber-900 space-y-1">
+                <p className="font-semibold">Move to Trash / Archive</p>
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  Moving <strong>{softDeletingSupplier.name}</strong> to the archive will remove them from active selection. All historical jobs, purchase orders, and past invoices will remain fully preserved.
+                </p>
+              </div>
+            </div>
 
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
               <button
                 type="button"
-                onClick={() => setDeletingSupplierId(null)}
-                className="h-8 px-3 rounded border border-slate-200 text-xs text-slate-700 hover:bg-slate-50"
+                onClick={() => setSoftDeletingSupplier(null)}
+                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={handleConfirmDelete}
-                className="h-8 px-3.5 rounded bg-rose-600 text-xs font-semibold text-white hover:bg-rose-700"
+                onClick={handleConfirmSoftDelete}
+                className="h-8 px-3.5 rounded-lg bg-amber-600 text-xs font-semibold text-white hover:bg-amber-700 transition-colors cursor-pointer"
               >
-                Delete
+                Archive Supplier
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Permanent Delete Confirmation Modal */}
+      {permanentDeletingSupplier && (
+        <Modal
+          isOpen={true}
+          onClose={() => setPermanentDeletingSupplier(null)}
+          title="Permanently Delete Supplier"
+          maxWidth="sm"
+        >
+          <div className="space-y-3">
+            <div className="flex items-start gap-3 rounded-lg bg-rose-50 border border-rose-200 p-3">
+              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+              <div className="text-xs text-rose-900 space-y-1">
+                <p className="font-semibold">Permanent Destruction Warning</p>
+                <p className="text-[11px] text-rose-800 leading-relaxed">
+                  Are you sure you want to permanently purge <strong>{permanentDeletingSupplier.name}</strong>? This action cannot be undone and will unassign them from all historical jobs.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setPermanentDeletingSupplier(null)}
+                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmPermanentDelete}
+                className="h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-semibold text-white hover:bg-rose-700 transition-colors cursor-pointer"
+              >
+                Permanently Delete
               </button>
             </div>
           </div>

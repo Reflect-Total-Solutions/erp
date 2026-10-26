@@ -70,6 +70,7 @@ model User {
   passwordHash String    @map("password_hash")
   isActive     Boolean   @default(true) @map("is_active")
   lastLoginAt  DateTime? @map("last_login_at")
+  deletedAt    DateTime? @map("deleted_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
@@ -78,7 +79,33 @@ model User {
   auditLogs     AuditLog[]
   revokedTokens RevokedToken[]
 
+  @@index([email, deletedAt])
+  @@index([isActive, deletedAt])
   @@map("users")
+}
+
+// ─── Suppliers ───────────────────────────────────────────────────────────────
+
+model Supplier {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  name          String
+  contactPerson String    @map("contact_person")
+  phone         String
+  email         String
+  address       String
+  isActive      Boolean   @default(true) @map("is_active")
+  deletedAt     DateTime? @map("deleted_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // Composite indexes for fast lookups
+  @@index([code, deletedAt])
+  @@index([email, deletedAt])
+  @@index([isActive, deletedAt])
+  @@index([name, deletedAt])
+  @@index([deletedAt, createdAt])
+  @@map("suppliers")
 }
 
 // ─── Security ────────────────────────────────────────────────────────────────
@@ -116,8 +143,8 @@ model RevokedToken {
 model AuditLog {
   id         String   @id @default(cuid())
   userId     String?  @map("user_id")
-  action     String   // e.g. "LOGIN", "LOGOUT", "CREATE_JOB"
-  resource   String?  // e.g. "jobs", "users"
+  action     String   // e.g. "LOGIN", "LOGOUT", "CREATE_SUPPLIER"
+  resource   String?  // e.g. "suppliers", "users"
   resourceId String?  @map("resource_id")
   details    Json?
   ipAddress  String?  @map("ip_address")
@@ -128,5 +155,6 @@ model AuditLog {
 
   @@index([userId, createdAt])
   @@index([action, createdAt])
+  @@index([resource, resourceId])
   @@map("audit_logs")
 }

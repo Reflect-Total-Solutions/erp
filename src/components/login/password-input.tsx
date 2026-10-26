@@ -7,22 +7,29 @@ import { cn } from "@/lib/utils";
 interface PasswordInputProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "type"> {
   error?: string;
+  leftIcon?: React.ReactNode;
 }
 
 export const PasswordInput = React.forwardRef<
   HTMLInputElement,
   PasswordInputProps
->(({ className, error, ...props }, ref) => {
+>(({ className, error, leftIcon, ...props }, ref) => {
   const [showPassword, setShowPassword] = React.useState(false);
 
   return (
     <div className="space-y-1.5">
       <div className="relative">
+        {leftIcon && (
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+            {leftIcon}
+          </div>
+        )}
         <input
           type={showPassword ? "text" : "password"}
           className={cn(
-            "flex h-10 w-full rounded-xl border border-[#E2E8F0] bg-white px-3 py-2 pr-10 text-sm text-[#0F172A] ring-offset-white placeholder:text-[#94A3B8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/20 focus-visible:border-[#2563EB] disabled:cursor-not-allowed disabled:opacity-50 transition-colors duration-200",
-            error && "border-red-500 focus-visible:ring-red-500/20 focus-visible:border-red-500",
+            "flex h-9 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 pr-10 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-colors duration-200",
+            leftIcon && "pl-8",
+            error && "border-red-500 focus:border-red-500 focus:ring-red-500/20",
             className
           )}
           ref={ref}
@@ -31,14 +38,14 @@ export const PasswordInput = React.forwardRef<
         <button
           type="button"
           onClick={() => setShowPassword(!showPassword)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-[#64748B] transition-colors duration-200"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors duration-200 cursor-pointer"
           aria-label={showPassword ? "Hide password" : "Show password"}
           tabIndex={-1}
         >
           {showPassword ? (
-            <EyeOff className="h-4 w-4" />
+            <EyeOff className="h-3.5 w-3.5" />
           ) : (
-            <Eye className="h-4 w-4" />
+            <Eye className="h-3.5 w-3.5" />
           )}
         </button>
       </div>

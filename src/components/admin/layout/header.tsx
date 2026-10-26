@@ -36,10 +36,11 @@ export function AdminHeader({ onOpenSidebar }: HeaderProps) {
       // Ignore network errors on logout
     } finally {
       // Clear session cookie and storage
-      document.cookie = "erp_session=; path=/; max-age=0; SameSite=Lax";
+      document.cookie = "erp_session=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
       try {
-        sessionStorage.clear();
         localStorage.clear();
+        sessionStorage.clear();
+        sessionStorage.setItem("erp_just_logged_out", "1");
       } catch {
         // Ignore storage clear errors
       }

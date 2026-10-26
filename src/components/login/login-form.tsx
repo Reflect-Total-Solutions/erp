@@ -21,11 +21,36 @@ export function LoginForm() {
   // Mode: "login" | "forgot"
   const [viewMode, setViewMode] = React.useState<"login" | "forgot">("login");
 
+  // Notice dismissal state
+  const [noticeDismissed, setNoticeDismissed] = React.useState(false);
+
+  // Safely detect if navigated after logout without SSR hydration mismatch
+  const wasLoggedOut = React.useSyncExternalStore(
+    () => () => {},
+    () => {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        return (
+          urlParams.get("logged_out") === "1" ||
+          sessionStorage.getItem("erp_just_logged_out") === "1"
+        );
+      } catch {
+        return false;
+      }
+    },
+    () => false
+  );
+
+  const showLoggedOutNotice = wasLoggedOut && !noticeDismissed;
+  const formKey = wasLoggedOut ? "form-logged-out" : "form-default";
+
   // Form DOM element references
   const formRef = React.useRef<HTMLFormElement>(null);
   const emailInputRef = React.useRef<HTMLInputElement>(null);
   const passwordInputRef = React.useRef<HTMLInputElement>(null);
-  const userInteractedRef = React.useRef(false);
+
+  // Only genuine user physical typing turns this true
+  const hasUserTypedRef = React.useRef(false);
 
   // Login form state
   const [email, setEmail] = React.useState("");
@@ -34,62 +59,105 @@ export function LoginForm() {
   const [isLoading, setIsLoading] = React.useState(false);
   const [errors, setErrors] = React.useState<FormErrors>({});
 
-  // Ensure all input fields and cached credentials are completely cleared on logout / initial mount
+  // Helper to directly wipe DOM input elements (no React state updates, safe for effect body)
+  const resetDOMInputs = React.useCallback(() => {
+    if (emailInputRef.current) {
+      emailInputRef.current.value = "";
+      emailInputRef.current.defaultValue = "";
+    }
+    if (passwordInputRef.current) {
+      passwordInputRef.current.value = "";
+      passwordInputRef.current.defaultValue = "";
+    }
+    formRef.current?.reset();
+  }, []);
+
+  // Full clear of both React state and DOM inputs
+  const clearAllInputs = React.useCallback(() => {
+    setEmail("");
+    setPassword("");
+    setRememberMe(false);
+    setErrors({});
+    resetDOMInputs();
+  }, [resetDOMInputs]);
+
+  // Ensure all input fields are wiped on mount, after logout, or on bfcache back/forward navigation
   React.useEffect(() => {
-    const clearAllInputs = () => {
-      setEmail("");
-      setPassword("");
-      setRememberMe(false);
-      setErrors({});
-      if (emailInputRef.current) {
-        emailInputRef.current.value = "";
+    // Immediate DOM reset
+    resetDOMInputs();
+
+    // Clean up sessionStorage flag and URL query param without triggering re-renders
+    try {
+      if (sessionStorage.getItem("erp_just_logged_out") === "1") {
+        sessionStorage.removeItem("erp_just_logged_out");
       }
-      if (passwordInputRef.current) {
-        passwordInputRef.current.value = "";
+      if (typeof window !== "undefined" && window.location.search.includes("logged_out")) {
+        window.history.replaceState({}, "", "/");
       }
-      formRef.current?.reset();
-    };
+    } catch {
+      // Ignore storage access errors
+    }
 
-    // Immediate clear on mount
-    clearAllInputs();
+    // Schedule enforcement sweeps across first 1.2s to block delayed browser autofills
+    const delays = [30, 80, 160, 300, 500, 850, 1200];
+    const timers = delays.map((d) =>
+      setTimeout(() => {
+        if (!hasUserTypedRef.current) {
+          clearAllInputs();
+        }
+      }, d)
+    );
 
-    // Prevent browser password autofill from filling fields after logout unless user clicks/types
-    const t1 = setTimeout(() => {
-      if (!userInteractedRef.current) clearAllInputs();
-    }, 60);
-
-    const t2 = setTimeout(() => {
-      if (!userInteractedRef.current) clearAllInputs();
-    }, 200);
-
-    const t3 = setTimeout(() => {
-      if (!userInteractedRef.current) clearAllInputs();
-    }, 450);
-
-    // Clear if navigated via browser back/forward or restored from cache
+    // If navigated via browser back/forward or restored from bfcache
     const handlePageShow = () => {
+      hasUserTypedRef.current = false;
       clearAllInputs();
     };
     window.addEventListener("pageshow", handlePageShow);
 
-    // If redirected with ?logged_out=1, clean up URL bar silently
-    if (typeof window !== "undefined" && window.location.search.includes("logged_out")) {
-      window.history.replaceState({}, "", "/");
-    }
-
     return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
+      timers.forEach(clearTimeout);
       window.removeEventListener("pageshow", handlePageShow);
     };
-  }, []);
+  }, [clearAllInputs, resetDOMInputs]);
 
   // Forgot password form state
   const [forgotEmail, setForgotEmail] = React.useState("");
   const [forgotError, setForgotError] = React.useState("");
   const [forgotLoading, setForgotLoading] = React.useState(false);
   const [forgotSuccess, setForgotSuccess] = React.useState(false);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Only genuine printable keystrokes, backspace, delete, paste count as user interaction
+    if (
+      e.key.length === 1 ||
+      e.key === "Backspace" ||
+      e.key === "Delete" ||
+      (e.ctrlKey && e.key.toLowerCase() === "v") ||
+      (e.metaKey && e.key.toLowerCase() === "v")
+    ) {
+      hasUserTypedRef.current = true;
+      if (!noticeDismissed) setNoticeDismissed(true);
+    }
+  };
+
+  const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.isTrusted && e.target.value.length > 0) {
+      hasUserTypedRef.current = true;
+      if (!noticeDismissed) setNoticeDismissed(true);
+    }
+    setEmail(e.target.value);
+    if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
+  };
+
+  const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.isTrusted && e.target.value.length > 0) {
+      hasUserTypedRef.current = true;
+      if (!noticeDismissed) setNoticeDismissed(true);
+    }
+    setPassword(e.target.value);
+    if (errors.password) setErrors((prev) => ({ ...prev, password: undefined }));
+  };
 
   const validateLoginForm = (): boolean => {
     const newErrors: FormErrors = {};
@@ -113,6 +181,7 @@ export function LoginForm() {
 
     setIsLoading(true);
     setErrors({});
+    if (!noticeDismissed) setNoticeDismissed(true);
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -135,16 +204,14 @@ export function LoginForm() {
       // Redirect to originally requested page or dashboard
       const params = new URLSearchParams(window.location.search);
       const redirectTo = params.get("redirect") ?? "/admin";
-      setEmail("");
-      setPassword("");
+      clearAllInputs();
       window.location.replace(redirectTo);
     } catch {
       // In UI prototype mode (backend offline), set demo preview cookie and allow entry
       document.cookie = "erp_session=demo-preview-token; path=/; max-age=86400; SameSite=Lax";
       const params = new URLSearchParams(window.location.search);
       const redirectTo = params.get("redirect") ?? "/admin";
-      setEmail("");
-      setPassword("");
+      clearAllInputs();
       window.location.replace(redirectTo);
     } finally {
       setIsLoading(false);
@@ -229,6 +296,16 @@ export function LoginForm() {
               </p>
             </div>
 
+            {/* Logged Out Success Notice */}
+            {showLoggedOutNotice && (
+              <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-2.5 text-xs text-emerald-800 animate-in fade-in duration-200">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                <span className="leading-tight">
+                  You have been securely logged out. Input fields have been cleared.
+                </span>
+              </div>
+            )}
+
             {/* General Error Message */}
             {errors.general && (
               <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-600">
@@ -236,7 +313,39 @@ export function LoginForm() {
               </div>
             )}
 
-            <form ref={formRef} onSubmit={handleLoginSubmit} autoComplete="off" className="space-y-4">
+            <form
+              key={formKey}
+              ref={formRef}
+              onSubmit={handleLoginSubmit}
+              autoComplete="off"
+              className="space-y-4"
+            >
+              {/* Invisible decoy inputs to absorb browser autofill after logout */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: "-9999px",
+                  opacity: 0,
+                  height: 0,
+                  width: 0,
+                  pointerEvents: "none",
+                }}
+                aria-hidden="true"
+              >
+                <input
+                  type="text"
+                  name="fake_user_autofill"
+                  tabIndex={-1}
+                  autoComplete="off"
+                />
+                <input
+                  type="password"
+                  name="fake_pass_autofill"
+                  tabIndex={-1}
+                  autoComplete="off"
+                />
+              </div>
+
               {/* Email / Username */}
               <div className="space-y-1">
                 <label
@@ -252,18 +361,14 @@ export function LoginForm() {
                   <input
                     ref={emailInputRef}
                     id="email"
+                    name="erp_login_email"
                     type="text"
                     value={email}
-                    onFocus={() => {
-                      userInteractedRef.current = true;
-                    }}
-                    onChange={(e) => {
-                      userInteractedRef.current = true;
-                      setEmail(e.target.value);
-                      if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
-                    }}
+                    onKeyDown={handleKeyDown}
+                    onChange={handleEmailChange}
                     placeholder="admin@company.com"
                     autoComplete="off"
+                    spellCheck={false}
                     disabled={isLoading}
                     className={cn(
                       "flex h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-colors",
@@ -287,16 +392,11 @@ export function LoginForm() {
                 <PasswordInput
                   ref={passwordInputRef}
                   id="password"
+                  name="erp_login_password"
                   value={password}
-                  onFocus={() => {
-                    userInteractedRef.current = true;
-                  }}
-                  onChange={(e) => {
-                    userInteractedRef.current = true;
-                    setPassword(e.target.value);
-                    if (errors.password)
-                      setErrors((prev) => ({ ...prev, password: undefined }));
-                  }}
+                  leftIcon={<Lock className="h-3.5 w-3.5" />}
+                  onKeyDown={handleKeyDown}
+                  onChange={handlePasswordChange}
                   placeholder="••••••••"
                   autoComplete="new-password"
                   disabled={isLoading}
@@ -323,6 +423,7 @@ export function LoginForm() {
                     setViewMode("forgot");
                     setForgotSuccess(false);
                     setForgotError("");
+                    setNoticeDismissed(true);
                   }}
                   className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
                 >
@@ -357,6 +458,8 @@ export function LoginForm() {
               onClick={() => {
                 setViewMode("login");
                 setForgotSuccess(false);
+                hasUserTypedRef.current = false;
+                clearAllInputs();
               }}
               className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-blue-600 mb-4 transition-colors"
             >
@@ -385,6 +488,8 @@ export function LoginForm() {
                   onClick={() => {
                     setViewMode("login");
                     setForgotSuccess(false);
+                    hasUserTypedRef.current = false;
+                    clearAllInputs();
                   }}
                   className="mt-2 inline-block text-xs font-semibold text-blue-600 hover:underline"
                 >

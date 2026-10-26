@@ -25,6 +25,8 @@ export interface Supplier {
   email: string;
   address: string;
   createdAt: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
 }
 
 export interface ExcelFile {
@@ -97,9 +99,12 @@ export interface UserAccess {
   name: string;
   email: string;
   department: string;
-  roleId: string;
+  roleId: string; // "role-admin" | "role-supervisor" | "role-employer"
   status: UserStatus;
   lastLogin: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  createdAt?: string;
 }
 
 export interface AccessAuditLog {

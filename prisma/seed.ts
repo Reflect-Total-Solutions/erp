@@ -126,6 +126,68 @@ async function main() {
   });
 
   console.log(`✅ Admin user seeded: ${adminEmail}`);
+
+  // ── Initial Suppliers ───────────────────────────────────────────────────────
+  const initialSuppliersData = [
+    {
+      code: "SUP-01",
+      name: "ABC Electricals",
+      contactPerson: "John Smith",
+      phone: "077 123 4567",
+      email: "john@abcelectricals.com",
+      address: "123 Main Street, Colombo 03",
+    },
+    {
+      code: "SUP-02",
+      name: "BuildTech Materials",
+      contactPerson: "Sarah Perera",
+      phone: "071 987 6543",
+      email: "sarah@buildtech.com",
+      address: "45 Industrial Zone, Kaduwela",
+    },
+    {
+      code: "SUP-03",
+      name: "City Transport & Cargo",
+      contactPerson: "Kamal Fernando",
+      phone: "076 555 4321",
+      email: "kamal@citycargo.com",
+      address: "88 Harbor Road, Colombo 13",
+    },
+    {
+      code: "SUP-04",
+      name: "Prime Hardware Ltd",
+      contactPerson: "David Silva",
+      phone: "072 333 8899",
+      email: "david@primehardware.lk",
+      address: "12 Station Road, Kelaniya",
+    },
+    {
+      code: "SUP-05",
+      name: "CoolAir HVAC Solutions",
+      contactPerson: "Nimal Jayasinghe",
+      phone: "075 222 1100",
+      email: "nimal@coolair.com",
+      address: "74 High Level Road, Nugegoda",
+    },
+  ];
+
+  for (const sup of initialSuppliersData) {
+    await prisma.supplier.upsert({
+      where: { code: sup.code },
+      update: {},
+      create: {
+        code: sup.code,
+        name: sup.name,
+        contactPerson: sup.contactPerson,
+        phone: sup.phone,
+        email: sup.email,
+        address: sup.address,
+        isActive: true,
+      },
+    });
+  }
+
+  console.log("✅ Initial suppliers seeded");
   console.log("🎉 Seed complete!");
 }
 
