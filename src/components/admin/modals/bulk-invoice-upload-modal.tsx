@@ -14,6 +14,7 @@ import {
   Briefcase,
   Image as ImageIcon,
   CheckCircle2,
+  Loader2,
 } from "lucide-react";
 import { InvoiceStatus } from "@/types/admin";
 
@@ -53,6 +54,7 @@ export function BulkInvoiceUploadModal({
   const [stagedInvoices, setStagedInvoices] = useState<StagedInvoiceItem[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   // Selected job id is synced directly from props or state
   const activeJobId = preselectedJobId || selectedJobId || (jobs[0]?.id ?? "");
@@ -150,28 +152,69 @@ export function BulkInvoiceUploadModal({
     return Object.keys(errs).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate()) return;
+    if (!validate() || isUploading) return;
 
-    const invoicesToCreate = stagedInvoices.map((item) => ({
-      jobId: item.jobId,
-      supplierId: item.supplierId,
-      invoiceName: item.invoiceName.trim(),
-      invoiceDate: item.invoiceDate,
-      totalValue: parseFloat(item.totalValue) || 0,
-      fileName: item.fileName,
-      fileSize: item.fileSize,
-      status: item.status,
-    }));
+    setIsUploading(true);
+    try {
+      const invoicesToCreate = [];
 
-    addBulkInvoices(invoicesToCreate);
-    setStagedInvoices([]);
-    setErrors({});
-    onClose();
+      for (const item of stagedInvoices) {
+        let fileUrl: string | undefined = undefined;
+        let storagePath: string | undefined = undefined;
 
-    if (onInvoicesUploaded) {
-      onInvoicesUploaded();
+        if (item.file) {
+          try {
+            const formData = new FormData();
+            formData.append("file", item.file);
+            formData.append("folder", "invoices");
+            formData.append("jobId", item.jobId);
+            formData.append("customName", item.invoiceName.trim());
+
+            const res = await fetch("/api/upload", {
+              method: "POST",
+              body: formData,
+            });
+
+            if (res.ok) {
+              const json = await res.json();
+              if (json.success && Array.isArray(json.files) && json.files[0]) {
+                fileUrl = json.files[0].fileUrl;
+                storagePath = json.files[0].storagePath;
+              }
+            }
+          } catch (err) {
+            console.error("Error uploading invoice document to Supabase:", err);
+          }
+        }
+
+        invoicesToCreate.push({
+          jobId: item.jobId,
+          supplierId: item.supplierId,
+          invoiceName: item.invoiceName.trim(),
+          invoiceDate: item.invoiceDate,
+          totalValue: parseFloat(item.totalValue) || 0,
+          fileName: item.fileName,
+          fileSize: item.fileSize,
+          fileUrl,
+          storagePath,
+          status: item.status,
+        });
+      }
+
+      addBulkInvoices(invoicesToCreate);
+      setStagedInvoices([]);
+      setErrors({});
+      onClose();
+
+      if (onInvoicesUploaded) {
+        onInvoicesUploaded();
+      }
+    } catch (err) {
+      console.error("Failed creating invoices:", err);
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -477,10 +520,15 @@ export function BulkInvoiceUploadModal({
             </button>
             <button
               type="submit"
-              disabled={stagedInvoices.length === 0}
-              className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={stagedInvoices.length === 0 || isUploading}
+              className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
-              Upload {stagedInvoices.length} Invoice{stagedInvoices.length === 1 ? "" : "s"}
+              {isUploading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              <span>
+                {isUploading
+                  ? "Uploading to Supabase..."
+                  : `Upload ${stagedInvoices.length} Invoice${stagedInvoices.length === 1 ? "" : "s"}`}
+              </span>
             </button>
           </div>
         </div>

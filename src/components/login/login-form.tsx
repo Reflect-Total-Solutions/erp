@@ -18,8 +18,17 @@ export function LoginForm() {
   const router = useRouter();
   const { theme, toggleTheme } = useTheme();
 
-  // Mode: "login" | "forgot"
-  const [viewMode, setViewMode] = React.useState<"login" | "forgot">("login");
+  // Mode: "login" | "forgot" | "change-password"
+  const [viewMode, setViewMode] = React.useState<"login" | "forgot" | "change-password">("login");
+
+  // First-time login password change state
+  const [firstLoginEmail, setFirstLoginEmail] = React.useState("");
+  const [firstLoginTempPassword, setFirstLoginTempPassword] = React.useState("");
+  const [firstLoginUserName, setFirstLoginUserName] = React.useState("");
+  const [newPassword, setNewPassword] = React.useState("");
+  const [confirmPassword, setConfirmPassword] = React.useState("");
+  const [changePasswordLoading, setChangePasswordLoading] = React.useState(false);
+  const [changePasswordError, setChangePasswordError] = React.useState("");
 
   // Notice dismissal state
   const [noticeDismissed, setNoticeDismissed] = React.useState(false);
@@ -201,6 +210,18 @@ export function LoginForm() {
         return;
       }
 
+      // Check if first-time login requires mandatory password change
+      if (data.mustChangePassword) {
+        setFirstLoginEmail(email.trim().toLowerCase());
+        setFirstLoginTempPassword(password);
+        setFirstLoginUserName(data.user?.name || "");
+        setChangePasswordError("");
+        setNewPassword("");
+        setConfirmPassword("");
+        setViewMode("change-password");
+        return;
+      }
+
       // Redirect to originally requested page or dashboard
       const params = new URLSearchParams(window.location.search);
       const redirectTo = params.get("redirect") ?? "/admin";
@@ -215,6 +236,70 @@ export function LoginForm() {
       window.location.replace(redirectTo);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePasswordError("");
+
+    if (!firstLoginTempPassword) {
+      setChangePasswordError("Please enter your current temporary password.");
+      return;
+    }
+
+    if (!newPassword) {
+      setChangePasswordError("Please enter your new password.");
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      setChangePasswordError("Password must be at least 8 characters long.");
+      return;
+    }
+
+    if (newPassword === firstLoginTempPassword) {
+      setChangePasswordError("New password cannot be the same as your temporary password.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setChangePasswordError("Passwords do not match. Please verify both fields.");
+      return;
+    }
+
+    setChangePasswordLoading(true);
+
+    try {
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: firstLoginEmail,
+          currentPassword: firstLoginTempPassword,
+          newPassword,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setChangePasswordError(data.error || "Failed to update password. Please try again.");
+        return;
+      }
+
+      // Success: redirect to dashboard
+      const params = new URLSearchParams(window.location.search);
+      const redirectTo = params.get("redirect") ?? "/admin";
+      clearAllInputs();
+      setNewPassword("");
+      setConfirmPassword("");
+      window.location.replace(redirectTo);
+    } catch {
+      setChangePasswordError("Network connection error. Could not save password.");
+    } finally {
+      setIsLoading(false);
+      setChangePasswordLoading(false);
     }
   };
 
@@ -547,6 +632,145 @@ export function LoginForm() {
                 </button>
               </form>
             )}
+          </div>
+        )}
+
+        {/* ================= VIEW: FIRST-TIME LOGIN PASSWORD CHANGE ================= */}
+        {viewMode === "change-password" && (
+          <div>
+            <div className="mb-4">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-[11px] font-semibold mb-2">
+                <ShieldCheck className="h-3.5 w-3.5 text-blue-600" />
+                <span>First-Time Security Setup</span>
+              </div>
+              <h1 className="text-lg font-bold text-slate-900">Set Permanent Password</h1>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                Welcome{firstLoginUserName ? `, ${firstLoginUserName}` : ""}! Because you are logging in with a temporary password, you must create your personal password to access the ERP system.
+              </p>
+            </div>
+
+            {changePasswordError && (
+              <div className="mb-3.5 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-600 flex items-start gap-1.5">
+                <span className="font-semibold block">{changePasswordError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleChangePasswordSubmit} className="space-y-3.5">
+              {/* Account Identifier */}
+              <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+                <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                  Signing in as
+                </span>
+                <span className="block text-xs font-mono font-semibold text-slate-900 truncate mt-0.5">
+                  {firstLoginEmail}
+                </span>
+              </div>
+
+              {/* Current / Temporary Password */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Current / Temporary Password <span className="text-rose-500">*</span>
+                </label>
+                <PasswordInput
+                  value={firstLoginTempPassword}
+                  onChange={(e) => {
+                    setFirstLoginTempPassword(e.target.value);
+                    if (changePasswordError) setChangePasswordError("");
+                  }}
+                  placeholder="Enter current temporary password..."
+                  disabled={changePasswordLoading}
+                  leftIcon={<Lock className="h-3.5 w-3.5" />}
+                />
+              </div>
+
+              {/* New Password */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-slate-700">
+                  New Password <span className="text-rose-500">*</span>
+                </label>
+                <PasswordInput
+                  value={newPassword}
+                  onChange={(e) => {
+                    setNewPassword(e.target.value);
+                    if (changePasswordError) setChangePasswordError("");
+                  }}
+                  placeholder="Minimum 8 characters..."
+                  disabled={changePasswordLoading}
+                  leftIcon={<Lock className="h-3.5 w-3.5" />}
+                  autoFocus
+                />
+              </div>
+
+              {/* Confirm Password */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Confirm New Password <span className="text-rose-500">*</span>
+                </label>
+                <PasswordInput
+                  value={confirmPassword}
+                  onChange={(e) => {
+                    setConfirmPassword(e.target.value);
+                    if (changePasswordError) setChangePasswordError("");
+                  }}
+                  placeholder="Re-enter your new password..."
+                  disabled={changePasswordLoading}
+                  leftIcon={<Lock className="h-3.5 w-3.5" />}
+                />
+              </div>
+
+              <div className="text-[11px] text-slate-500 space-y-1 pt-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full transition-colors",
+                      newPassword.length >= 8 ? "bg-emerald-500" : "bg-slate-300"
+                    )}
+                  />
+                  <span>Minimum 8 characters</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full transition-colors",
+                      confirmPassword && newPassword === confirmPassword
+                        ? "bg-emerald-500"
+                        : "bg-slate-300"
+                    )}
+                  />
+                  <span>Passwords match</span>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={changePasswordLoading}
+                className="flex h-9 w-full items-center justify-center rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] active:bg-[#1e40af] disabled:opacity-70 transition-colors cursor-pointer mt-2"
+              >
+                {changePasswordLoading ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                    <span>Saving Password & Entering...</span>
+                  </>
+                ) : (
+                  "Save Password & Enter ERP"
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode("login");
+                  setNewPassword("");
+                  setConfirmPassword("");
+                  setChangePasswordError("");
+                }}
+                disabled={changePasswordLoading}
+                className="flex items-center justify-center gap-1 text-xs text-slate-500 hover:text-slate-800 transition-colors w-full pt-1 cursor-pointer"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                <span>Return to Sign In</span>
+              </button>
+            </form>
           </div>
         )}
 

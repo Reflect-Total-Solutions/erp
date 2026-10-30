@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAuditEvent } from "@/lib/audit";
+import { checkSessionPermission } from "@/lib/permissions";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -15,6 +16,14 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json(
       { error: "Unauthorized access. Please log in." },
       { status: 401 }
+    );
+  }
+
+  const isAuthorized = await checkSessionPermission(session, "suppliers", "delete");
+  if (!isAuthorized) {
+    return NextResponse.json(
+      { error: "Forbidden: You do not have permission to restore suppliers." },
+      { status: 403 }
     );
   }
 

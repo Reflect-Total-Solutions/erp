@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import Link from "next/link";
 import {
   Plus,
   Edit2,
@@ -15,6 +16,7 @@ import {
   MapPin,
   Archive,
   CheckCircle2,
+  ShieldAlert,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
@@ -33,6 +35,8 @@ export function SuppliersView() {
     restoreSupplier,
     permanentlyDeleteSupplier,
     showToast,
+    can,
+    currentRole,
   } = useAdminData();
 
   // Tab: "active" | "trash"
@@ -186,6 +190,29 @@ export function SuppliersView() {
     return filteredSuppliers.slice(start, start + pageSize);
   }, [filteredSuppliers, currentPage, pageSize]);
 
+  if (!can("suppliers", "view")) {
+    return (
+      <div className="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border border-slate-200 text-center max-w-lg mx-auto mt-8 shadow-xs">
+        <div className="h-14 w-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-4">
+          <ShieldAlert className="h-7 w-7" />
+        </div>
+        <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
+        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+          You do not have authorization to view or manage the Supplier Registry. Contact your system administrator if access is needed.
+        </p>
+        <div className="mt-4 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
+          Active Role: <span className="font-bold text-blue-600 capitalize">{currentRole}</span>
+        </div>
+        <Link
+          href="/admin"
+          className="mt-6 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
+        >
+          Return to Dashboard
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       {/* Header Bar */}
@@ -197,14 +224,16 @@ export function SuppliersView() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsRegisterOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors shrink-0 shadow-xs cursor-pointer"
-        >
-          <Plus className="h-4 w-4" />
-          Register New Supplier
-        </button>
+        {can("suppliers", "create") && (
+          <button
+            type="button"
+            onClick={() => setIsRegisterOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors shrink-0 shadow-xs cursor-pointer"
+          >
+            <Plus className="h-4 w-4" />
+            Register New Supplier
+          </button>
+        )}
       </div>
 
       {/* Tabs & Search Toolbar */}
@@ -231,24 +260,26 @@ export function SuppliersView() {
               </span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab("trash");
-                setCurrentPage(1);
-              }}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                activeTab === "trash"
-                  ? "bg-white text-rose-600 shadow-2xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Archive className="h-3.5 w-3.5" />
-              <span>Trash / Archived</span>
-              <span className="rounded-full bg-slate-200 text-slate-700 px-1.5 py-0.2 text-[10px] font-bold">
-                {trashCount}
-              </span>
-            </button>
+            {can("suppliers", "delete") && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("trash");
+                  setCurrentPage(1);
+                }}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === "trash"
+                    ? "bg-white text-rose-600 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Archive className="h-3.5 w-3.5" />
+                <span>Trash / Archived</span>
+                <span className="rounded-full bg-slate-200 text-slate-700 px-1.5 py-0.2 text-[10px] font-bold">
+                  {trashCount}
+                </span>
+              </button>
+            )}
           </div>
 
           <div className="w-full sm:w-72">
@@ -338,42 +369,53 @@ export function SuppliersView() {
                           <div className="flex items-center justify-end gap-1.5">
                             {!s.isDeleted ? (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEdit(s)}
-                                  className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors cursor-pointer"
-                                  title="Edit Supplier"
-                                >
-                                  <Edit2 className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setSoftDeletingSupplier(s)}
-                                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                                  title="Soft Delete Supplier"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
+                                {can("suppliers", "edit") && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEdit(s)}
+                                    className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                                    title="Edit Supplier"
+                                  >
+                                    <Edit2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                                {can("suppliers", "delete") && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSoftDeletingSupplier(s)}
+                                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                    title="Soft Delete Supplier"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                                {!can("suppliers", "edit") && !can("suppliers", "delete") && (
+                                  <span className="text-[11px] text-slate-400 italic">View only</span>
+                                )}
                               </>
                             ) : (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() => restoreSupplier(s.id)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer"
-                                  title="Restore to Active"
-                                >
-                                  <RotateCcw className="h-3 w-3" />
-                                  <span>Restore</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setPermanentDeletingSupplier(s)}
-                                  className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                                  title="Permanently Delete"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
+                                {can("suppliers", "delete") && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => restoreSupplier(s.id)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer"
+                                      title="Restore to Active"
+                                    >
+                                      <RotateCcw className="h-3 w-3" />
+                                      <span>Restore</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setPermanentDeletingSupplier(s)}
+                                      className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                      title="Permanently Delete"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </>
+                                )}
                               </>
                             )}
                           </div>

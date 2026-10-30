@@ -16,6 +16,7 @@ import {
   CheckSquare,
   Square,
   Eye,
+  ShieldAlert,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
@@ -39,6 +40,8 @@ export function InvoicesView() {
     totalInvoicesCount,
     totalInvoiceValue,
     deleteInvoice,
+    can,
+    currentRole,
   } = useAdminData();
 
   // Search & Filters
@@ -100,6 +103,29 @@ export function InvoicesView() {
     return filteredInvoices.slice(start, start + pageSize);
   }, [filteredInvoices, currentPage, pageSize]);
 
+  if (!can("invoices", "view")) {
+    return (
+      <div className="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border border-slate-200 text-center max-w-lg mx-auto mt-8 shadow-xs">
+        <div className="h-14 w-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-4">
+          <ShieldAlert className="h-7 w-7" />
+        </div>
+        <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
+        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+          You do not have authorization to view Vendor Invoices. Contact your system administrator if access is needed.
+        </p>
+        <div className="mt-4 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
+          Active Role: <span className="font-bold text-blue-600 capitalize">{currentRole}</span>
+        </div>
+        <Link
+          href="/admin"
+          className="mt-6 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
+        >
+          Return to Dashboard
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -122,14 +148,16 @@ export function InvoicesView() {
             <span>Download All ({filteredInvoices.length})</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setIsBulkUploadOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors shrink-0"
-          >
-            <Upload className="h-4 w-4" />
-            Bulk Upload Invoices
-          </button>
+          {can("invoices", "create") && (
+            <button
+              type="button"
+              onClick={() => setIsBulkUploadOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors shrink-0"
+            >
+              <Upload className="h-4 w-4" />
+              Bulk Upload Invoices
+            </button>
+          )}
         </div>
       </div>
 
@@ -443,14 +471,16 @@ export function InvoicesView() {
                           >
                             <Download className="h-4 w-4" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setDeletingInvoiceId(inv.id)}
-                            className="p-1 rounded text-slate-400 hover:text-rose-600 transition-colors"
-                            title="Delete"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          {can("invoices", "delete") && (
+                            <button
+                              type="button"
+                              onClick={() => setDeletingInvoiceId(inv.id)}
+                              className="p-1 rounded text-slate-400 hover:text-rose-600 transition-colors"
+                              title="Delete"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

@@ -12,16 +12,20 @@ import {
   AccessAuditLog,
 } from "@/types/admin";
 import {
-  initialJobs,
   initialSuppliers,
   initialInvoices,
-  initialExcelFiles,
   initialRoles,
   initialUsersAccess,
   initialAuditLogs,
 } from "@/lib/mock-data";
+import { ERPModule, Action, hasPermission } from "@/lib/permissions";
 
 interface AdminDataContextType {
+  // Access Control & RBAC
+  currentRole: "admin" | "supervisor" | "employee";
+  setCurrentRole: (role: "admin" | "supervisor" | "employee") => void;
+  can: (module: ERPModule, action: Action) => boolean;
+
   // State
   jobs: Job[];
   suppliers: Supplier[];
@@ -36,10 +40,14 @@ interface AdminDataContextType {
   showToast: (title: string, message?: string, type?: "success" | "error" | "info") => void;
   removeToast: (id: string) => void;
 
-  // Job actions
-  addJob: (job: Omit<Job, "id" | "createdAt" | "supplierIds"> & { supplierIds?: string[] }) => Job;
+  // Job actions (CRUD with Soft Delete & Supabase sync)
+  addJob: (job: Omit<Job, "id" | "createdAt" | "supplierIds"> & { supplierIds?: string[]; documents?: any[] }) => Job;
   updateJob: (id: string, updates: Partial<Job>) => void;
   deleteJob: (id: string) => void;
+  softDeleteJob: (id: string) => void;
+  restoreJob: (id: string) => void;
+  permanentlyDeleteJob: (id: string) => void;
+  refreshJobs: () => Promise<void>;
   getJobById: (id: string) => Job | undefined;
 
   // Supplier actions (CRUD with Soft Delete)
@@ -71,12 +79,28 @@ interface AdminDataContextType {
     value: boolean
   ) => void;
   addRole: (role: Omit<Role, "id">) => Role;
-  addUserAccess: (user: Omit<UserAccess, "id" | "lastLogin">) => UserAccess;
-  updateUserAccess: (id: string, updates: Partial<UserAccess>) => void;
+  addUserAccess: (user: Omit<UserAccess, "id" | "lastLogin"> & { id?: string }) => UserAccess;
+  updateUserAccess: (id: string, updates: Partial<UserAccess> & { newPassword?: string }) => void;
   deleteUserAccess: (id: string) => boolean | void;
   softDeleteUserAccess: (id: string) => boolean | void;
   restoreUserAccess: (id: string) => void;
   permanentlyDeleteUserAccess: (id: string) => void;
+  refreshUsers: () => Promise<void>;
+  updateUserPermissions: (
+    userId: string,
+    permissions: Record<string, any>,
+    resetToRoleDefault?: boolean
+  ) => Promise<boolean>;
+  refreshPermissions: () => Promise<void>;
+  currentUserId?: string;
+
+  // Persona & Dynamic Access Control
+  activeUserId: string;
+  setActiveUserId: (id: string) => void;
+  activeUser?: UserAccess;
+  switchToUser: (userId: string) => void;
+  resetToAdminUser: () => void;
+  isPreviewMode: boolean;
 
   // Helpers & Derived Metrics
   getJobInvoices: (jobId: string) => Invoice[];
@@ -93,14 +117,180 @@ interface AdminDataContextType {
 const AdminDataContext = createContext<AdminDataContextType | undefined>(undefined);
 
 export function AdminDataProvider({ children }: { children: React.ReactNode }) {
-  const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>(initialSuppliers);
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
-  const [excelFiles, setExcelFiles] = useState<ExcelFile[]>(initialExcelFiles);
+  const [excelFiles, setExcelFiles] = useState<ExcelFile[]>([]);
   const [roles, setRoles] = useState<Role[]>(initialRoles);
   const [usersAccess, setUsersAccess] = useState<UserAccess[]>(initialUsersAccess);
   const [auditLogs, setAuditLogs] = useState<AccessAuditLog[]>(initialAuditLogs);
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
+  const [currentRole, setCurrentRole] = useState<"admin" | "supervisor" | "employee">("admin");
+  const [currentUserId, setCurrentUserId] = useState<string>("");
+  const [activeUserId, setActiveUserId] = useState<string>("");
+  const [userPermissions, setUserPermissions] = useState<Record<string, Record<Action, boolean>> | null>(null);
+
+  // Derive the active user persona
+  const activeUser = useMemo(() => {
+    if (!activeUserId) return undefined;
+    return usersAccess.find((u) => u.id === activeUserId || u.email === activeUserId);
+  }, [activeUserId, usersAccess]);
+
+  // Is previewing another user
+  const isPreviewMode = useMemo(() => {
+    return Boolean(activeUserId && currentUserId && activeUserId !== currentUserId && activeUser);
+  }, [activeUserId, currentUserId, activeUser]);
+
+  // Load user's actual authenticated role and live PostgreSQL permissions from session
+  React.useEffect(() => {
+    let isMounted = true;
+    const fetchSessionRole = async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data?.authenticated && data.user && isMounted) {
+          setCurrentUserId(data.user.id);
+          setActiveUserId((prev) => prev || data.user.id);
+          if (data.user.roles?.[0]) {
+            const primaryRole = String(data.user.roles[0]).toLowerCase();
+            if (["admin", "supervisor", "employee"].includes(primaryRole)) {
+              setCurrentRole(primaryRole as "admin" | "supervisor" | "employee");
+            }
+          }
+          if (data.user.hasCustomPermissions && data.user.customPermissions) {
+            setUserPermissions(data.user.customPermissions);
+          } else {
+            setUserPermissions(null);
+          }
+        }
+      } catch {
+        // keep default
+      }
+    };
+    fetchSessionRole();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Fetch live role permissions policies from PostgreSQL database
+  const fetchDbRolesPermissions = useCallback(async () => {
+    try {
+      const res = await fetch("/api/permissions");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.success && Array.isArray(data.roles) && data.roles.length > 0) {
+        setRoles((prev) =>
+          prev.map((r) => {
+            const dbR = data.roles.find(
+              (item: any) =>
+                item.id === r.id ||
+                item.name.toLowerCase() === r.name.toLowerCase()
+            );
+            if (dbR && dbR.permissions) {
+              return {
+                ...r,
+                permissions: {
+                  ...r.permissions,
+                  ...dbR.permissions,
+                },
+              };
+            }
+            return r;
+          })
+        );
+      }
+    } catch {
+      // fallback
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchDbRolesPermissions();
+  }, [fetchDbRolesPermissions]);
+
+  // Load custom saved roles policy from localStorage as instant cache
+  React.useEffect(() => {
+    try {
+      const saved = localStorage.getItem("erp_custom_roles_policy");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setRoles(parsed);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Fully dynamic permission check: evaluates per-user overrides first, then live database role policies
+  const can = useCallback(
+    (module: ERPModule, action: Action): boolean => {
+      const isPreviewing = Boolean(activeUserId && currentUserId && activeUserId !== currentUserId);
+      const targetUser = isPreviewing
+        ? usersAccess.find((u) => u.id === activeUserId || u.email === activeUserId)
+        : usersAccess.find((u) => u.id === currentUserId || u.email === currentUserId);
+
+      // 1. Direct custom user permissions (highest precedence)
+      // A. If previewing another user
+      if (isPreviewing && targetUser?.permissions) {
+        const modPerm = (targetUser.permissions as any)?.[module];
+        if (modPerm && typeof modPerm[action] === "boolean") {
+          return modPerm[action];
+        }
+      }
+
+      // B. If viewing as current user and current user has custom permissions
+      if (!isPreviewing && userPermissions && userPermissions[module]) {
+        if (typeof userPermissions[module][action] === "boolean") {
+          return userPermissions[module][action];
+        }
+      }
+
+      // If user has targetUser.permissions in usersAccess state but is not previewing
+      if (!isPreviewing && targetUser?.permissions) {
+        const modPerm = (targetUser.permissions as any)?.[module];
+        if (modPerm && typeof modPerm[action] === "boolean") {
+          return modPerm[action];
+        }
+      }
+
+      // 2. Evaluate Role Policy
+      let evalRole = currentRole;
+      if (isPreviewing && targetUser) {
+        if (targetUser.roleId === "role-admin" || targetUser.role === "admin") evalRole = "admin";
+        else if (targetUser.roleId === "role-supervisor" || targetUser.role === "supervisor") evalRole = "supervisor";
+        else evalRole = "employee";
+      }
+
+      const roleIdMap: Record<string, string> = {
+        admin: "role-admin",
+        supervisor: "role-supervisor",
+        employee: "role-employer",
+      };
+      const targetRoleId = roleIdMap[evalRole] || "role-employer";
+
+      const roleObj = roles.find(
+        (r) =>
+          r.id === targetRoleId ||
+          r.name.toLowerCase() === evalRole.toLowerCase() ||
+          (evalRole === "employee" && r.id === "role-employer")
+      );
+
+      if (roleObj && roleObj.permissions) {
+        const modKey = module as keyof Role["permissions"];
+        const perm = roleObj.permissions[modKey];
+        if (perm && typeof perm[action] === "boolean") {
+          return perm[action];
+        }
+      }
+
+      return hasPermission(evalRole, module, action);
+    },
+    [activeUserId, currentUserId, currentRole, roles, userPermissions, usersAccess]
+  );
 
   // Initial load of suppliers from PostgreSQL database
   React.useEffect(() => {
@@ -125,6 +315,76 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Fetch and sync users from PostgreSQL database (no mock data)
+  const fetchDbUsers = useCallback(async () => {
+    try {
+      const res = await fetch("/api/users?status=all");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.success && Array.isArray(json.data)) {
+        setUsersAccess(json.data);
+      }
+    } catch {
+      // Fallback
+    }
+  }, []);
+
+  // Fetch and sync real security audit trail from PostgreSQL database
+  const fetchDbAuditLogs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/audit");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.success && Array.isArray(json.data)) {
+        setAuditLogs(json.data);
+      }
+    } catch {
+      // Fallback
+    }
+  }, []);
+
+  // Fetch and sync jobs and documents from PostgreSQL database
+  const fetchDbJobs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/jobs?status=all");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.success && Array.isArray(json.data)) {
+        setJobs(json.data);
+        // Collect and sync all job documents into excelFiles state
+        const allDocs: ExcelFile[] = [];
+        json.data.forEach((j: any) => {
+          if (Array.isArray(j.documents)) {
+            j.documents.forEach((d: any) => {
+              allDocs.push({
+                id: d.id,
+                jobId: d.jobId,
+                fileName: d.fileName,
+                customName: d.customName || d.fileName,
+                fileDate: d.fileDate,
+                fileSize: d.fileSize,
+                fileType: d.fileType,
+                fileUrl: d.fileUrl,
+                storagePath: d.storagePath,
+                uploadDateTime: d.uploadDateTime || d.fileDate,
+                status: d.status || "Processed",
+              });
+            });
+          }
+        });
+        setExcelFiles(allDocs);
+      }
+    } catch {
+      // Fallback
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchDbJobs();
+    fetchDbUsers();
+    fetchDbAuditLogs();
+  }, [fetchDbJobs, fetchDbUsers, fetchDbAuditLogs]);
+
   // Toast System
   const showToast = useCallback(
     (title: string, message?: string, type: "success" | "error" | "info" = "info") => {
@@ -142,19 +402,56 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Job Actions
+  // Job Actions (Full CRUD with PostgreSQL & Supabase sync)
   const addJob = useCallback(
-    (jobData: Omit<Job, "id" | "createdAt" | "supplierIds"> & { supplierIds?: string[] }): Job => {
+    (jobData: Omit<Job, "id" | "createdAt" | "supplierIds"> & { supplierIds?: string[]; documents?: any[] }): Job => {
+      const tempId = "job-" + (Date.now().toString(36) + Math.random().toString(36).substring(2, 5));
       const dateStr = new Date().toISOString().split("T")[0];
       const newJob: Job = {
         ...jobData,
-        id: "job-" + (Date.now().toString(36) + Math.random().toString(36).substring(2, 5)),
+        id: tempId,
         jobCode: jobData.jobCode || `JOB-${new Date().getFullYear()}-${String(jobs.length + 1).padStart(3, "0")}`,
         createdAt: dateStr,
         supplierIds: jobData.supplierIds || [],
+        isDeleted: false,
+        documents: jobData.documents || [],
       };
       setJobs((prev) => [newJob, ...prev]);
       showToast("Job Created", `"${newJob.name}" has been initialized successfully.`, "success");
+
+      // Persist to PostgreSQL database
+      fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newJob.name,
+          jobCode: newJob.jobCode,
+          date: newJob.date,
+          description: newJob.description,
+          remarks: newJob.remarks,
+          status: newJob.status,
+          supplierIds: newJob.supplierIds,
+          documents: jobData.documents || [],
+        }),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast("Sync Error", err.error || "Failed to persist job to database.", "error");
+            return;
+          }
+          const data = await res.json();
+          if (data?.success && data.data) {
+            setJobs((prev) => prev.map((j) => (j.id === tempId ? { ...j, ...data.data } : j)));
+            if (Array.isArray(data.data.documents) && data.data.documents.length > 0) {
+              setExcelFiles((prev) => [...data.data.documents, ...prev]);
+            }
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to persist job to DB:", err);
+        });
+
       return newJob;
     },
     [jobs.length, showToast]
@@ -166,24 +463,86 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
         prev.map((job) => (job.id === id ? { ...job, ...updates } : job))
       );
       showToast("Job Updated", "Job record has been updated successfully.", "info");
+
+      // Persist updates to PostgreSQL
+      fetch(`/api/jobs/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast("Update Failed", err.error || "Could not save updates to database.", "error");
+          }
+        })
+        .catch((err) => console.error("Error updating job in DB:", err));
     },
     [showToast]
   );
 
-  const deleteJob = useCallback(
+  const softDeleteJob = useCallback(
+    (id: string) => {
+      const target = jobs.find((j) => j.id === id);
+      setJobs((prev) =>
+        prev.map((job) =>
+          job.id === id ? { ...job, isDeleted: true, deletedAt: new Date().toISOString() } : job
+        )
+      );
+      showToast(
+        "Job Moved to Trash",
+        target ? `"${target.name}" moved to trash. You can restore it anytime.` : "Job moved to trash.",
+        "info"
+      );
+
+      fetch(`/api/jobs/${id}`, { method: "DELETE" }).catch((e) =>
+        console.error("Error soft-deleting job in DB:", e)
+      );
+    },
+    [jobs, showToast]
+  );
+
+  const deleteJob = softDeleteJob;
+
+  const restoreJob = useCallback(
+    (id: string) => {
+      const target = jobs.find((j) => j.id === id);
+      setJobs((prev) =>
+        prev.map((job) => (job.id === id ? { ...job, isDeleted: false, deletedAt: null } : job))
+      );
+      showToast(
+        "Job Restored",
+        target ? `"${target.name}" has been restored to active jobs.` : "Job restored.",
+        "success"
+      );
+
+      fetch(`/api/jobs/${id}/restore`, { method: "POST" }).catch((e) =>
+        console.error("Error restoring job in DB:", e)
+      );
+    },
+    [jobs, showToast]
+  );
+
+  const permanentlyDeleteJob = useCallback(
     (id: string) => {
       const target = jobs.find((j) => j.id === id);
       setJobs((prev) => prev.filter((j) => j.id !== id));
       setInvoices((prev) => prev.filter((inv) => inv.jobId !== id));
       setExcelFiles((prev) => prev.filter((xf) => xf.jobId !== id));
       showToast(
-        "Job Removed",
-        target ? `"${target.name}" and associated records removed.` : "Job removed.",
+        "Job Permanently Removed",
+        target ? `"${target.name}" and associated records permanently deleted.` : "Job removed.",
         "error"
+      );
+
+      fetch(`/api/jobs/${id}?permanent=true`, { method: "DELETE" }).catch((e) =>
+        console.error("Error permanently deleting job from DB:", e)
       );
     },
     [jobs, showToast]
   );
+
+  const refreshJobs = fetchDbJobs;
 
   const getJobById = useCallback(
     (id: string) => jobs.find((j) => j.id === id),
@@ -563,25 +922,139 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       permKey: "view" | "create" | "edit" | "delete" | "approve",
       value: boolean
     ) => {
-      setRoles((prev) =>
-        prev.map((r) => {
+      // Prevent lockout: Admin role must keep accessControl view permission
+      if (roleId === "role-admin" && moduleKey === "accessControl" && permKey === "view" && value === false) {
+        showToast(
+          "Safety Protection",
+          "Administrator role must retain view access to Access Control to prevent lockout.",
+          "error"
+        );
+        return;
+      }
+
+      let targetRolePerms: any = null;
+
+      setRoles((prev) => {
+        const next = prev.map((r) => {
           if (r.id !== roleId) return r;
-          return {
-            ...r,
-            permissions: {
-              ...r.permissions,
-              [moduleKey]: {
-                ...r.permissions[moduleKey],
-                [permKey]: value,
-              },
+          const updatedPerms = {
+            ...r.permissions,
+            [moduleKey]: {
+              ...r.permissions[moduleKey],
+              [permKey]: value,
             },
           };
-        })
-      );
-      showToast("Permissions Policy Updated", `Updated ${String(moduleKey)} permission for role.`, "info");
+          targetRolePerms = updatedPerms;
+          return {
+            ...r,
+            permissions: updatedPerms,
+          };
+        });
+        try {
+          localStorage.setItem("erp_custom_roles_policy", JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+
+      // Synchronize role permissions directly with PostgreSQL database
+      if (targetRolePerms) {
+        fetch("/api/permissions", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            roleId,
+            permissions: targetRolePerms,
+          }),
+        }).catch((e) => console.error("Error saving role permissions to PostgreSQL:", e));
+      }
+
+      showToast("Permissions Policy Updated", `Updated ${String(moduleKey)} permission for role in PostgreSQL.`, "info");
     },
     [showToast]
   );
+
+  // Updates custom per-user permissions in PostgreSQL database
+  const updateUserPermissions = useCallback(
+    async (
+      userId: string,
+      permissions: Record<string, any>,
+      resetToRoleDefault = false
+    ): Promise<boolean> => {
+      try {
+        const res = await fetch(`/api/users/${userId}/permissions`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ permissions, resetToRoleDefault }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast("Update Failed", data.error || "Could not update user permissions.", "error");
+          return false;
+        }
+
+        setUsersAccess((prev) =>
+          prev.map((u) =>
+            u.id === userId
+              ? {
+                  ...u,
+                  permissions: resetToRoleDefault ? undefined : permissions,
+                  hasCustomPermissions: !resetToRoleDefault,
+                }
+              : u
+          )
+        );
+
+        if ((userId === currentUserId || userId === activeUserId) && data.effectivePermissions) {
+          setUserPermissions(resetToRoleDefault ? null : permissions);
+        }
+
+        showToast(
+          "Permissions Saved",
+          data.message || "Permissions updated in PostgreSQL database and applied to UI.",
+          "success"
+        );
+        return true;
+      } catch (err) {
+        console.error("Error updating user permissions:", err);
+        showToast("Error", "Could not connect to database.", "error");
+        return false;
+      }
+    },
+    [currentUserId, activeUserId, showToast]
+  );
+
+  // Switch active persona / user view
+  const switchToUser = useCallback(
+    (userId: string) => {
+      const target = usersAccess.find((u) => u.id === userId || u.email === userId);
+      if (!target) return;
+      setActiveUserId(target.id);
+
+      if (target.roleId === "role-admin" || target.role === "admin") {
+        setCurrentRole("admin");
+      } else if (target.roleId === "role-supervisor" || target.role === "supervisor") {
+        setCurrentRole("supervisor");
+      } else {
+        setCurrentRole("employee");
+      }
+
+      showToast(
+        `Previewing as ${target.name}`,
+        `Sidebar now reflects the exact access permissions assigned to ${target.name}.`,
+        "info"
+      );
+    },
+    [usersAccess, showToast]
+  );
+
+  // Reset to primary administrator persona
+  const resetToAdminUser = useCallback(() => {
+    setActiveUserId(currentUserId);
+    setCurrentRole("admin");
+    showToast("Admin View Restored", "Returned to primary Administrator view with full access.", "success");
+  }, [currentUserId, showToast]);
 
   const addRole = useCallback(
     (roleData: Omit<Role, "id">): Role => {
@@ -596,17 +1069,22 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     [showToast]
   );
 
-  // User Access CRUD with Soft Delete
+  // User Access CRUD with Soft Delete and PostgreSQL API Sync
   const addUserAccess = useCallback(
-    (userData: Omit<UserAccess, "id" | "lastLogin">): UserAccess => {
+    (userData: Omit<UserAccess, "id" | "lastLogin"> & { id?: string }): UserAccess => {
       const newUser: UserAccess = {
         ...userData,
-        id: "usr-" + Date.now().toString(36),
+        id: userData.id || ("usr-" + Date.now().toString(36)),
         lastLogin: "Never (Invited)",
         isDeleted: false,
         createdAt: new Date().toISOString().split("T")[0],
       };
-      setUsersAccess((prev) => [newUser, ...prev]);
+      setUsersAccess((prev) => {
+        const filtered = prev.filter(
+          (u) => u.id !== newUser.id && u.email.toLowerCase() !== newUser.email.toLowerCase()
+        );
+        return [newUser, ...filtered];
+      });
       showToast("User Account Created", `Account for "${newUser.name}" created successfully.`, "success");
       return newUser;
     },
@@ -614,11 +1092,32 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const updateUserAccess = useCallback(
-    (id: string, updates: Partial<UserAccess>) => {
+    (id: string, updates: Partial<UserAccess> & { newPassword?: string }) => {
       setUsersAccess((prev) =>
         prev.map((u) => (u.id === id ? { ...u, ...updates } : u))
       );
       showToast("User Account Updated", "User profile and role settings saved.", "success");
+
+      // Sync with PostgreSQL API
+      const roleMap: Record<string, string> = {
+        "role-admin": "admin",
+        "role-supervisor": "supervisor",
+        "role-employer": "employee",
+      };
+      const mappedRole = updates.roleId ? roleMap[updates.roleId] : undefined;
+
+      fetch(`/api/users/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: updates.name,
+          email: updates.email,
+          phone: updates.phone,
+          role: mappedRole,
+          status: updates.status,
+          newPassword: updates.newPassword,
+        }),
+      }).catch((e) => console.error("Error updating user in DB:", e));
     },
     [showToast]
   );
@@ -654,6 +1153,12 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
         `User "${target.name}" deactivated (soft-deleted). Credentials revoked.`,
         "info"
       );
+
+      // Sync with PostgreSQL API
+      fetch(`/api/users/${id}`, { method: "DELETE" }).catch((e) =>
+        console.error("Error soft-deleting user in DB:", e)
+      );
+
       return true;
     },
     [usersAccess, showToast]
@@ -676,6 +1181,11 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
         "User Reactivated",
         `User "${target.name}" account has been restored to active.`,
         "success"
+      );
+
+      // Sync with PostgreSQL API
+      fetch(`/api/users/${id}/restore`, { method: "POST" }).catch((e) =>
+        console.error("Error restoring user in DB:", e)
       );
     },
     [usersAccess, showToast]
@@ -703,6 +1213,11 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
         "User Account Purged",
         target ? `"${target.name}" permanently deleted.` : "User permanently deleted.",
         "error"
+      );
+
+      // Sync with PostgreSQL API
+      fetch(`/api/users/${id}?permanent=true`, { method: "DELETE" }).catch((e) =>
+        console.error("Error permanently deleting user from DB:", e)
       );
     },
     [usersAccess, showToast]
@@ -757,6 +1272,9 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(
     () => ({
+      currentRole,
+      setCurrentRole,
+      can,
       jobs,
       suppliers,
       invoices,
@@ -770,6 +1288,10 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       addJob,
       updateJob,
       deleteJob,
+      softDeleteJob,
+      restoreJob,
+      permanentlyDeleteJob,
+      refreshJobs,
       getJobById,
       addSupplier,
       updateSupplier,
@@ -794,6 +1316,16 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       softDeleteUserAccess,
       restoreUserAccess,
       permanentlyDeleteUserAccess,
+      refreshUsers: fetchDbUsers,
+      updateUserPermissions,
+      refreshPermissions: fetchDbRolesPermissions,
+      currentUserId,
+      activeUserId,
+      setActiveUserId,
+      activeUser,
+      switchToUser,
+      resetToAdminUser,
+      isPreviewMode,
       getJobInvoices,
       getJobSuppliers,
       getJobExcelFiles,
@@ -805,6 +1337,9 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       pendingApprovalsCount,
     }),
     [
+      currentRole,
+      setCurrentRole,
+      can,
       jobs,
       suppliers,
       invoices,
@@ -818,6 +1353,10 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       addJob,
       updateJob,
       deleteJob,
+      softDeleteJob,
+      restoreJob,
+      permanentlyDeleteJob,
+      refreshJobs,
       getJobById,
       addSupplier,
       updateSupplier,
@@ -842,6 +1381,16 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       softDeleteUserAccess,
       restoreUserAccess,
       permanentlyDeleteUserAccess,
+      fetchDbUsers,
+      updateUserPermissions,
+      fetchDbRolesPermissions,
+      currentUserId,
+      activeUserId,
+      setActiveUserId,
+      activeUser,
+      switchToUser,
+      resetToAdminUser,
+      isPreviewMode,
       getJobInvoices,
       getJobSuppliers,
       getJobExcelFiles,

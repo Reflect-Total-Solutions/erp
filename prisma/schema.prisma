@@ -13,11 +13,12 @@ datasource db {
 // ─── RBAC ────────────────────────────────────────────────────────────────────
 
 model Role {
-  id          String           @id @default(cuid())
-  name        String           @unique
-  description String?
-  createdAt   DateTime         @default(now()) @map("created_at")
-  updatedAt   DateTime         @updatedAt @map("updated_at")
+  id              String           @id @default(cuid())
+  name            String           @unique
+  description     String?
+  permissionsData Json?            @map("permissions_data")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
 
   users       UserRole[]
   permissions RolePermission[]
@@ -68,7 +69,11 @@ model User {
   email        String    @unique
   name         String
   passwordHash String    @map("password_hash")
-  isActive     Boolean   @default(true) @map("is_active")
+  phone        String?   @map("phone")
+  jobTitle     String?   @map("job_title")
+  isActive           Boolean   @default(true) @map("is_active")
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  permissions        Json?     @map("permissions")
   lastLoginAt  DateTime? @map("last_login_at")
   deletedAt    DateTime? @map("deleted_at")
   createdAt    DateTime  @default(now()) @map("created_at")
@@ -158,3 +163,49 @@ model AuditLog {
   @@index([resource, resourceId])
   @@map("audit_logs")
 }
+
+// ─── Jobs & Documents ─────────────────────────────────────────────────────────
+
+model Job {
+  id          String        @id @default(cuid())
+  jobCode     String        @unique @map("job_code")
+  name        String
+  date        String        // YYYY-MM-DD
+  description String?
+  remarks     String?
+  status      String        @default("Active") // "Active" | "Pending" | "Completed" | "In Review"
+  supplierIds String[]      @default([]) @map("supplier_ids")
+  deletedAt   DateTime?     @map("deleted_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  documents   JobDocument[]
+
+  @@index([jobCode, deletedAt])
+  @@index([status, deletedAt])
+  @@index([name, deletedAt])
+  @@index([deletedAt, createdAt])
+  @@map("jobs")
+}
+
+model JobDocument {
+  id          String    @id @default(cuid())
+  jobId       String    @map("job_id")
+  fileName    String    @map("file_name")
+  customName  String?   @map("custom_name")
+  fileDate    String?   @map("file_date")
+  fileSize    String    @map("file_size")
+  fileType    String?   @map("file_type")
+  fileUrl     String    @map("file_url")
+  storagePath String?   @map("storage_path")
+  status      String    @default("Processed")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, deletedAt])
+  @@map("job_documents")
+}
+

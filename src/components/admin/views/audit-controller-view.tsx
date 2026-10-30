@@ -1,12 +1,14 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import Link from "next/link";
 import {
   ClipboardCheck,
   CheckCircle2,
   AlertTriangle,
   Clock,
   ShieldCheck,
+  ShieldAlert,
   Search,
   Filter,
   Eye,
@@ -226,7 +228,7 @@ const initialAuditRules: AuditRule[] = [
 ];
 
 export function AuditControllerView() {
-  const { showToast } = useAdminData();
+  const { showToast, can, currentRole } = useAdminData();
 
   // Active Tab: "ledger" | "rules" | "reports"
   const [activeTab, setActiveTab] = useState<"ledger" | "rules" | "reports">("ledger");
@@ -318,6 +320,29 @@ export function AuditControllerView() {
     setInspectingRecord(rec);
     setInspectNotes(rec.auditorNotes);
   };
+
+  if (!can("auditController", "view")) {
+    return (
+      <div className="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border border-slate-200 text-center max-w-lg mx-auto mt-8 shadow-xs">
+        <div className="h-14 w-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-4">
+          <ShieldAlert className="h-7 w-7" />
+        </div>
+        <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
+        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+          You do not have authorization to view the Audit Controller & Compliance ledger. Contact your system administrator if access is needed.
+        </p>
+        <div className="mt-4 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
+          Active Role: <span className="font-bold text-blue-600 capitalize">{currentRole}</span>
+        </div>
+        <Link
+          href="/admin"
+          className="mt-6 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
+        >
+          Return to Dashboard
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

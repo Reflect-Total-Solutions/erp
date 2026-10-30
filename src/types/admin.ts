@@ -14,6 +14,9 @@ export interface Job {
   status: JobStatus;
   supplierIds: string[];
   createdAt: string;
+  deletedAt?: string | null;
+  isDeleted?: boolean;
+  documents?: ExcelFile[];
 }
 
 export interface Supplier {
@@ -36,8 +39,11 @@ export interface ExcelFile {
   customName?: string;
   fileDate?: string;
   fileSize: string;
+  fileType?: string;
   uploadDateTime: string;
   status: ExcelFileStatus;
+  fileUrl?: string;
+  storagePath?: string;
 }
 
 export interface InvoiceAttachment {
@@ -45,6 +51,8 @@ export interface InvoiceAttachment {
   fileName: string;
   fileSize: string;
   fileType: "pdf" | "image";
+  fileUrl?: string;
+  storagePath?: string;
 }
 
 export interface Invoice {
@@ -58,6 +66,8 @@ export interface Invoice {
   fileSize: string;
   uploadDate: string;
   status: InvoiceStatus;
+  fileUrl?: string;
+  storagePath?: string;
   attachments?: InvoiceAttachment[];
 }
 
@@ -88,6 +98,8 @@ export interface Role {
     excelUploads: ModulePermission;
     invoices: ModulePermission;
     suppliers: ModulePermission;
+    approvals: ModulePermission;
+    auditController: ModulePermission;
     accessControl: ModulePermission;
   };
 }
@@ -98,13 +110,18 @@ export interface UserAccess {
   id: string;
   name: string;
   email: string;
+  phone?: string;
+  jobTitle?: string;
   department: string;
   roleId: string; // "role-admin" | "role-supervisor" | "role-employer"
+  role?: string;
   status: UserStatus;
   lastLogin: string;
   isDeleted?: boolean;
   deletedAt?: string;
   createdAt?: string;
+  permissions?: Record<string, ModulePermission>;
+  hasCustomPermissions?: boolean;
 }
 
 export interface AccessAuditLog {

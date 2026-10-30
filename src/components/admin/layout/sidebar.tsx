@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useMemo } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -13,52 +13,77 @@ import {
   ShieldCheck,
   ClipboardCheck,
   CheckCircle,
+  Eye,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAdminData } from "@/context/admin-data-context";
+import { ERPModule, Action } from "@/lib/permissions";
 
-const NAV_ITEMS = [
+interface NavItem {
+  name: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  exact: boolean;
+  module?: ERPModule;
+  action?: Action;
+}
+
+const NAV_ITEMS: NavItem[] = [
   {
     name: "Dashboard",
     href: "/admin",
     icon: LayoutDashboard,
     exact: true,
+    module: "dashboard",
+    action: "view",
   },
   {
     name: "Jobs",
     href: "/admin/jobs",
     icon: Briefcase,
     exact: false,
+    module: "jobs",
+    action: "view",
   },
   {
     name: "Suppliers",
     href: "/admin/suppliers",
     icon: Users,
     exact: false,
+    module: "suppliers",
+    action: "view",
   },
   {
     name: "Invoices",
     href: "/admin/invoices",
     icon: FileText,
     exact: false,
+    module: "invoices",
+    action: "view",
   },
   {
     name: "Approvals",
     href: "/admin/approvals",
     icon: CheckCircle,
     exact: false,
+    module: "approvals",
+    action: "view",
   },
   {
     name: "Access Control",
     href: "/admin/access-control",
     icon: ShieldCheck,
     exact: false,
+    module: "accessControl",
+    action: "view",
   },
   {
     name: "Audit Controller",
     href: "/admin/audit-controller",
     icon: ClipboardCheck,
     exact: false,
+    module: "auditController",
+    action: "view",
   },
 ];
 
@@ -74,7 +99,28 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
     () => true,
     () => false
   );
-  const { pendingApprovalsCount } = useAdminData();
+  const {
+    pendingApprovalsCount,
+    can,
+    currentRole,
+    activeUserId,
+    activeUser,
+    isPreviewMode,
+    resetToAdminUser,
+    switchToUser,
+    usersAccess,
+    currentUserId,
+  } = useAdminData();
+
+  // Filter navigation items strictly based on role permission allowances.
+  // When a module's access is revoked in Access Control, it disappears from the sidebar completely.
+  const visibleNavItems = useMemo(() => {
+    return NAV_ITEMS.filter((item) => {
+      if (!item.module) return true;
+      const requiredAction: Action = item.action || "view";
+      return can(item.module, requiredAction);
+    });
+  }, [can, activeUserId, usersAccess, currentRole]);
 
   const isLinkActive = (itemHref: string, exact: boolean) => {
     if (exact) {
@@ -136,7 +182,7 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
 
         {/* Navigation Menu */}
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const active = mounted ? isLinkActive(item.href, item.exact) : false;
             const Icon = item.icon;
             const isApprovals = item.name === "Approvals";
@@ -178,18 +224,75 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
           })}
         </div>
 
-        {/* Footer User Info */}
-        <div className="p-3 border-t border-slate-200">
-          <div className="flex items-center gap-2.5 rounded-lg p-2 bg-slate-50 border border-slate-200">
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-200 text-slate-700 font-bold text-xs">
-              A
+        {/* Footer User Info / Persona Switcher */}
+        {isPreviewMode && activeUser ? (
+          <div className="p-3 border-t border-amber-200 bg-amber-50/90">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wider flex items-center gap-1">
+                <Eye className="h-3 w-3 text-amber-700" />
+                Preview Mode
+              </span>
+              <button
+                type="button"
+                onClick={resetToAdminUser}
+                className="text-[10px] font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
+                title="Exit Preview and return to Administrator view"
+              >
+                Exit Preview ✕
+              </button>
             </div>
-            <div className="text-left">
-              <p className="text-xs font-semibold text-slate-800 leading-tight">Admin</p>
-              <p className="text-[10px] text-slate-500">Online</p>
+            <div className="flex items-center gap-2 rounded-lg p-2 bg-white border border-amber-200 shadow-2xs">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-100 text-amber-800 font-bold text-xs uppercase shrink-0">
+                {activeUser?.name ? activeUser.name[0] : "U"}
+              </div>
+              <div className="text-left flex-1 min-w-0">
+                <p className="text-xs font-bold text-slate-900 leading-tight truncate">
+                  {activeUser?.name}
+                </p>
+                <p className="text-[10px] text-amber-700 font-semibold capitalize truncate">
+                  {activeUser?.hasCustomPermissions ? "Custom Permissions" : `${currentRole} Policy`}
+                </p>
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="p-3 border-t border-slate-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                Persona View
+              </span>
+              <span className="text-[10px] font-bold text-blue-600 capitalize bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                {currentRole}
+              </span>
+            </div>
+            <div className="relative">
+              <select
+                value={activeUserId || currentUserId || ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val || val === currentUserId) {
+                    resetToAdminUser();
+                  } else {
+                    switchToUser(val);
+                  }
+                }}
+                className="w-full text-xs font-medium text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-hidden focus:ring-1 focus:ring-blue-500 cursor-pointer transition-colors"
+                title="Select a user to preview the system and sidebar through their assigned permissions"
+              >
+                <option value={currentUserId || ""}>
+                  👑 Administrator (Full Access)
+                </option>
+                {usersAccess
+                  .filter((u) => !u.isDeleted && u.id !== currentUserId)
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      👤 {u.name} ({u.role || u.department || "User"}{u.hasCustomPermissions ? " - Custom" : ""})
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </div>
+        )}
       </aside>
     </>
   );

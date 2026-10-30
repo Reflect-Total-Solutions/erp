@@ -16,6 +16,10 @@ import {
   CheckSquare,
   Square,
   FileSpreadsheet,
+  ShieldAlert,
+  RotateCcw,
+  AlertTriangle,
+  Briefcase,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
@@ -40,12 +44,19 @@ export function JobsView() {
     excelFiles,
     suppliers,
     deleteJob,
+    restoreJob,
+    permanentlyDeleteJob,
     updateJob,
     getJobTotalInvoiceValue,
     getJobInvoices,
     getJobSuppliers,
     getJobExcelFiles,
+    can,
+    currentRole,
   } = useAdminData();
+
+  // Tab: "active" | "trash"
+  const [activeTab, setActiveTab] = useState<"active" | "trash">("active");
 
   // Search and filter
   const [searchTerm, setSearchTerm] = useState("");
@@ -63,6 +74,7 @@ export function JobsView() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
+  const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<Job | null>(null);
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -104,9 +116,26 @@ export function JobsView() {
     }
   };
 
+  const handleConfirmPermanentDelete = () => {
+    if (permanentDeleteTarget) {
+      permanentlyDeleteJob(permanentDeleteTarget.id);
+      setPermanentDeleteTarget(null);
+    }
+  };
+
+  const trashCount = useMemo(() => jobs.filter((j) => j.isDeleted).length, [jobs]);
+
+  // Tab-filtered jobs
+  const tabJobs = useMemo(() => {
+    if (activeTab === "active") {
+      return jobs.filter((j) => !j.isDeleted);
+    }
+    return jobs.filter((j) => j.isDeleted);
+  }, [jobs, activeTab]);
+
   // Filtered jobs
   const filteredJobs = useMemo(() => {
-    return jobs.filter((job) => {
+    return tabJobs.filter((job) => {
       const matchSearch =
         job.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (job.jobCode && job.jobCode.toLowerCase().includes(searchTerm.toLowerCase())) ||
@@ -118,13 +147,36 @@ export function JobsView() {
 
       return matchSearch && matchDate && matchStatus;
     });
-  }, [jobs, searchTerm, dateFilter, statusFilter]);
+  }, [tabJobs, searchTerm, dateFilter, statusFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
   const paginatedJobs = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
     return filteredJobs.slice(start, start + pageSize);
   }, [filteredJobs, currentPage, pageSize]);
+
+  if (!can("jobs", "view")) {
+    return (
+      <div className="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border border-slate-200 text-center max-w-lg mx-auto mt-8 shadow-xs">
+        <div className="h-14 w-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-4">
+          <ShieldAlert className="h-7 w-7" />
+        </div>
+        <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
+        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+          You do not have authorization to view Jobs & Work Orders. Contact your system administrator if access is needed.
+        </p>
+        <div className="mt-4 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
+          Active Role: <span className="font-bold text-blue-600 capitalize">{currentRole}</span>
+        </div>
+        <Link
+          href="/admin"
+          className="mt-6 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
+        >
+          Return to Dashboard
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -148,15 +200,59 @@ export function JobsView() {
             <span>Download Cost Report ({filteredJobs.length})</span>
           </button>
 
+          {can("jobs", "create") && (
+            <button
+              type="button"
+              onClick={() => setIsCreateOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors shrink-0"
+            >
+              <Plus className="h-4 w-4" />
+              Create New Job
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Active vs Trash View Toggle */}
+      <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg w-fit">
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab("active");
+            setCurrentPage(1);
+          }}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+            activeTab === "active"
+              ? "bg-white text-blue-600 shadow-2xs"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <span>Active Jobs</span>
+          <span className="rounded-full bg-blue-100 text-blue-700 px-1.5 py-0.2 text-[10px] font-bold">
+            {jobs.filter((j) => !j.isDeleted).length}
+          </span>
+        </button>
+
+        {can("jobs", "delete") && (
           <button
             type="button"
-            onClick={() => setIsCreateOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors shrink-0"
+            onClick={() => {
+              setActiveTab("trash");
+              setCurrentPage(1);
+            }}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+              activeTab === "trash"
+                ? "bg-white text-rose-600 shadow-2xs"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
           >
-            <Plus className="h-4 w-4" />
-            Create New Job
+            <Trash2 className="h-3.5 w-3.5 text-rose-500" />
+            <span>Trash / Archived</span>
+            <span className="rounded-full bg-slate-200 text-slate-700 px-1.5 py-0.2 text-[10px] font-bold">
+              {trashCount}
+            </span>
           </button>
-        </div>
+        )}
       </div>
 
       {/* Reusable Filter Toolbar */}
@@ -268,7 +364,42 @@ export function JobsView() {
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {filteredJobs.length === 0 ? (
           <div className="p-8 text-center text-xs text-slate-500">
-            No jobs match your search. Click &quot;Create New Job&quot; above to add one.
+            {tabJobs.length === 0 ? (
+              activeTab === "trash" ? (
+                <div className="py-6 flex flex-col items-center justify-center">
+                  <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 mb-2">
+                    <Trash2 className="h-5 w-5" />
+                  </div>
+                  <p className="text-sm font-semibold text-slate-700">Trash is empty</p>
+                  <p className="text-xs text-slate-400 mt-1">No archived jobs found in trash.</p>
+                </div>
+              ) : (
+                <div className="py-8 flex flex-col items-center justify-center">
+                  <div className="h-12 w-12 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 mb-3">
+                    <Briefcase className="h-6 w-6 text-blue-600" />
+                  </div>
+                  <p className="text-sm font-bold text-slate-800">No jobs found</p>
+                  <p className="text-xs text-slate-500 mt-1 max-w-sm text-center">
+                    No jobs have been created yet. Click &quot;Create New Job&quot; to initialize a project schedule.
+                  </p>
+                  {can("jobs", "create") && (
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateOpen(true)}
+                      className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Create New Job
+                    </button>
+                  )}
+                </div>
+              )
+            ) : (
+              <div className="py-6">
+                <p className="font-medium text-slate-700">No jobs match your search or filter criteria.</p>
+                <p className="text-slate-400 mt-1">Try resetting your search query or filters.</p>
+              </div>
+            )}
           </div>
         ) : (
           <>
@@ -423,42 +554,74 @@ export function JobsView() {
                       </td>
                       <td className="px-5 py-3.5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const jInvs = getJobInvoices(job.id);
-                              const jSups = getJobSuppliers(job.id);
-                              const jExcels = getJobExcelFiles(job.id);
-                              exportJobDetailedReportToCsv(job, jInvs, jSups, jExcels);
-                            }}
-                            className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
-                            title="Download Job Cost & Invoices Dossier"
-                          >
-                            <Download className="h-4 w-4" />
-                          </button>
-                          <Link
-                            href={`/admin/jobs/${job.id}`}
-                            className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
-                            title="View Details"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Link>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(job)}
-                            className="p-1 rounded text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
-                            title="Edit Job"
-                          >
-                            <Edit2 className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setDeletingJobId(job.id)}
-                            className="p-1 rounded text-slate-500 hover:text-rose-600 hover:bg-slate-100 transition-colors"
-                            title="Delete Job"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          {activeTab === "active" ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const jInvs = getJobInvoices(job.id);
+                                  const jSups = getJobSuppliers(job.id);
+                                  const jExcels = getJobExcelFiles(job.id);
+                                  exportJobDetailedReportToCsv(job, jInvs, jSups, jExcels);
+                                }}
+                                className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+                                title="Download Job Cost & Invoices Dossier"
+                              >
+                                <Download className="h-4 w-4" />
+                              </button>
+                              <Link
+                                href={`/admin/jobs/${job.id}`}
+                                className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+                                title="View Details"
+                              >
+                                <Eye className="h-4 w-4" />
+                              </Link>
+                              {can("jobs", "edit") && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEdit(job)}
+                                  className="p-1 rounded text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+                                  title="Edit Job"
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </button>
+                              )}
+                              {can("jobs", "delete") && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDeletingJobId(job.id)}
+                                  className="p-1 rounded text-slate-500 hover:text-rose-600 hover:bg-slate-100 transition-colors"
+                                  title="Move Job to Trash"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {can("jobs", "edit") && (
+                                <button
+                                  type="button"
+                                  onClick={() => restoreJob(job.id)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer"
+                                  title="Restore to Active"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  <span>Restore</span>
+                                </button>
+                              )}
+                              {can("jobs", "delete") && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPermanentDeleteTarget(job)}
+                                  className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                                  title="Permanently Delete Job"
+                                >
+                                  <Trash2 className="h-4 w-4 text-rose-500" />
+                                </button>
+                              )}
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -603,18 +766,24 @@ export function JobsView() {
         </Modal>
       )}
 
-      {/* Delete Confirmation Modal */}
+      {/* Delete / Move to Trash Modal */}
       {deletingJobId && (
         <Modal
           isOpen={true}
           onClose={() => setDeletingJobId(null)}
-          title="Delete Job"
+          title="Move Job to Trash"
           maxWidth="sm"
         >
           <div className="space-y-3">
-            <p className="text-xs text-slate-600">
-              Are you sure you want to delete this job? All linked invoices and attached files will also be removed.
-            </p>
+            <div className="flex items-start gap-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+              <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="text-xs text-amber-900 space-y-1">
+                <p className="font-semibold">Move to Trash / Archive</p>
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  Moving this job to trash will remove it from active lists. All linked documents, invoices, and audit records remain preserved and can be restored at any time.
+                </p>
+              </div>
+            </div>
 
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
               <button
@@ -627,9 +796,48 @@ export function JobsView() {
               <button
                 type="button"
                 onClick={handleConfirmDelete}
+                className="h-8 px-3.5 rounded-lg bg-amber-600 text-xs font-medium text-white hover:bg-amber-700"
+              >
+                Move to Trash
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Permanent Delete Modal */}
+      {permanentDeleteTarget && (
+        <Modal
+          isOpen={true}
+          onClose={() => setPermanentDeleteTarget(null)}
+          title="Permanently Delete Job"
+          maxWidth="sm"
+        >
+          <div className="space-y-3">
+            <div className="flex items-start gap-3 p-3 bg-rose-50 rounded-lg border border-rose-200">
+              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+              <div className="text-xs text-rose-900 space-y-1">
+                <p className="font-semibold">Permanent Destruction Warning</p>
+                <p className="text-[11px] text-rose-800 leading-relaxed">
+                  Are you sure you want to permanently delete <strong>{permanentDeleteTarget.name}</strong> ({permanentDeleteTarget.jobCode})? This action <strong>cannot</strong> be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setPermanentDeleteTarget(null)}
+                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmPermanentDelete}
                 className="h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-medium text-white hover:bg-rose-700"
               >
-                Delete
+                Permanently Delete
               </button>
             </div>
           </div>

@@ -82,9 +82,27 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ── Create session ───────────────────────────────────────────────────────
   const roles = user.roles.map((ur: { role: { name: string } }) => ur.role.name);
 
+  // ── First-time login / Temporary password check ───────────────────────────
+  // If the user has never completed a login (lastLoginAt is null) or mustChangePassword flag is set:
+  const isFirstLogin = user.lastLoginAt === null || user.mustChangePassword === true;
+
+  if (isFirstLogin) {
+    return NextResponse.json({
+      ok: true,
+      mustChangePassword: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        roles,
+      },
+      message: "Temporary password detected. Please set a new permanent password to continue.",
+    });
+  }
+
+  // ── Create session ───────────────────────────────────────────────────────
   const { token, expiresAt } = await createSessionToken({
     userId: user.id,
     email: user.email,

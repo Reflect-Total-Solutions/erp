@@ -55,9 +55,28 @@ Generated    : Internal ERP Export
 }
 
 /**
+ * Triggers download from a remote URL (such as Supabase Storage)
+ */
+export function downloadFileFromUrl(url: string, filename: string) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+/**
  * Downloads a specific invoice file or triggers individual downloads for all its attachments
  */
 export function downloadMockInvoiceFile(invoice: Invoice) {
+  if (invoice.fileUrl) {
+    downloadFileFromUrl(invoice.fileUrl, invoice.fileName);
+    return;
+  }
+
   const attachments = invoice.attachments && invoice.attachments.length > 0
     ? invoice.attachments
     : [{ id: "def", fileName: invoice.fileName, fileSize: invoice.fileSize, fileType: invoice.fileName.toLowerCase().endsWith(".pdf") ? "pdf" as const : "image" as const }];
@@ -65,7 +84,11 @@ export function downloadMockInvoiceFile(invoice: Invoice) {
   // Download all attached files individually with a slight stagger so browser doesn't block
   attachments.forEach((att, idx) => {
     setTimeout(() => {
-      downloadSingleAttachment(att.fileName, `${invoice.invoiceName} - Attachment ${idx + 1}`);
+      if (att.fileUrl) {
+        downloadFileFromUrl(att.fileUrl, att.fileName);
+      } else {
+        downloadSingleAttachment(att.fileName, `${invoice.invoiceName} - Attachment ${idx + 1}`);
+      }
     }, idx * 250);
   });
 }
@@ -82,9 +105,14 @@ export function downloadAllJobExcelFiles(excelFiles: ExcelFile[]) {
 }
 
 /**
- * Generates and downloads a mock Excel file (.csv spreadsheet format)
+ * Generates and downloads an Excel file (.csv spreadsheet format or Supabase direct download)
  */
 export function downloadMockExcelFile(excelFile: ExcelFile) {
+  if (excelFile.fileUrl) {
+    downloadFileFromUrl(excelFile.fileUrl, excelFile.fileName);
+    return;
+  }
+
   const content = [
     ["Document Name", "Original File", "File Date", "File Size", "Upload Timestamp", "Status"].join(","),
     [

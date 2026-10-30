@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { supplierCreateSchema } from "@/lib/validations/supplier";
 import { logAuditEvent } from "@/lib/audit";
+import { checkSessionPermission } from "@/lib/permissions";
 
 // GET /api/suppliers
 // Supports ?status=active|trash|all&search=term&page=1&limit=50
@@ -12,6 +13,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       { error: "Unauthorized access. Please log in." },
       { status: 401 }
+    );
+  }
+
+  const isAuthorized = await checkSessionPermission(session, "suppliers", "view");
+  if (!isAuthorized) {
+    return NextResponse.json(
+      { error: "Forbidden: You do not have permission to view suppliers." },
+      { status: 403 }
     );
   }
 
@@ -94,6 +103,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "Unauthorized access. Please log in." },
       { status: 401 }
+    );
+  }
+
+  const isAuthorized = await checkSessionPermission(session, "suppliers", "create");
+  if (!isAuthorized) {
+    return NextResponse.json(
+      { error: "Forbidden: You do not have permission to register suppliers." },
+      { status: 403 }
     );
   }
 

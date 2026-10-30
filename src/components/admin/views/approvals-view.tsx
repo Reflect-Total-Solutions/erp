@@ -19,6 +19,7 @@ import {
   Download,
   AlertCircle,
   FileCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
@@ -39,6 +40,8 @@ export function ApprovalsView() {
     getJobTotalInvoiceValue,
     getJobExcelFiles,
     getJobSuppliers,
+    can,
+    currentRole,
   } = useAdminData();
 
   // Tab: "invoices" | "jobs"
@@ -150,6 +153,29 @@ export function ApprovalsView() {
     if (inspectingInvoice?.id === actionConfirm.id) setInspectingInvoice(null);
     if (inspectingJob?.id === actionConfirm.id) setInspectingJob(null);
   };
+
+  if (!can("approvals", "view")) {
+    return (
+      <div className="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border border-slate-200 text-center max-w-lg mx-auto mt-8 shadow-xs">
+        <div className="h-14 w-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-4">
+          <ShieldAlert className="h-7 w-7" />
+        </div>
+        <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
+        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+          You do not have authorization to view or process Approvals & Sign-offs. Contact your system administrator if access is required.
+        </p>
+        <div className="mt-4 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
+          Active Role: <span className="font-bold text-blue-600 capitalize">{currentRole}</span>
+        </div>
+        <Link
+          href="/admin"
+          className="mt-6 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
+        >
+          Return to Dashboard
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5" suppressHydrationWarning>
@@ -386,60 +412,64 @@ export function ApprovalsView() {
                               Inspect
                             </button>
 
-                            {isPending ? (
+                            {can("approvals", "approve") && (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setActionConfirm({
-                                      type: "approve_invoice",
-                                      id: inv.id,
-                                      title: inv.invoiceName,
-                                      subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
-                                      amount: inv.totalValue,
-                                    })
-                                  }
-                                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
-                                  title="Approve Invoice"
-                                >
-                                  <Check className="h-3.5 w-3.5" />
-                                  Approve
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setActionConfirm({
-                                      type: "reject_invoice",
-                                      id: inv.id,
-                                      title: inv.invoiceName,
-                                      subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
-                                      amount: inv.totalValue,
-                                    })
-                                  }
-                                  className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium text-[11px] flex items-center gap-1"
-                                  title="Flag / Hold Invoice"
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                  Hold
-                                </button>
+                                {isPending ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setActionConfirm({
+                                          type: "approve_invoice",
+                                          id: inv.id,
+                                          title: inv.invoiceName,
+                                          subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
+                                          amount: inv.totalValue,
+                                        })
+                                      }
+                                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
+                                      title="Approve Invoice"
+                                    >
+                                      <Check className="h-3.5 w-3.5" />
+                                      Approve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setActionConfirm({
+                                          type: "reject_invoice",
+                                          id: inv.id,
+                                          title: inv.invoiceName,
+                                          subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
+                                          amount: inv.totalValue,
+                                        })
+                                      }
+                                      className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium text-[11px] flex items-center gap-1"
+                                      title="Flag / Hold Invoice"
+                                    >
+                                      <X className="h-3.5 w-3.5" />
+                                      Hold
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setActionConfirm({
+                                        type: "reject_invoice",
+                                        id: inv.id,
+                                        title: inv.invoiceName,
+                                        subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
+                                        amount: inv.totalValue,
+                                      })
+                                    }
+                                    className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
+                                    title="Re-open for Review"
+                                  >
+                                    Re-Review
+                                  </button>
+                                )}
                               </>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setActionConfirm({
-                                    type: "reject_invoice",
-                                    id: inv.id,
-                                    title: inv.invoiceName,
-                                    subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
-                                    amount: inv.totalValue,
-                                  })
-                                }
-                                className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
-                                title="Re-open for Review"
-                              >
-                                Re-Review
-                              </button>
                             )}
                           </div>
                         </td>
@@ -551,59 +581,63 @@ export function ApprovalsView() {
                               Inspect
                             </button>
 
-                            {isPending ? (
+                            {can("approvals", "approve") && (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setActionConfirm({
-                                      type: "approve_job",
-                                      id: job.id,
-                                      title: job.name,
-                                      subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
-                                      amount: cost,
-                                    })
-                                  }
-                                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
-                                  title="Authorize Job"
-                                >
-                                  <Check className="h-3.5 w-3.5" />
-                                  Approve
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setActionConfirm({
-                                      type: "review_job",
-                                      id: job.id,
-                                      title: job.name,
-                                      subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
-                                      amount: cost,
-                                    })
-                                  }
-                                  className="px-2 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 font-medium text-[11px]"
-                                  title="Mark In Review"
-                                >
-                                  Hold
-                                </button>
+                                {isPending ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setActionConfirm({
+                                          type: "approve_job",
+                                          id: job.id,
+                                          title: job.name,
+                                          subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
+                                          amount: cost,
+                                        })
+                                      }
+                                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
+                                      title="Authorize Job"
+                                    >
+                                      <Check className="h-3.5 w-3.5" />
+                                      Approve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setActionConfirm({
+                                          type: "review_job",
+                                          id: job.id,
+                                          title: job.name,
+                                          subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
+                                          amount: cost,
+                                        })
+                                      }
+                                      className="px-2 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 font-medium text-[11px]"
+                                      title="Mark In Review"
+                                    >
+                                      Hold
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setActionConfirm({
+                                        type: "review_job",
+                                        id: job.id,
+                                        title: job.name,
+                                        subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
+                                        amount: cost,
+                                      })
+                                    }
+                                    className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
+                                    title="Re-open Review"
+                                  >
+                                    Re-Review
+                                  </button>
+                                )}
                               </>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setActionConfirm({
-                                    type: "review_job",
-                                    id: job.id,
-                                    title: job.name,
-                                    subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
-                                    amount: cost,
-                                  })
-                                }
-                                className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
-                                title="Re-open Review"
-                              >
-                                Re-Review
-                              </button>
                             )}
                           </div>
                         </td>

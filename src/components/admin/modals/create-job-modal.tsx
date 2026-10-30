@@ -15,6 +15,7 @@ import {
   AlertCircle,
   CheckCircle2,
   FileUp,
+  Loader2,
 } from "lucide-react";
 
 interface CreateJobModalProps {
@@ -48,6 +49,8 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
   const [currentDate] = useState(() => (typeof window !== "undefined" ? new Date().toISOString().split("T")[0] : "2026-10-23"));
   const [stagedItems, setStagedItems] = useState<StagedJobItem[]>([INITIAL_STAGED_ROW]);
   const [isDragging, setIsDragging] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState("");
   const [errors, setErrors] = useState<Record<string, { jobName?: string; jobDate?: string }>>({});
 
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
@@ -203,8 +206,9 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
   };
 
   // Submit all rows
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
 
     const rowErrors: Record<string, { jobName?: string; jobDate?: string }> = {};
     let hasError = false;
@@ -229,41 +233,107 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
       return;
     }
 
+    setIsSubmitting(true);
     let firstJobId: string | null = null;
 
-    stagedItems.forEach((row, index) => {
-      // 1. Create Job with its own Job Name and Job Date
-      const created = addJob({
-        name: row.jobName.trim(),
-        jobCode: row.jobCode.trim().toUpperCase() || undefined,
-        date: row.jobDate,
-        remarks: row.remarks.trim() || undefined,
-        status: "Active",
-        supplierIds: [],
-      });
+    try {
+      for (let index = 0; index < stagedItems.length; index++) {
+        const row = stagedItems[index];
+        let uploadedDocs: any[] = [];
 
-      if (index === 0) {
-        firstJobId = created.id;
+        // Upload attached file to Supabase Storage if present
+        if (row.file) {
+          setUploadStatus(`Uploading "${row.fileName || row.file.name}" to Supabase Storage...`);
+          try {
+            const formData = new FormData();
+            formData.append("file", row.file);
+            formData.append("folder", "jobs");
+            formData.append("customName", row.jobName.trim());
+            formData.append("fileDate", row.jobDate);
+
+            const uploadRes = await fetch("/api/upload", {
+              method: "POST",
+              body: formData,
+            });
+
+            if (uploadRes.ok) {
+              const uploadJson = await uploadRes.json();
+              if (uploadJson.success && Array.isArray(uploadJson.files) && uploadJson.files.length > 0) {
+                uploadedDocs = uploadJson.files.map((f: any) => ({
+                  fileName: f.fileName,
+                  customName: row.jobName.trim(),
+                  fileDate: row.jobDate,
+                  fileSize: f.fileSize,
+                  fileType: f.fileType,
+                  fileUrl: f.fileUrl,
+                  storagePath: f.storagePath,
+                  status: "Processed" as const,
+                }));
+              }
+            } else {
+              console.warn("Direct upload to Supabase returned status:", uploadRes.status);
+            }
+          } catch (uploadErr) {
+            console.error("Failed uploading document to Supabase Storage:", uploadErr);
+          }
+        }
+
+        // Create Job in PostgreSQL with linked Supabase documents
+        setUploadStatus(`Creating Job "${row.jobName.trim()}" in PostgreSQL...`);
+        const created = addJob({
+          name: row.jobName.trim(),
+          jobCode: row.jobCode.trim().toUpperCase() || undefined,
+          date: row.jobDate,
+          remarks: row.remarks.trim() || undefined,
+          status: "Active",
+          supplierIds: [],
+          documents: uploadedDocs,
+        });
+
+        if (index === 0) {
+          firstJobId = created.id;
+        }
+
+        // Attach to Excel files view state
+        if (uploadedDocs.length > 0) {
+          addExcelFiles(
+            uploadedDocs.map((doc) => ({
+              jobId: created.id,
+              fileName: doc.fileName,
+              customName: doc.customName,
+              fileDate: doc.fileDate,
+              fileSize: doc.fileSize,
+              fileType: doc.fileType,
+              fileUrl: doc.fileUrl,
+              storagePath: doc.storagePath,
+              status: doc.status || "Processed",
+            }))
+          );
+        } else if (row.file) {
+          // Fallback local staging
+          addExcelFiles([
+            {
+              jobId: created.id,
+              fileName: row.fileName || row.file.name,
+              customName: row.jobName.trim(),
+              fileDate: row.jobDate,
+              fileSize: row.fileSize || "120 KB",
+              status: "Processed",
+            },
+          ]);
+        }
       }
 
-      // 2. Attach Excel file to this specific Job if uploaded
-      if (row.file) {
-        addExcelFiles([
-          {
-            jobId: created.id,
-            fileName: row.fileName || row.file.name,
-            customName: row.jobName.trim(),
-            fileDate: row.jobDate,
-            fileSize: row.fileSize || "120 KB",
-            status: "Processed",
-          },
-        ]);
+      resetRows();
+      onClose();
+      if (firstJobId && onJobCreated) {
+        onJobCreated(firstJobId);
       }
-    });
-
-    onClose();
-    if (firstJobId && onJobCreated) {
-      onJobCreated(firstJobId);
+    } catch (submitErr) {
+      console.error("Error creating jobs:", submitErr);
+    } finally {
+      setIsSubmitting(false);
+      setUploadStatus("");
     }
   };
 
@@ -533,27 +603,43 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
         </div>
 
         {/* Modal Actions */}
-        <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-200">
           <div className="text-xs text-slate-500">
-            Total to create: <strong className="text-slate-900">{stagedItems.length} Job{stagedItems.length > 1 ? "s" : ""}</strong>
-            {" "}({stagedItems.filter((i) => i.file).length} with Excel files)
+            {isSubmitting ? (
+              <span className="inline-flex items-center gap-1.5 text-blue-600 font-semibold animate-pulse">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {uploadStatus || "Uploading to Supabase & creating jobs..."}
+              </span>
+            ) : (
+              <>
+                Total to create: <strong className="text-slate-900">{stagedItems.length} Job{stagedItems.length > 1 ? "s" : ""}</strong>
+                {" "}({stagedItems.filter((i) => i.file).length} with Excel files to Supabase)
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="h-8 px-3.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50"
+              disabled={isSubmitting}
+              className="h-8 px-3.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] shadow-xs"
+              disabled={isSubmitting}
+              className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] shadow-xs flex items-center gap-1.5 disabled:opacity-50"
             >
-              {stagedItems.length > 1
-                ? `Create ${stagedItems.length} Jobs & Upload`
-                : "Create Job & Upload"}
+              {isSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              <span>
+                {isSubmitting
+                  ? "Uploading..."
+                  : stagedItems.length > 1
+                  ? `Create ${stagedItems.length} Jobs & Upload`
+                  : "Create Job & Upload"}
+              </span>
             </button>
           </div>
         </div>

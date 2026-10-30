@@ -4,7 +4,7 @@ import { jwtVerify } from "jose";
 const SESSION_COOKIE = "erp_session";
 
 // Routes that don't require authentication
-const PUBLIC_PATHS = ["/", "/api/auth/login", "/api/auth/logout"];
+const PUBLIC_PATHS = ["/", "/api/auth/login", "/api/auth/logout", "/api/auth/change-password"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(
@@ -29,7 +29,7 @@ async function isTokenValid(token: string | undefined): Promise<boolean> {
   }
 }
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const token = req.cookies.get(SESSION_COOKIE)?.value;
 
@@ -86,6 +86,8 @@ export async function middleware(req: NextRequest) {
 
   return NextResponse.next();
 }
+
+export { proxy as middleware };
 
 export const config = {
   matcher: [

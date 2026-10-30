@@ -20,6 +20,7 @@ import {
   Download,
   CheckSquare,
   Square,
+  Loader2,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
@@ -139,21 +140,49 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
     );
   };
 
-  const handleUploadExcel = () => {
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+
+  const handleUploadExcel = async () => {
     if (stagedExcelFiles.length === 0 || !job) return;
-    const items = stagedExcelFiles.map((item) => {
-      const sizeKB = Math.round(item.file.size / 1024);
-      return {
-        jobId: job.id,
-        fileName: item.file.name,
-        customName: item.name.trim() || item.file.name,
-        fileDate: item.date,
-        fileSize: sizeKB > 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${sizeKB || 100} KB`,
-        status: "Processed" as const,
-      };
-    });
-    addExcelFiles(items);
-    setStagedExcelFiles([]);
+    setIsUploadingDoc(true);
+
+    try {
+      for (const item of stagedExcelFiles) {
+        const formData = new FormData();
+        formData.append("file", item.file);
+        formData.append("customName", item.name.trim() || item.file.name);
+        formData.append("fileDate", item.date);
+
+        const res = await fetch(`/api/jobs/${job.id}/documents`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && Array.isArray(json.data)) {
+            addExcelFiles(json.data);
+          }
+        } else {
+          const sizeKB = Math.round(item.file.size / 1024);
+          addExcelFiles([
+            {
+              jobId: job.id,
+              fileName: item.file.name,
+              customName: item.name.trim() || item.file.name,
+              fileDate: item.date,
+              fileSize: sizeKB > 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${sizeKB || 100} KB`,
+              status: "Processed" as const,
+            },
+          ]);
+        }
+      }
+      setStagedExcelFiles([]);
+    } catch (err) {
+      console.error("Error uploading Excel document to Supabase Storage:", err);
+    } finally {
+      setIsUploadingDoc(false);
+    }
   };
 
   // Invoice staging for Tab 3 (Photos & PDFs in Bulk)
@@ -541,10 +570,12 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                   </button>
                   <button
                     type="button"
+                    disabled={isUploadingDoc}
                     onClick={handleUploadExcel}
-                    className="h-8 px-4 rounded bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8]"
+                    className="h-8 px-4 rounded bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] flex items-center gap-1.5 disabled:opacity-50"
                   >
-                    Upload Files ({stagedExcelFiles.length})
+                    {isUploadingDoc && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    <span>{isUploadingDoc ? "Uploading to Supabase..." : `Upload to Supabase (${stagedExcelFiles.length})`}</span>
                   </button>
                 </div>
               </div>
