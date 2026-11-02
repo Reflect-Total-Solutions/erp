@@ -83,6 +83,15 @@ model User {
   loginAttempts LoginAttempt[]
   auditLogs     AuditLog[]
   revokedTokens RevokedToken[]
+  uploadLogs    JobUploadLog[]
+  jobApprovals  JobApproval[]
+  submittedJobs Job[]             @relation("JobSubmittedBy")
+  createdInvoices Invoice[]       @relation("InvoiceCreatedBy")
+  regeneratedRevisions InvoiceRevision[] @relation("InvoiceRevisionRegeneratedBy")
+  createdSupplierInvoices   SupplierInvoice[]         @relation("SupplierInvoiceCreatedBy")
+  cancelledSupplierInvoices SupplierInvoice[]         @relation("SupplierInvoiceCancelledBy")
+  supplierInvoiceAuditLogs  SupplierInvoiceAuditLog[]
+  uploadedSupplierInvoiceAttachments SupplierInvoiceAttachment[] @relation("SupplierInvoiceAttachmentUploadedBy")
 
   @@index([email, deletedAt])
   @@index([isActive, deletedAt])
@@ -103,6 +112,8 @@ model Supplier {
   deletedAt     DateTime? @map("deleted_at")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  supplierInvoices SupplierInvoice[]
 
   // Composite indexes for fast lookups
   @@index([code, deletedAt])
@@ -164,28 +175,110 @@ model AuditLog {
   @@map("audit_logs")
 }
 
-// ─── Jobs & Documents ─────────────────────────────────────────────────────────
+// ─── Jobs & Dynamic Cost Breakdown ──────────────────────────────────────────
 
 model Job {
-  id          String        @id @default(cuid())
-  jobCode     String        @unique @map("job_code")
-  name        String
-  date        String        // YYYY-MM-DD
-  description String?
-  remarks     String?
-  status      String        @default("Active") // "Active" | "Pending" | "Completed" | "In Review"
-  supplierIds String[]      @default([]) @map("supplier_ids")
-  deletedAt   DateTime?     @map("deleted_at")
-  createdAt   DateTime      @default(now()) @map("created_at")
-  updatedAt   DateTime      @updatedAt @map("updated_at")
+  id             String            @id @default(cuid())
+  jobCode        String            @unique @map("job_code")
+  name           String
+  date           String            // YYYY-MM-DD
+  commencingDate String?           @map("commencing_date")
+  clientName     String?           @map("client_name")
+  handledBy      String?           @map("handled_by")
+  description    String?
+  remarks        String?
+  status         String            @default("PENDING_APPROVAL") // "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "REJECTED"
+  supplierIds    String[]          @default([]) @map("supplier_ids")
+  fileHash       String?           @unique @map("file_hash")
+  totalCost      Decimal?          @default(0) @map("total_cost") @db.Decimal(18, 2)
+  grandTotal     Decimal?          @default(0) @map("grand_total") @db.Decimal(18, 2)
+  submittedById  String?           @map("submitted_by_id")
+  deletedAt      DateTime?         @map("deleted_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
 
-  documents   JobDocument[]
+  submittedBy    User?             @relation("JobSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
+  documents      JobDocument[]
+  costCategories JobCostCategory[]
+  costItems      JobCostItem[]
+  costSummary    JobCostSummary?
+  uploadLogs     JobUploadLog[]
+  approvals      JobApproval[]
+  invoice        Invoice?
+  supplierInvoices SupplierInvoice[]
+  supplierInvoiceAttachments SupplierInvoiceAttachment[]
 
   @@index([jobCode, deletedAt])
   @@index([status, deletedAt])
   @@index([name, deletedAt])
+  @@index([clientName, deletedAt])
   @@index([deletedAt, createdAt])
   @@map("jobs")
+}
+
+model JobCostCategory {
+  id         String        @id @default(cuid())
+  jobId      String        @map("job_id")
+  name       String
+  sortOrder  Int           @default(0) @map("sort_order")
+  subtotal   Decimal       @default(0) @db.Decimal(18, 2)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  job        Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  items      JobCostItem[]
+
+  @@index([jobId])
+  @@map("job_cost_categories")
+}
+
+model JobCostItem {
+  id          String           @id @default(cuid())
+  jobId       String           @map("job_id")
+  categoryId  String?          @map("category_id")
+  itemNumber  Int?             @map("item_number")
+  description String
+  rcNrc       String?          @map("rc_nrc") // "RC" | "NRC" | null
+  quantity    Decimal          @default(1) @db.Decimal(18, 4)
+  rate        Decimal          @default(0) @db.Decimal(18, 2)
+  totalCost   Decimal          @default(0) @map("total_cost") @db.Decimal(18, 2)
+  sortOrder   Int              @default(0) @map("sort_order")
+  notes       String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  job         Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  category    JobCostCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([categoryId])
+  @@map("job_cost_items")
+}
+
+model JobCostSummary {
+  id                  String   @id @default(cuid())
+  jobId               String   @unique @map("job_id")
+  productionCost      Decimal  @default(0) @map("production_cost") @db.Decimal(18, 2)
+  runningCost         Decimal  @default(0) @map("running_cost") @db.Decimal(18, 2)
+  agencyOperationFee  Decimal  @default(0) @map("agency_operation_fee") @db.Decimal(18, 2)
+  agencyProductionFee Decimal  @default(0) @map("agency_production_fee") @db.Decimal(18, 2)
+  adminCharges        Decimal  @default(0) @map("admin_charges") @db.Decimal(18, 2)
+  monitoringCost      Decimal  @default(0) @map("monitoring_cost") @db.Decimal(18, 2)
+  artworkCharges      Decimal  @default(0) @map("artwork_charges") @db.Decimal(18, 2)
+  contingencies       Decimal  @default(0) @db.Decimal(18, 2)
+  subTotal            Decimal  @default(0) @map("sub_total") @db.Decimal(18, 2)
+  totalBeforeTax      Decimal  @default(0) @map("total_before_tax") @db.Decimal(18, 2)
+  taxType             String?  @map("tax_type") // e.g. "SSCL"
+  taxRate             Decimal? @default(2.5) @map("tax_rate") @db.Decimal(6, 3) // e.g. 2.500
+  taxAmount           Decimal  @default(0) @map("tax_amount") @db.Decimal(18, 2)
+  grandTotal          Decimal  @default(0) @map("grand_total") @db.Decimal(18, 2)
+  rawSummaryData      Json?    @map("raw_summary_data")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  job                 Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@map("job_cost_summaries")
 }
 
 model JobDocument {
@@ -198,6 +291,7 @@ model JobDocument {
   fileType    String?   @map("file_type")
   fileUrl     String    @map("file_url")
   storagePath String?   @map("storage_path")
+  fileHash    String?   @map("file_hash")
   status      String    @default("Processed")
   deletedAt   DateTime? @map("deleted_at")
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -206,6 +300,203 @@ model JobDocument {
   job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   @@index([jobId, deletedAt])
+  @@index([fileHash])
   @@map("job_documents")
+}
+
+model JobUploadLog {
+  id               String   @id @default(cuid())
+  jobId            String?  @map("job_id")
+  userId           String?  @map("user_id")
+  fileName         String   @map("file_name")
+  fileSize         String   @map("file_size")
+  fileHash         String?  @map("file_hash")
+  idempotencyKey   String?  @unique @map("idempotency_key")
+  status           String   // "SUCCESS" | "FAILED" | "WARNING" | "DUPLICATE_REJECTED"
+  errorMessage     String?  @map("error_message")
+  extractedDetails Json?    @map("extracted_details")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  job  Job?  @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([jobId])
+  @@index([fileHash])
+  @@map("job_upload_logs")
+}
+
+// ─── Job Approvals & Audit Trail ─────────────────────────────────────────────
+
+model JobApproval {
+  id             String    @id @default(cuid())
+  jobId          String    @map("job_id")
+  userId         String?   @map("user_id")
+  action         String    // "APPROVE" | "REJECT" | "SUBMIT" | "RESET"
+  previousStatus String    @map("previous_status")
+  newStatus      String    @map("new_status")
+  reason         String?   // Mandatory on REJECT or Admin status resets
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  job            Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  user           User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([jobId, createdAt])
+  @@index([userId, createdAt])
+  @@map("job_approvals")
+}
+
+// ─── Customer Invoices ────────────────────────────────────────────────────────
+
+model Invoice {
+  id                   String            @id @default(cuid())
+  invoiceNumber        String            @unique @map("invoice_number")
+  jobId                String            @unique @map("job_id") // Strict database-level uniqueness prevents duplicate invoices per Job
+  version              Int               @default(1)
+  clientName           String            @map("client_name")
+  clientAddress        String?           @map("client_address")
+  clientEmail          String?           @map("client_email")
+  issueDate            DateTime          @default(now()) @map("issue_date")
+  dueDate              DateTime?         @map("due_date")
+  subTotal             Decimal           @default(0) @map("sub_total") @db.Decimal(18, 2)
+  taxType              String?           @default("SSCL") @map("tax_type")
+  taxRate              Decimal?          @default(2.5) @map("tax_rate") @db.Decimal(6, 3)
+  taxAmount            Decimal           @default(0) @map("tax_amount") @db.Decimal(18, 2)
+  grandTotal           Decimal           @default(0) @map("grand_total") @db.Decimal(18, 2)
+  status               String            @default("GENERATED") // "GENERATED" | "ISSUED" | "PAID" | "CANCELLED"
+  itemsSnapshot        Json?             @map("items_snapshot")
+  costSummarySnapshot  Json?             @map("cost_summary_snapshot")
+  notes                String?
+  terms                String?
+  createdById          String?           @map("created_by_id")
+  deletedAt            DateTime?         @map("deleted_at")
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+
+  job                  Job               @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  createdBy            User?             @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  revisions            InvoiceRevision[]
+
+  @@index([jobId])
+  @@index([status])
+  @@index([invoiceNumber])
+  @@map("invoices")
+}
+
+// ─── Invoice Revisions (Preserves Complete History) ───────────────────────────
+
+model InvoiceRevision {
+  id                    String    @id @default(cuid())
+  invoiceId             String    @map("invoice_id")
+  version               Int
+  previousInvoiceNumber String    @map("previous_invoice_number")
+  regeneratedById       String?   @map("regenerated_by_id")
+  reason                String    // Mandatory admin reason for regeneration
+  snapshot              Json      // Frozen copy of the entire previous invoice state
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  invoice               Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  regeneratedBy         User?     @relation("InvoiceRevisionRegeneratedBy", fields: [regeneratedById], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId, version])
+  @@index([regeneratedById])
+  @@map("invoice_revisions")
+}
+
+// ─── Supplier Invoices & Item Breakdown ──────────────────────────────────────
+
+model SupplierInvoice {
+  id                  String                      @id @default(cuid())
+  invoiceNumber       String                      @unique @map("invoice_number")
+  supplierId          String                      @map("supplier_id")
+  jobId               String                      @map("job_id")
+  invoiceDate         DateTime                    @default(now()) @map("invoice_date")
+  totalAmount         Decimal                     @default(0) @map("total_amount") @db.Decimal(18, 2)
+  status              String                      @default("APPROVED") // "APPROVED" | "PAID" | "CANCELLED"
+  notes               String?
+  cancellationReason  String?                     @map("cancellation_reason")
+  cancelledAt         DateTime?                   @map("cancelled_at")
+  cancelledById       String?                     @map("cancelled_by_id")
+  createdById         String?                     @map("created_by_id")
+  deletedAt           DateTime?                   @map("deleted_at")
+  createdAt           DateTime                    @default(now()) @map("created_at")
+  updatedAt           DateTime                    @updatedAt @map("updated_at")
+
+  supplier            Supplier                    @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  job                 Job                         @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  createdBy           User?                       @relation("SupplierInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  cancelledBy         User?                       @relation("SupplierInvoiceCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  items               SupplierInvoiceItem[]
+  attachments         SupplierInvoiceAttachment[]
+  auditLogs           SupplierInvoiceAuditLog[]
+
+  @@index([supplierId, deletedAt])
+  @@index([jobId, deletedAt])
+  @@index([invoiceNumber])
+  @@index([status, deletedAt])
+  @@map("supplier_invoices")
+}
+
+model SupplierInvoiceItem {
+  id          String                      @id @default(cuid())
+  invoiceId   String                      @map("invoice_id")
+  rowNumber   Int                         @default(1) @map("row_number")
+  description String
+  amount      Decimal                     @default(0) @db.Decimal(18, 2)
+  notes       String?
+  createdAt   DateTime                    @default(now()) @map("created_at")
+  updatedAt   DateTime                    @updatedAt @map("updated_at")
+
+  invoice     SupplierInvoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  attachments SupplierInvoiceAttachment[]
+
+  @@index([invoiceId])
+  @@map("supplier_invoice_items")
+}
+
+model SupplierInvoiceAttachment {
+  id               String               @id @default(cuid())
+  invoiceId        String               @map("invoice_id")
+  itemId           String?              @map("item_id")
+  jobId            String?              @map("job_id")
+  fileName         String               @map("file_name")
+  originalFileName String?              @map("original_file_name")
+  storedFileName   String?              @map("stored_file_name")
+  bucketName       String?              @default("supplier-invoices") @map("bucket_name")
+  storagePath      String?              @map("storage_path")
+  fileSize         String               @map("file_size")
+  fileType         String?              @default("application/pdf") @map("file_type")
+  mimeType         String?              @map("mime_type")
+  fileUrl          String               @map("file_url")
+  fileHash         String?              @map("file_hash")
+  uploadedById     String?              @map("uploaded_by_id")
+  createdAt        DateTime             @default(now()) @map("created_at")
+
+  invoice          SupplierInvoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  item             SupplierInvoiceItem? @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  job              Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  uploadedBy       User?                @relation("SupplierInvoiceAttachmentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId])
+  @@index([itemId])
+  @@index([jobId])
+  @@map("supplier_invoice_attachments")
+}
+
+model SupplierInvoiceAuditLog {
+  id          String          @id @default(cuid())
+  invoiceId   String          @map("invoice_id")
+  userId      String?         @map("user_id")
+  action      String          // "CREATE" | "EDIT" | "CANCEL" | "RESTORE"
+  reason      String?
+  previousData Json?          @map("previous_data")
+  newData     Json?           @map("new_data")
+  createdAt   DateTime        @default(now()) @map("created_at")
+
+  invoice     SupplierInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  user        User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId, createdAt])
+  @@map("supplier_invoice_audit_logs")
 }
 

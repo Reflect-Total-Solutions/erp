@@ -28,6 +28,7 @@ import {
   User,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
+import { formatCurrency } from "@/lib/financial";
 import { Modal } from "@/components/admin/ui/modal";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
@@ -612,7 +613,7 @@ export function AuditControllerView() {
                         {/* Value */}
                         <td className="px-4 py-3.5 text-right font-mono font-semibold text-slate-900">
                           {rec.value
-                            ? `Rs. ${rec.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                            ? formatCurrency(rec.value, { showCurrencyPrefix: true })
                             : "—"}
                         </td>
 

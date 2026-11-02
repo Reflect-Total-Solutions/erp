@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { jobCreateSchema } from "@/lib/validations/job";
@@ -40,6 +41,22 @@ export async function GET(req: NextRequest) {
   }
   // if "all", do not restrict deletedAt
 
+  const jobStatus = searchParams.get("jobStatus");
+  if (jobStatus && jobStatus !== "all") {
+    const s = jobStatus.toUpperCase();
+    if (s === "PENDING" || s === "PENDING_APPROVAL") {
+      where.status = { in: ["PENDING_APPROVAL", "Pending Approval", "Pending", "In Review"] };
+    } else if (s === "APPROVED") {
+      where.status = { in: ["APPROVED", "Approved"] };
+    } else if (s === "REJECTED") {
+      where.status = { in: ["REJECTED", "Rejected"] };
+    } else if (s === "DRAFT") {
+      where.status = { in: ["DRAFT", "Draft"] };
+    } else {
+      where.status = jobStatus;
+    }
+  }
+
   if (search) {
     where.OR = [
       { name: { contains: search, mode: "insensitive" } },
@@ -58,6 +75,24 @@ export async function GET(req: NextRequest) {
             where: { deletedAt: null },
             orderBy: { createdAt: "desc" },
           },
+          costCategories: {
+            orderBy: { sortOrder: "asc" },
+            include: {
+              items: {
+                orderBy: { sortOrder: "asc" },
+              },
+            },
+          },
+          costItems: {
+            orderBy: { sortOrder: "asc" },
+          },
+          costSummary: true,
+          submittedBy: { select: { id: true, name: true, email: true } },
+          approvals: {
+            orderBy: { createdAt: "desc" },
+            include: { user: { select: { id: true, name: true, email: true } } },
+          },
+          invoice: true,
         },
         orderBy: { createdAt: "desc" },
         skip,
@@ -72,13 +107,95 @@ export async function GET(req: NextRequest) {
       jobCode: j.jobCode,
       name: j.name,
       date: j.date,
+      commencingDate: j.commencingDate || j.date,
+      clientName: j.clientName || "",
+      handledBy: j.handledBy || "",
       description: j.description || "",
       remarks: j.remarks || "",
       status: j.status,
       supplierIds: j.supplierIds || [],
+      totalCost: j.totalCost || 0,
+      grandTotal: j.grandTotal || 0,
       createdAt: j.createdAt.toISOString().split("T")[0],
       deletedAt: j.deletedAt ? j.deletedAt.toISOString() : null,
       isDeleted: j.deletedAt !== null,
+      submittedBy: j.submittedBy,
+      approvals: j.approvals.map((a) => ({
+        id: a.id,
+        jobId: a.jobId,
+        userId: a.userId,
+        userName: a.user?.name || null,
+        userEmail: a.user?.email || null,
+        action: a.action,
+        previousStatus: a.previousStatus,
+        newStatus: a.newStatus,
+        reason: a.reason,
+        notes: a.notes,
+        createdAt: a.createdAt.toISOString(),
+      })),
+      invoice: j.invoice
+        ? {
+            id: j.invoice.id,
+            invoiceNumber: j.invoice.invoiceNumber,
+            jobId: j.invoice.jobId,
+            version: j.invoice.version,
+            status: j.invoice.status,
+            grandTotal: j.invoice.grandTotal,
+            issueDate: j.invoice.issueDate.toISOString(),
+          }
+        : null,
+      costCategories: j.costCategories.map((c) => ({
+        id: c.id,
+        jobId: c.jobId,
+        name: c.name,
+        sortOrder: c.sortOrder,
+        subtotal: c.subtotal,
+        items: c.items.map((i) => ({
+          id: i.id,
+          jobId: i.jobId,
+          categoryId: i.categoryId,
+          itemNumber: i.itemNumber,
+          description: i.description,
+          rcNrc: i.rcNrc,
+          quantity: i.quantity,
+          rate: i.rate,
+          totalCost: i.totalCost,
+          sortOrder: i.sortOrder,
+          notes: i.notes,
+        })),
+      })),
+      costItems: j.costItems.map((i) => ({
+        id: i.id,
+        jobId: i.jobId,
+        categoryId: i.categoryId,
+        itemNumber: i.itemNumber,
+        description: i.description,
+        rcNrc: i.rcNrc,
+        quantity: i.quantity,
+        rate: i.rate,
+        totalCost: i.totalCost,
+        sortOrder: i.sortOrder,
+        notes: i.notes,
+      })),
+      costSummary: j.costSummary ? {
+        id: j.costSummary.id,
+        jobId: j.costSummary.jobId,
+        productionCost: j.costSummary.productionCost,
+        runningCost: j.costSummary.runningCost,
+        agencyOperationFee: j.costSummary.agencyOperationFee,
+        agencyProductionFee: j.costSummary.agencyProductionFee,
+        adminCharges: j.costSummary.adminCharges,
+        monitoringCost: j.costSummary.monitoringCost,
+        artworkCharges: j.costSummary.artworkCharges,
+        contingencies: j.costSummary.contingencies,
+        subTotal: j.costSummary.subTotal,
+        totalBeforeTax: j.costSummary.totalBeforeTax,
+        taxType: j.costSummary.taxType || "SSCL",
+        taxRate: j.costSummary.taxRate || 2.5,
+        taxAmount: j.costSummary.taxAmount,
+        grandTotal: j.costSummary.grandTotal,
+        rawSummaryData: j.costSummary.rawSummaryData,
+      } : null,
       documents: j.documents.map((doc) => ({
         id: doc.id,
         jobId: doc.jobId,
@@ -153,8 +270,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { name, jobCode: providedCode, date, description, remarks, status, supplierIds, documents } =
-    parseResult.data;
+  const {
+    name,
+    jobCode: providedCode,
+    date,
+    commencingDate,
+    clientName,
+    handledBy,
+    description,
+    remarks,
+    status,
+    supplierIds,
+    totalCost,
+    grandTotal,
+    documents,
+    costCategories,
+    costItems,
+    costSummary,
+  } = parseResult.data;
 
   try {
     // Generate unique jobCode if not provided
@@ -189,10 +322,16 @@ export async function POST(req: NextRequest) {
         name,
         jobCode,
         date: todayDate,
+        commencingDate: commencingDate || todayDate,
+        clientName: clientName || null,
+        handledBy: handledBy || null,
         description: description || null,
         remarks: remarks || null,
-        status: status || "Active",
+        status: status === "DRAFT" ? "DRAFT" : "PENDING_APPROVAL",
+        submittedById: session.userId || null,
         supplierIds: supplierIds || [],
+        totalCost: totalCost || 0,
+        grandTotal: grandTotal || 0,
         documents: documents && documents.length > 0
           ? {
               create: documents.map((d) => ({
@@ -207,9 +346,33 @@ export async function POST(req: NextRequest) {
               })),
             }
           : undefined,
+        costSummary: costSummary
+          ? {
+              create: {
+                productionCost: costSummary.productionCost || 0,
+                runningCost: costSummary.runningCost || 0,
+                agencyOperationFee: costSummary.agencyOperationFee || 0,
+                agencyProductionFee: costSummary.agencyProductionFee || 0,
+                adminCharges: costSummary.adminCharges || 0,
+                monitoringCost: costSummary.monitoringCost || 0,
+                artworkCharges: costSummary.artworkCharges || 0,
+                contingencies: costSummary.contingencies || 0,
+                subTotal: costSummary.subTotal || 0,
+                totalBeforeTax: costSummary.totalBeforeTax || 0,
+                taxType: costSummary.taxType || "SSCL",
+                taxRate: costSummary.taxRate || 2.5,
+                taxAmount: costSummary.taxAmount || 0,
+                grandTotal: costSummary.grandTotal || 0,
+                rawSummaryData: (costSummary.rawSummaryData as Prisma.InputJsonValue) ?? Prisma.DbNull,
+              },
+            }
+          : undefined,
       },
       include: {
         documents: true,
+        costCategories: { include: { items: true } },
+        costItems: true,
+        costSummary: true,
       },
     });
 

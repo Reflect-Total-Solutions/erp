@@ -9,7 +9,6 @@ import {
   Search,
   Filter,
   Briefcase,
-  FileText,
   Building2,
   Calendar,
   Check,
@@ -18,140 +17,150 @@ import {
   FileSpreadsheet,
   Download,
   AlertCircle,
-  FileCheck,
   ShieldAlert,
+  RotateCcw,
+  User,
+  DollarSign,
+  ArrowRight,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
-import { Modal } from "@/components/admin/ui/modal";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
-import { Job, Invoice } from "@/types/admin";
-import { downloadMockInvoiceFile, downloadMockExcelFile, downloadSingleAttachment } from "@/lib/export-utils";
+import { JobApprovalModal } from "@/components/admin/modals/job-approval-modal";
+import { Job } from "@/types/admin";
+import {
+  downloadFileFromUrl,
+} from "@/lib/export-utils";
+import { formatCurrency } from "@/lib/financial";
 
 export function ApprovalsView() {
   const {
     jobs,
-    invoices,
-    suppliers,
-    updateJob,
-    updateInvoice,
     showToast,
-    getJobTotalInvoiceValue,
-    getJobExcelFiles,
-    getJobSuppliers,
+    refreshJobs,
     can,
     currentRole,
   } = useAdminData();
 
-  // Tab: "invoices" | "jobs"
-  const [activeTab, setActiveTab] = useState<"invoices" | "jobs">("invoices");
-
-  // Status Filter: "pending" | "approved" | "all"
-  const [statusFilter, setStatusFilter] = useState<"pending" | "approved" | "all">("pending");
+  // Status Filter: "pending" | "approved" | "rejected" | "all"
+  const [statusFilter, setStatusFilter] = useState<"pending" | "approved" | "rejected" | "all">("pending");
   const [searchTerm, setSearchTerm] = useState("");
 
   // Pagination states
-  const [invoicePage, setInvoicePage] = useState(1);
-  const [invoicePageSize, setInvoicePageSize] = useState(10);
-  const [jobPage, setJobPage] = useState(1);
-  const [jobPageSize, setJobPageSize] = useState(10);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
-  // Inspect modal
-  const [inspectingInvoice, setInspectingInvoice] = useState<Invoice | null>(null);
-  const [inspectingJob, setInspectingJob] = useState<Job | null>(null);
+  // Job Approval Modal state
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [modalAction, setModalAction] = useState<"APPROVE" | "REJECT" | "RESET" | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // Action Dialog state (Approve / Reject confirmation)
-  const [actionConfirm, setActionConfirm] = useState<{
-    type: "approve_invoice" | "reject_invoice" | "approve_job" | "review_job";
-    id: string;
-    title: string;
-    subtitle?: string;
-    amount?: number;
-  } | null>(null);
-  const [actionNotes, setActionNotes] = useState("");
+  const isAdmin = currentRole.toLowerCase() === "admin";
+  const isSupervisor = currentRole.toLowerCase() === "supervisor";
+  const canApprove = isAdmin || isSupervisor || can("approvals", "approve");
 
-  // Invoices to display
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((inv) => {
-      const matchSearch =
-        inv.invoiceName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.fileName.toLowerCase().includes(searchTerm.toLowerCase());
-
-      const matchStatus =
-        statusFilter === "all"
-          ? true
-          : statusFilter === "pending"
-          ? inv.status === "Pending" || inv.status === "Under Review"
-          : inv.status === "Approved" || inv.status === "Paid";
-
-      return matchSearch && matchStatus;
-    });
-  }, [invoices, searchTerm, statusFilter]);
-
-  // Jobs to display
+  // Filtered Jobs
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
-      const matchSearch =
-        job.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (job.jobCode && job.jobCode.toLowerCase().includes(searchTerm.toLowerCase()));
+      if (job.isDeleted) return false;
 
+      const q = searchTerm.toLowerCase();
+      const matchSearch =
+        !q ||
+        job.name.toLowerCase().includes(q) ||
+        (job.jobCode && job.jobCode.toLowerCase().includes(q)) ||
+        (job.clientName && job.clientName.toLowerCase().includes(q)) ||
+        (job.handledBy && job.handledBy.toLowerCase().includes(q)) ||
+        (job.description && job.description.toLowerCase().includes(q));
+
+      const status = (job.status || "").toUpperCase();
       const matchStatus =
         statusFilter === "all"
           ? true
           : statusFilter === "pending"
-          ? job.status === "Pending" || job.status === "In Review"
-          : job.status === "Active" || job.status === "Completed";
+          ? status === "PENDING_APPROVAL" || status.includes("PENDING") || status === "DRAFT" || status.includes("REVIEW")
+          : statusFilter === "approved"
+          ? status === "APPROVED" || status.includes("INVOIC")
+          : statusFilter === "rejected"
+          ? status === "REJECTED"
+          : true;
 
       return matchSearch && matchStatus;
     });
   }, [jobs, searchTerm, statusFilter]);
 
   // Counts
-  const pendingInvoicesCount = useMemo(
-    () => invoices.filter((i) => i.status === "Pending" || i.status === "Under Review").length,
-    [invoices]
-  );
   const pendingJobsCount = useMemo(
-    () => jobs.filter((j) => j.status === "Pending" || j.status === "In Review").length,
+    () =>
+      jobs.filter((j) => {
+        if (j.isDeleted) return false;
+        const s = (j.status || "").toUpperCase();
+        return s === "PENDING_APPROVAL" || s.includes("PENDING") || s === "DRAFT" || s.includes("REVIEW");
+      }).length,
     [jobs]
   );
 
-  // Pagination slices
-  const totalInvoicePages = Math.max(1, Math.ceil(filteredInvoices.length / invoicePageSize));
-  const paginatedInvoices = useMemo(() => {
-    const start = (invoicePage - 1) * invoicePageSize;
-    return filteredInvoices.slice(start, start + invoicePageSize);
-  }, [filteredInvoices, invoicePage, invoicePageSize]);
+  const approvedJobsCount = useMemo(
+    () =>
+      jobs.filter((j) => {
+        if (j.isDeleted) return false;
+        const s = (j.status || "").toUpperCase();
+        return s === "APPROVED" || s.includes("INVOIC");
+      }).length,
+    [jobs]
+  );
 
-  const totalJobPages = Math.max(1, Math.ceil(filteredJobs.length / jobPageSize));
+  const rejectedJobsCount = useMemo(
+    () =>
+      jobs.filter((j) => {
+        if (j.isDeleted) return false;
+        const s = (j.status || "").toUpperCase();
+        return s === "REJECTED";
+      }).length,
+    [jobs]
+  );
+
+  const totalActiveJobsCount = useMemo(
+    () => jobs.filter((j) => !j.isDeleted).length,
+    [jobs]
+  );
+
+  // Pagination slice
+  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
   const paginatedJobs = useMemo(() => {
-    const start = (jobPage - 1) * jobPageSize;
-    return filteredJobs.slice(start, start + jobPageSize);
-  }, [filteredJobs, jobPage, jobPageSize]);
+    const start = (currentPage - 1) * pageSize;
+    return filteredJobs.slice(start, start + pageSize);
+  }, [filteredJobs, currentPage, pageSize]);
 
-  // Action Confirmation Handlers
-  const handleExecuteAction = () => {
-    if (!actionConfirm) return;
+  // Open Review / Action Modal
+  const openJobReview = (job: Job, action: "APPROVE" | "REJECT" | "RESET" | null = null) => {
+    setSelectedJob(job);
+    setModalAction(action);
+    setIsModalOpen(true);
+  };
 
-    if (actionConfirm.type === "approve_invoice") {
-      updateInvoice(actionConfirm.id, { status: "Approved" });
-      showToast("Invoice Authorized", `Invoice "${actionConfirm.title}" approved successfully.`, "success");
-    } else if (actionConfirm.type === "reject_invoice") {
-      updateInvoice(actionConfirm.id, { status: "Under Review" });
-      showToast("Invoice Placed on Hold", `Invoice "${actionConfirm.title}" held for review.`, "info");
-    } else if (actionConfirm.type === "approve_job") {
-      updateJob(actionConfirm.id, { status: "Active" });
-      showToast("Job Authorized", `Job "${actionConfirm.title}" approved and activated.`, "success");
-    } else if (actionConfirm.type === "review_job") {
-      updateJob(actionConfirm.id, { status: "In Review" });
-      showToast("Job Under Review", `Job "${actionConfirm.title}" marked in review.`, "info");
+  const handleModalComplete = async () => {
+    setIsModalOpen(false);
+    setSelectedJob(null);
+    setModalAction(null);
+    if (refreshJobs) {
+      await refreshJobs();
     }
+  };
 
-    setActionConfirm(null);
-    setActionNotes("");
-    if (inspectingInvoice?.id === actionConfirm.id) setInspectingInvoice(null);
-    if (inspectingJob?.id === actionConfirm.id) setInspectingJob(null);
+  // Download quotation file
+  const handleDownloadJobFile = (job: Job) => {
+    const primaryDoc = job.documents && job.documents[0];
+    if (primaryDoc?.fileUrl) {
+      downloadFileFromUrl(primaryDoc.fileUrl, primaryDoc.fileName);
+    } else {
+      showToast(
+        "No Quotation File Attached",
+        `There is no uploaded Excel quotation file stored for Job ${job.jobCode || job.name}.`,
+        "info"
+      );
+    }
   };
 
   if (!can("approvals", "view")) {
@@ -162,7 +171,7 @@ export function ApprovalsView() {
         </div>
         <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
         <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-          You do not have authorization to view or process Approvals & Sign-offs. Contact your system administrator if access is required.
+          You do not have authorization to view or process Job Approvals. Contact your system administrator if access is required.
         </p>
         <div className="mt-4 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
           Active Role: <span className="font-bold text-blue-600 capitalize">{currentRole}</span>
@@ -182,753 +191,416 @@ export function ApprovalsView() {
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-2 border-b border-slate-200">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">Approvals & Authorization Center</h2>
+          <h2 className="text-xl font-bold text-slate-900">Job Approvals & Authorization Center</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Review, authorize, or return pending vendor invoices and project jobs.
+            Review, authorize, or reject pending project quotations. Approved jobs automatically transition to Invoice Management for billing.
           </p>
         </div>
 
-        {/* Quick Pending Badge Summary */}
+        {/* Quick Pending Badge */}
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-xs font-semibold text-amber-900">
             <Clock className="h-4 w-4 text-amber-600" />
-            {pendingInvoicesCount} Invoices & {pendingJobsCount} Jobs Pending
+            {pendingJobsCount} Job{pendingJobsCount === 1 ? "" : "s"} Pending Approval
           </span>
         </div>
       </div>
 
-      {/* Main Approval Tabs */}
-      <div className="border-b border-slate-200">
-        <div className="flex gap-4">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("invoices");
-              setSearchTerm("");
-            }}
-            className={`pb-3 text-xs font-semibold border-b-2 flex items-center gap-2 transition-colors ${
-              activeTab === "invoices"
-                ? "border-[#2563EB] text-[#2563EB]"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            <FileText className="h-4 w-4" />
-            <span>Invoice Approvals</span>
-            {pendingInvoicesCount > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                {pendingInvoicesCount}
-              </span>
-            )}
-          </button>
+      {/* Metric Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Pending Job Approvals</p>
+            <p className="text-2xl font-bold text-amber-600 mt-1">{pendingJobsCount}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Awaiting supervisor review</p>
+          </div>
+          <div className="h-10 w-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+            <Clock className="h-5 w-5" />
+          </div>
+        </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("jobs");
-              setSearchTerm("");
-            }}
-            className={`pb-3 text-xs font-semibold border-b-2 flex items-center gap-2 transition-colors ${
-              activeTab === "jobs"
-                ? "border-[#2563EB] text-[#2563EB]"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            <Briefcase className="h-4 w-4" />
-            <span>Job Approvals</span>
-            {pendingJobsCount > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                {pendingJobsCount}
-              </span>
-            )}
-          </button>
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Approved Jobs</p>
+            <p className="text-2xl font-bold text-emerald-600 mt-1">{approvedJobsCount}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Ready for invoice generation</p>
+          </div>
+          <div className="h-10 w-10 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
+            <CheckCircle className="h-5 w-5" />
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Rejected Jobs</p>
+            <p className="text-2xl font-bold text-rose-600 mt-1">{rejectedJobsCount}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Returned with audit reasons</p>
+          </div>
+          <div className="h-10 w-10 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600">
+            <XCircle className="h-5 w-5" />
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Total Project Jobs</p>
+            <p className="text-2xl font-bold text-slate-800 mt-1">{totalActiveJobsCount}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">In active ERP database</p>
+          </div>
+          <div className="h-10 w-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+            <Briefcase className="h-5 w-5" />
+          </div>
         </div>
       </div>
 
-      {/* Search & Filter Toolbar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-3">
+      {/* Filter Toolbar & Search */}
+      <div className="bg-white rounded-xl border border-slate-200 p-3 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          {/* Search bar */}
+          {/* Status Filter Pills */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter("pending");
+                setCurrentPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
+                statusFilter === "pending"
+                  ? "bg-amber-600 text-white font-semibold shadow-xs"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              <Clock className="h-3.5 w-3.5" />
+              <span>Pending Approval</span>
+              <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-black/15 font-bold">
+                {pendingJobsCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter("approved");
+                setCurrentPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
+                statusFilter === "approved"
+                  ? "bg-emerald-600 text-white font-semibold shadow-xs"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              <CheckCircle className="h-3.5 w-3.5" />
+              <span>Approved Jobs</span>
+              <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-black/15 font-bold">
+                {approvedJobsCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter("rejected");
+                setCurrentPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
+                statusFilter === "rejected"
+                  ? "bg-rose-600 text-white font-semibold shadow-xs"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              <XCircle className="h-3.5 w-3.5" />
+              <span>Rejected Jobs</span>
+              <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-black/15 font-bold">
+                {rejectedJobsCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter("all");
+                setCurrentPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                statusFilter === "all"
+                  ? "bg-slate-900 text-white font-semibold"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              All Jobs ({totalActiveJobsCount})
+            </button>
+          </div>
+
+          {/* Search Field */}
           <div className="w-full sm:w-72">
             <SearchField
               value={searchTerm}
               onChange={(val) => {
                 setSearchTerm(val);
-                setInvoicePage(1);
-                setJobPage(1);
+                setCurrentPage(1);
               }}
-              placeholder={activeTab === "invoices" ? "Search invoices..." : "Search jobs..."}
+              placeholder="Search jobs, clients, code..."
             />
-          </div>
-
-          {/* Status Segment filter */}
-          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg text-xs self-start sm:self-auto">
-            <button
-              type="button"
-              onClick={() => setStatusFilter("pending")}
-              className={`px-3 py-1 rounded font-medium transition-colors ${
-                statusFilter === "pending"
-                  ? "bg-white text-slate-900 font-semibold shadow-2xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              Pending Authorization
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatusFilter("approved")}
-              className={`px-3 py-1 rounded font-medium transition-colors ${
-                statusFilter === "approved"
-                  ? "bg-white text-slate-900 font-semibold shadow-2xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              Approved / Active
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatusFilter("all")}
-              className={`px-3 py-1 rounded font-medium transition-colors ${
-                statusFilter === "all"
-                  ? "bg-white text-slate-900 font-semibold shadow-2xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              All Records
-            </button>
           </div>
         </div>
       </div>
 
-      {/* ================= TAB 1: INVOICE APPROVALS ================= */}
-      {activeTab === "invoices" && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          {filteredInvoices.length === 0 ? (
-            <div className="p-8 text-center text-xs text-slate-500">
-              No invoices match your current filter.
-            </div>
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
-                  <tr>
-                    <th className="px-5 py-3">Invoice Details & Attachments</th>
-                    <th className="px-4 py-3">Associated Job</th>
-                    <th className="px-4 py-3">Supplier</th>
-                    <th className="px-4 py-3">Invoice Date</th>
-                    <th className="px-4 py-3 text-right">Amount (Rs.)</th>
-                    <th className="px-4 py-3 text-center">Current Status</th>
-                    <th className="px-5 py-3 text-right">Approval Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {paginatedInvoices.map((inv) => {
-                    const job = jobs.find((j) => j.id === inv.jobId);
-                    const sup = suppliers.find((s) => s.id === inv.supplierId);
-                    const isPending = inv.status === "Pending" || inv.status === "Under Review";
+      {/* Main Job Approvals Table */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
+                <th className="py-3 px-3.5">Job Info</th>
+                <th className="py-3 px-3.5">Client & Handler</th>
+                <th className="py-3 px-3.5">Dates</th>
+                <th className="py-3 px-3.5 text-right">Production Cost</th>
+                <th className="py-3 px-3.5 text-right">Agency Fee</th>
+                <th className="py-3 px-3.5 text-right">Tax Amount</th>
+                <th className="py-3 px-3.5 text-right">Grand Total</th>
+                <th className="py-3 px-3.5 text-center">Excel Sheet</th>
+                <th className="py-3 px-3.5">Submitted By</th>
+                <th className="py-3 px-3.5 text-center">Status</th>
+                <th className="py-3 px-3.5 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {paginatedJobs.length === 0 ? (
+                <tr>
+                  <td colSpan={11} className="py-12 text-center text-slate-400">
+                    <div className="flex flex-col items-center justify-center">
+                      <Briefcase className="h-10 w-10 text-slate-300 stroke-[1.5] mb-2" />
+                      <p className="text-sm font-semibold text-slate-600">No Jobs Found</p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        {searchTerm
+                          ? "No jobs match your search criteria."
+                          : statusFilter === "pending"
+                          ? "There are currently no jobs waiting for approval."
+                          : "No jobs match the selected filter."}
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                paginatedJobs.map((job) => {
+                  const costSummary = job.costSummary;
+                  const prodCost = Number(costSummary?.productionCost ?? job.totalCost ?? 0);
+                  const agencyCost =
+                    Number(costSummary?.agencyOperationFee || 0) + Number(costSummary?.agencyProductionFee || 0);
+                  const taxAmt = Number(costSummary?.taxAmount || 0);
+                  const grandTotal = Number(job.grandTotal || costSummary?.grandTotal || job.totalCost || 0);
 
-                    return (
-                      <tr key={inv.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="px-5 py-3.5">
-                          <div className="space-y-1">
-                            <span className="font-semibold text-slate-900 block">
-                              {inv.invoiceName}
+                  const statusNorm = (job.status || "").toLowerCase();
+                  const isJobPending = statusNorm.includes("pending") || statusNorm.includes("review") || statusNorm === "draft";
+                  const isJobApproved = statusNorm.includes("approved");
+                  const isJobRejected = statusNorm.includes("rejected");
+                  const hasInvoice = Boolean(job.invoice);
+
+                  return (
+                    <tr key={job.id} className="hover:bg-slate-50/70 transition-colors">
+                      {/* Job Info */}
+                      <td className="py-3.5 px-3.5">
+                        <div className="font-semibold text-slate-900">{job.name}</div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="font-mono text-[11px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                            {job.jobCode || "NO CODE"}
+                          </span>
+                          {job.description && (
+                            <span
+                              className="text-[11px] text-slate-400 truncate max-w-[140px]"
+                              title={job.description}
+                            >
+                              • {job.description}
                             </span>
-                            <span className="text-[10px] text-slate-400 font-mono">
-                              File: {inv.fileName} ({inv.fileSize})
-                            </span>
-
-                            {/* Attached files list */}
-                            {inv.attachments && inv.attachments.length > 0 && (
-                              <div className="flex flex-wrap gap-1 pt-0.5">
-                                {inv.attachments.map((att, aIdx) => {
-                                  const isPdf = att.fileName.toLowerCase().endsWith(".pdf");
-                                  return (
-                                    <div
-                                      key={att.id || aIdx}
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-[10px]"
-                                    >
-                                      <span
-                                        className={`font-mono font-bold uppercase ${
-                                          isPdf ? "text-rose-600" : "text-blue-600"
-                                        }`}
-                                      >
-                                        {isPdf ? "PDF" : "IMG"}
-                                      </span>
-                                      <span className="text-slate-700 max-w-[100px] truncate">
-                                        {att.fileName}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() => downloadSingleAttachment(att.fileName)}
-                                        className="text-slate-400 hover:text-blue-600 ml-0.5"
-                                        title={`Download ${att.fileName}`}
-                                      >
-                                        <Download className="h-2.5 w-2.5" />
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-slate-700">
-                          {job ? (
-                            <Link href={`/admin/jobs/${job.id}`} className="hover:text-blue-600 font-medium">
-                              {job.name}
-                            </Link>
-                          ) : (
-                            "—"
                           )}
-                        </td>
+                        </div>
+                      </td>
 
-                        <td className="px-4 py-3.5 text-slate-700 font-medium">
-                          {sup ? sup.name : "—"}
-                        </td>
+                      {/* Client & Handler */}
+                      <td className="py-3.5 px-3.5">
+                        <div className="font-medium text-slate-800 flex items-center gap-1">
+                          <Building2 className="h-3 w-3 text-slate-400" />
+                          {job.clientName || "—"}
+                        </div>
+                        <div className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                          <User className="h-3 w-3 text-slate-400" />
+                          <span>Handled: {job.handledBy || "—"}</span>
+                        </div>
+                      </td>
 
-                        <td className="px-4 py-3.5 text-slate-600 whitespace-nowrap">
-                          {inv.invoiceDate}
-                        </td>
+                      {/* Dates */}
+                      <td className="py-3.5 px-3.5 whitespace-nowrap">
+                        <div className="text-slate-700 flex items-center gap-1">
+                          <Calendar className="h-3 w-3 text-slate-400" />
+                          <span>Job: {job.date || "—"}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Comm: {job.commencingDate || job.date || "—"}
+                        </div>
+                      </td>
 
-                        <td className="px-4 py-3.5 text-right font-semibold text-slate-900">
-                          Rs. {inv.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </td>
+                      {/* Production Cost */}
+                      <td className="py-3.5 px-3.5 text-right font-mono font-medium text-slate-700">
+                        {formatCurrency(prodCost)}
+                      </td>
 
-                        <td className="px-4 py-3.5 text-center">
-                          <StatusBadge status={inv.status} />
-                        </td>
+                      {/* Agency Fee */}
+                      <td className="py-3.5 px-3.5 text-right font-mono text-slate-600">
+                        {agencyCost > 0 ? formatCurrency(agencyCost) : "—"}
+                      </td>
 
-                        <td className="px-5 py-3.5 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
+                      {/* Tax Amount */}
+                      <td className="py-3.5 px-3.5 text-right font-mono text-slate-600">
+                        {taxAmt > 0 ? (
+                          <span title={`${costSummary?.taxType || "Tax"} @ ${costSummary?.taxRate || 0}%`}>
+                            {formatCurrency(taxAmt)}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
+                      {/* Grand Total */}
+                      <td className="py-3.5 px-3.5 text-right font-mono font-bold text-slate-900 bg-slate-50/50">
+                        {formatCurrency(grandTotal)}
+                      </td>
+
+                      {/* Excel File Download */}
+                      <td className="py-3.5 px-3.5 text-center">
+                        {job.documents && job.documents[0]?.fileUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadJobFile(job)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors cursor-pointer"
+                            title="Download original Excel quotation"
+                          >
+                            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                            <span>Excel</span>
+                            <Download className="h-3 w-3 text-emerald-500" />
+                          </button>
+                        ) : (
+                          <span
+                            className="inline-flex items-center gap-1 text-[11px] text-slate-400 select-none"
+                            title="No uploaded Excel quotation file attached"
+                          >
+                            <FileSpreadsheet className="h-3.5 w-3.5 text-slate-300" />
+                            <span>—</span>
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Submitted By & Date */}
+                      <td className="py-3.5 px-3.5">
+                        <div className="font-medium text-slate-700">
+                          {job.submittedBy?.name || "System Admin"}
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          {job.createdAt || "—"}
+                        </div>
+                      </td>
+
+                      {/* Status */}
+                      <td className="py-3.5 px-3.5 text-center whitespace-nowrap">
+                        <StatusBadge status={job.status} />
+                        {hasInvoice && (
+                          <div className="mt-1">
+                            <span className="text-[10px] font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                              Invoiced
+                            </span>
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="py-3.5 px-3.5 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {/* View Details */}
+                          <button
+                            type="button"
+                            onClick={() => openJobReview(job, null)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+                            title="View Job Details & Cost Breakdown"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+
+                          {/* Approve Button */}
+                          {canApprove && (isJobPending || isJobRejected) && (
                             <button
                               type="button"
-                              onClick={() => setInspectingInvoice(inv)}
-                              className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-[11px] flex items-center gap-1"
-                              title="Inspect Invoice"
+                              onClick={() => openJobReview(job, "APPROVE")}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-xs"
+                              title="Authorize Job for Billing"
                             >
-                              <Eye className="h-3.5 w-3.5" />
-                              Inspect
+                              <Check className="h-3.5 w-3.5" />
+                              <span>Approve</span>
                             </button>
+                          )}
 
-                            {can("approvals", "approve") && (
-                              <>
-                                {isPending ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setActionConfirm({
-                                          type: "approve_invoice",
-                                          id: inv.id,
-                                          title: inv.invoiceName,
-                                          subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
-                                          amount: inv.totalValue,
-                                        })
-                                      }
-                                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
-                                      title="Approve Invoice"
-                                    >
-                                      <Check className="h-3.5 w-3.5" />
-                                      Approve
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setActionConfirm({
-                                          type: "reject_invoice",
-                                          id: inv.id,
-                                          title: inv.invoiceName,
-                                          subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
-                                          amount: inv.totalValue,
-                                        })
-                                      }
-                                      className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium text-[11px] flex items-center gap-1"
-                                      title="Flag / Hold Invoice"
-                                    >
-                                      <X className="h-3.5 w-3.5" />
-                                      Hold
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setActionConfirm({
-                                        type: "reject_invoice",
-                                        id: inv.id,
-                                        title: inv.invoiceName,
-                                        subtitle: `Job: ${job?.name || "General"} • Supplier: ${sup?.name || "Vendor"}`,
-                                        amount: inv.totalValue,
-                                      })
-                                    }
-                                    className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
-                                    title="Re-open for Review"
-                                  >
-                                    Re-Review
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <Pagination
-              currentPage={invoicePage}
-              totalPages={totalInvoicePages}
-              totalItems={filteredInvoices.length}
-              pageSize={invoicePageSize}
-              onPageChange={setInvoicePage}
-              onPageSizeChange={(newSize) => {
-                setInvoicePageSize(newSize);
-                setInvoicePage(1);
-              }}
-            />
-          </>
-        )}
-      </div>
-    )}
-
-      {/* ================= TAB 2: JOB APPROVALS ================= */}
-      {activeTab === "jobs" && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          {filteredJobs.length === 0 ? (
-            <div className="p-8 text-center text-xs text-slate-500">
-              No jobs match your current filter.
-            </div>
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
-                  <tr>
-                    <th className="px-5 py-3">Job Name & Code</th>
-                    <th className="px-4 py-3">Date</th>
-                    <th className="px-4 py-3 text-center">Suppliers</th>
-                    <th className="px-4 py-3 text-center">Attached Excels</th>
-                    <th className="px-4 py-3 text-right">Total Invoice Value (Rs.)</th>
-                    <th className="px-4 py-3 text-center">Current Status</th>
-                    <th className="px-5 py-3 text-right">Approval Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {paginatedJobs.map((job) => {
-                    const cost = getJobTotalInvoiceValue(job.id);
-                    const excels = getJobExcelFiles(job.id);
-                    const isPending = job.status === "Pending" || job.status === "In Review";
-
-                    return (
-                      <tr key={job.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="px-5 py-3.5">
-                          <div className="space-y-0.5">
-                            <div className="flex items-center gap-1.5">
-                              <Link
-                                href={`/admin/jobs/${job.id}`}
-                                className="font-semibold text-slate-900 hover:text-blue-600"
-                              >
-                                {job.name}
-                              </Link>
-                              {job.jobCode && (
-                                <span className="text-[10px] font-mono font-medium text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200">
-                                  {job.jobCode}
-                                </span>
-                              )}
-                            </div>
-                            {job.remarks && (
-                              <p className="text-[11px] text-slate-500 italic truncate max-w-xs">
-                                {job.remarks}
-                              </p>
-                            )}
-                          </div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-slate-600 whitespace-nowrap">
-                          {job.date}
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center font-medium text-slate-700">
-                          {job.supplierIds.length}
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center font-medium text-slate-700">
-                          {excels.length} files
-                        </td>
-
-                        <td className="px-4 py-3.5 text-right font-semibold text-slate-900">
-                          Rs. {cost.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <StatusBadge status={job.status} />
-                        </td>
-
-                        <td className="px-5 py-3.5 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
+                          {/* Reject Button */}
+                          {canApprove && (isJobPending || isJobApproved) && !hasInvoice && (
                             <button
                               type="button"
-                              onClick={() => setInspectingJob(job)}
-                              className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-[11px] flex items-center gap-1"
-                              title="Inspect Job"
+                              onClick={() => openJobReview(job, "REJECT")}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors"
+                              title="Reject Job with Mandatory Reason"
                             >
-                              <Eye className="h-3.5 w-3.5" />
-                              Inspect
+                              <X className="h-3.5 w-3.5" />
+                              <span>Reject</span>
                             </button>
+                          )}
 
-                            {can("approvals", "approve") && (
-                              <>
-                                {isPending ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setActionConfirm({
-                                          type: "approve_job",
-                                          id: job.id,
-                                          title: job.name,
-                                          subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
-                                          amount: cost,
-                                        })
-                                      }
-                                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] flex items-center gap-1 shadow-2xs"
-                                      title="Authorize Job"
-                                    >
-                                      <Check className="h-3.5 w-3.5" />
-                                      Approve
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setActionConfirm({
-                                          type: "review_job",
-                                          id: job.id,
-                                          title: job.name,
-                                          subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
-                                          amount: cost,
-                                        })
-                                      }
-                                      className="px-2 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 font-medium text-[11px]"
-                                      title="Mark In Review"
-                                    >
-                                      Hold
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setActionConfirm({
-                                        type: "review_job",
-                                        id: job.id,
-                                        title: job.name,
-                                        subtitle: `Date: ${job.date} • ${job.supplierIds.length} Suppliers assigned`,
-                                        amount: cost,
-                                      })
-                                    }
-                                    className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-[11px]"
-                                    title="Re-open Review"
-                                  >
-                                    Re-Review
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                          {/* Move Back to Pending Button (Admin Only) */}
+                          {isAdmin && (isJobApproved || isJobRejected) && (
+                            <button
+                              type="button"
+                              onClick={() => openJobReview(job, "RESET")}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors shadow-2xs"
+                              title="Admin: Move Job Back to Pending Approval"
+                            >
+                              <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
+                              <span>Move to Pending</span>
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
 
-            <Pagination
-              currentPage={jobPage}
-              totalPages={totalJobPages}
-              totalItems={filteredJobs.length}
-              pageSize={jobPageSize}
-              onPageChange={setJobPage}
-              onPageSizeChange={(newSize) => {
-                setJobPageSize(newSize);
-                setJobPage(1);
-              }}
-            />
-          </>
-        )}
+        {/* Pagination */}
+        <div className="p-3 border-t border-slate-200 bg-slate-50/50">
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            totalItems={filteredJobs.length}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setCurrentPage(1);
+            }}
+          />
+        </div>
       </div>
-    )}
 
-      {/* ================= MODAL: INSPECT INVOICE ================= */}
-      {inspectingInvoice && (
-        <Modal
-          isOpen={true}
-          onClose={() => setInspectingInvoice(null)}
-          title={`Inspect Invoice: ${inspectingInvoice.invoiceName}`}
-          maxWidth="lg"
-        >
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs">
-              <div>
-                <span className="text-slate-400 block text-[11px]">Amount</span>
-                <span className="font-bold text-slate-900 text-sm">
-                  Rs. {inspectingInvoice.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Invoice Date</span>
-                <span className="font-semibold text-slate-700">{inspectingInvoice.invoiceDate}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Supplier</span>
-                <span className="font-semibold text-slate-700">
-                  {suppliers.find((s) => s.id === inspectingInvoice.supplierId)?.name || "—"}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Current Status</span>
-                <StatusBadge status={inspectingInvoice.status} />
-              </div>
-            </div>
-
-            {/* Attached documents */}
-            <div>
-              <h4 className="text-xs font-bold text-slate-900 mb-1.5">Attached Files</h4>
-              <div className="space-y-1.5">
-                {(inspectingInvoice.attachments || [
-                  { id: "1", fileName: inspectingInvoice.fileName, fileSize: inspectingInvoice.fileSize, fileType: "pdf" },
-                ]).map((att, i) => (
-                  <div
-                    key={att.id || i}
-                    className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white text-xs"
-                  >
-                    <span className="font-medium text-slate-800">{att.fileName} ({att.fileSize})</span>
-                    <button
-                      type="button"
-                      onClick={() => downloadSingleAttachment(att.fileName)}
-                      className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline font-semibold"
-                    >
-                      <Download className="h-3 w-3" />
-                      Download File
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Decision Buttons */}
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => {
-                  setActionConfirm({
-                    type: "reject_invoice",
-                    id: inspectingInvoice.id,
-                    title: inspectingInvoice.invoiceName,
-                    amount: inspectingInvoice.totalValue,
-                  });
-                }}
-                className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-semibold"
-              >
-                Mark Hold / Under Review
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActionConfirm({
-                    type: "approve_invoice",
-                    id: inspectingInvoice.id,
-                    title: inspectingInvoice.invoiceName,
-                    amount: inspectingInvoice.totalValue,
-                  });
-                }}
-                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs"
-              >
-                Approve & Authorize Invoice
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* ================= MODAL: INSPECT JOB ================= */}
-      {inspectingJob && (
-        <Modal
-          isOpen={true}
-          onClose={() => setInspectingJob(null)}
-          title={`Inspect Job: ${inspectingJob.name}`}
-          maxWidth="lg"
-        >
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs">
-              <div>
-                <span className="text-slate-400 block text-[11px]">Job Code</span>
-                <span className="font-mono font-bold text-blue-700">{inspectingJob.jobCode || "—"}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Scheduled Date</span>
-                <span className="font-semibold text-slate-700">{inspectingJob.date}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Total Invoice Value</span>
-                <span className="font-bold text-slate-900 text-sm">
-                  Rs. {getJobTotalInvoiceValue(inspectingJob.id).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Current Status</span>
-                <StatusBadge status={inspectingJob.status} />
-              </div>
-            </div>
-
-            {inspectingJob.remarks && (
-              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
-                <strong>Remarks:</strong> {inspectingJob.remarks}
-              </div>
-            )}
-
-            {/* Attached Excel Files */}
-            <div>
-              <h4 className="text-xs font-bold text-slate-900 mb-1.5">Attached Excel Schedules</h4>
-              <div className="space-y-1.5">
-                {getJobExcelFiles(inspectingJob.id).map((xf) => (
-                  <div
-                    key={xf.id}
-                    className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white text-xs"
-                  >
-                    <span className="font-medium text-slate-800">
-                      {xf.customName || xf.fileName} ({xf.fileSize})
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => downloadMockExcelFile(xf)}
-                      className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline font-semibold"
-                    >
-                      <Download className="h-3 w-3" />
-                      Download Sheet
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Decision Buttons */}
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => {
-                  setActionConfirm({
-                    type: "review_job",
-                    id: inspectingJob.id,
-                    title: inspectingJob.name,
-                    subtitle: `Job Code: ${inspectingJob.jobCode || "—"}`,
-                  });
-                }}
-                className="px-3 py-1.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 text-xs font-semibold"
-              >
-                Mark In Review
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActionConfirm({
-                    type: "approve_job",
-                    id: inspectingJob.id,
-                    title: inspectingJob.name,
-                    subtitle: `Job Code: ${inspectingJob.jobCode || "—"}`,
-                  });
-                }}
-                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs"
-              >
-                Approve & Activate Job
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* ================= MODAL: ACTION CONFIRMATION DIALOG ================= */}
-      {actionConfirm && (
-        <Modal
-          isOpen={true}
-          onClose={() => {
-            setActionConfirm(null);
-            setActionNotes("");
-          }}
-          title={
-            actionConfirm.type === "approve_invoice"
-              ? "Authorize Vendor Invoice"
-              : actionConfirm.type === "reject_invoice"
-              ? "Place Invoice on Hold"
-              : actionConfirm.type === "approve_job"
-              ? "Authorize Project Job"
-              : "Mark Job in Review"
-          }
-          maxWidth="sm"
-        >
-          <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-1">
-              <p className="text-xs font-bold text-slate-900">{actionConfirm.title}</p>
-              {actionConfirm.subtitle && (
-                <p className="text-[11px] text-slate-500">{actionConfirm.subtitle}</p>
-              )}
-              {actionConfirm.amount !== undefined && (
-                <p className="text-sm font-bold text-blue-600 pt-1">
-                  Rs. {actionConfirm.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                {actionConfirm.type.startsWith("approve")
-                  ? "Authorization Remarks (Optional)"
-                  : "Reason for Hold / Return (Required)"}
-              </label>
-              <textarea
-                rows={2}
-                value={actionNotes}
-                onChange={(e) => setActionNotes(e.target.value)}
-                placeholder={
-                  actionConfirm.type.startsWith("approve")
-                    ? "Add authorization comments..."
-                    : "Specify the discrepancy or reason for hold..."
-                }
-                className="w-full rounded-lg border border-slate-200 p-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => {
-                  setActionConfirm(null);
-                  setActionNotes("");
-                }}
-                className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleExecuteAction}
-                className={`px-4 py-1.5 rounded-lg text-xs font-semibold text-white shadow-xs transition-colors ${
-                  actionConfirm.type.startsWith("approve")
-                    ? "bg-emerald-600 hover:bg-emerald-700"
-                    : "bg-rose-600 hover:bg-rose-700"
-                }`}
-              >
-                {actionConfirm.type.startsWith("approve") ? "Confirm Authorization" : "Confirm Hold"}
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {/* Job Details & Approval / Rejection Modal */}
+      <JobApprovalModal
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setSelectedJob(null);
+          setModalAction(null);
+        }}
+        job={selectedJob}
+        onActionComplete={handleModalComplete}
+        currentRole={currentRole}
+        initialAction={modalAction}
+      />
     </div>
   );
 }

@@ -1,107 +1,251 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Link from "next/link";
 import {
-  Upload,
-  Search,
-  Trash2,
-  X,
-  Receipt,
+  FileText,
   DollarSign,
   Clock,
-  CheckCircle2,
   Download,
-  FileSpreadsheet,
   CheckSquare,
   Square,
   Eye,
   ShieldAlert,
+  Search,
+  Building2,
+  Briefcase,
+  Plus,
+  Loader2,
+  TrendingUp,
+  Edit,
+  Ban,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
-import { Modal } from "@/components/admin/ui/modal";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
 import { FilterSelect } from "@/components/admin/ui/filter-controls";
-import { BulkInvoiceUploadModal } from "@/components/admin/modals/bulk-invoice-upload-modal";
-import { Invoice, InvoiceAttachment } from "@/types/admin";
-import {
-  exportInvoicesToCsv,
-  downloadMockInvoiceFile,
-  downloadSingleAttachment,
-} from "@/lib/export-utils";
+import { CreateSupplierInvoiceModal } from "@/components/admin/modals/create-supplier-invoice-modal";
+import { ViewSupplierInvoiceModal } from "@/components/admin/modals/view-supplier-invoice-modal";
+import { EditSupplierInvoiceModal } from "@/components/admin/modals/edit-supplier-invoice-modal";
+import { SupplierInvoice } from "@/types/admin";
+import { formatCurrency } from "@/lib/financial";
+import { downloadInvoicesAsZip } from "@/lib/bulk-download";
 
 export function InvoicesView() {
   const {
-    invoices,
     jobs,
     suppliers,
-    totalInvoicesCount,
-    totalInvoiceValue,
-    deleteInvoice,
+    showToast,
+    refreshJobs,
     can,
     currentRole,
   } = useAdminData();
 
-  // Search & Filters
-  const [searchTerm, setSearchTerm] = useState("");
-  const [jobFilter, setJobFilter] = useState("all");
-  const [supplierFilter, setSupplierFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
+  // =========================================================================
+  // SUPPLIER INVOICES STATE
+  // =========================================================================
+  const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>([]);
+  const [supplierMetrics, setSupplierMetrics] = useState({
+    totalSupplierInvoices: 0,
+    totalSupplierInvoiceAmount: 0,
+    totalJobCost: 0,
+    totalProfit: 0,
+    pendingInvoicePayments: 0,
+  });
+  const [loadingSupplierInvoices, setLoadingSupplierInvoices] = useState(false);
+  const [selectedSupplierInvoiceIds, setSelectedSupplierInvoiceIds] = useState<string[]>([]);
+  const [supplierSearch, setSupplierSearch] = useState("");
+  const [supplierFilterVal, setSupplierFilterVal] = useState("all");
+  const [jobFilterVal, setJobFilterVal] = useState("all");
+  const [supplierStatusFilter, setSupplierStatusFilter] = useState("all");
+  const [supplierPage, setSupplierPage] = useState(1);
+  const [supplierPageSize, setSupplierPageSize] = useState(10);
 
-  // Pagination state
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  // Modals for Supplier Invoices
+  const [isCreateSupplierModalOpen, setIsCreateSupplierModalOpen] = useState(false);
+  const [viewingSupplierInvoice, setViewingSupplierInvoice] = useState<SupplierInvoice | null>(null);
+  const [isViewSupplierModalOpen, setIsViewSupplierModalOpen] = useState(false);
+  const [editingSupplierInvoice, setEditingSupplierInvoice] = useState<SupplierInvoice | null>(null);
+  const [isEditSupplierModalOpen, setIsEditSupplierModalOpen] = useState(false);
+  const [isZippingBulk, setIsZippingBulk] = useState(false);
 
-  // Selection for Bulk Download
-  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
+  const isAdmin = currentRole.toLowerCase() === "admin";
+  const isSupervisor = currentRole.toLowerCase() === "supervisor";
+  const canCreate = isAdmin || isSupervisor || can("invoices", "create");
 
-  // Modals
-  const [isBulkUploadOpen, setIsBulkUploadOpen] = useState(false);
-  const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
-  const [previewingInvoice, setPreviewingInvoice] = useState<Invoice | null>(null);
+  // =========================================================================
+  // DATA FETCHING
+  // =========================================================================
 
-  // Summary Metrics
-  const pendingValue = useMemo(() => {
-    return invoices
-      .filter((i) => i.status === "Pending" || i.status === "Under Review")
-      .reduce((acc, curr) => acc + curr.totalValue, 0);
-  }, [invoices]);
+  const fetchSupplierInvoices = useCallback(async () => {
+    setLoadingSupplierInvoices(true);
+    try {
+      const res = await fetch("/api/supplier-invoices");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        setSupplierInvoices(json.data);
+        if (json.metrics) {
+          setSupplierMetrics(json.metrics);
+        }
+      }
+    } catch (err) {
+      console.error("fetchSupplierInvoices error:", err);
+    } finally {
+      setLoadingSupplierInvoices(false);
+    }
+  }, []);
 
-  const paidValue = useMemo(() => {
-    return invoices
-      .filter((i) => i.status === "Paid")
-      .reduce((acc, curr) => acc + curr.totalValue, 0);
-  }, [invoices]);
+  useEffect(() => {
+    fetchSupplierInvoices();
+  }, [fetchSupplierInvoices]);
 
-  const handleConfirmDelete = () => {
-    if (deletingInvoiceId) {
-      deleteInvoice(deletingInvoiceId);
-      setDeletingInvoiceId(null);
+  // =========================================================================
+  // SUPPLIER INVOICE HANDLERS
+  // =========================================================================
+
+  const handleCreateSupplierSuccess = (created: any) => {
+    fetchSupplierInvoices();
+    if (refreshJobs) refreshJobs();
+    showToast(
+      "Supplier Invoice Created",
+      `Invoice ${created.invoiceNumber} recorded for ${created.supplierName}. Actual job costs have been updated.`,
+      "success"
+    );
+  };
+
+  const handleOpenEditSupplierInvoice = (inv: SupplierInvoice) => {
+    setEditingSupplierInvoice(inv);
+    setIsEditSupplierModalOpen(true);
+  };
+
+  const handleEditSupplierSuccess = (updated: any) => {
+    fetchSupplierInvoices();
+    if (refreshJobs) refreshJobs();
+    showToast(
+      "Supplier Invoice Updated",
+      `Invoice ${updated.invoiceNumber || ""} has been updated. Job costs and budget metrics recalculated.`,
+      "success"
+    );
+  };
+
+  const handleCancelSupplierInvoice = async (invoiceId: string, reason: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/supplier-invoices/${invoiceId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "CANCEL", reason }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Failed to cancel invoice.");
+      }
+      showToast("Invoice Cancelled", json.message || "Supplier invoice cancelled successfully.", "info");
+      await fetchSupplierInvoices();
+      if (viewingSupplierInvoice?.id === invoiceId) {
+        setViewingSupplierInvoice((prev) =>
+          prev ? { ...prev, status: "CANCELLED", cancellationReason: reason } : null
+        );
+      }
+      if (refreshJobs) refreshJobs();
+      return true;
+    } catch (err: any) {
+      showToast("Error", err.message || "Could not cancel invoice.", "error");
+      return false;
     }
   };
 
-  // Filtered invoices
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((inv) => {
+  // Bulk Selection & Download for Supplier Invoices
+  const handleSelectAllSupplierInvoices = () => {
+    if (selectedSupplierInvoiceIds.length === paginatedSupplierInvoices.length) {
+      setSelectedSupplierInvoiceIds([]);
+    } else {
+      setSelectedSupplierInvoiceIds(paginatedSupplierInvoices.map((i) => i.id));
+    }
+  };
+
+  const handleToggleSelectSupplierInvoice = (id: string) => {
+    setSelectedSupplierInvoiceIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleBulkDownloadZip = async () => {
+    const selected = supplierInvoices.filter((i) => selectedSupplierInvoiceIds.includes(i.id));
+    if (selected.length === 0) {
+      showToast("No Invoices Selected", "Please select at least one supplier invoice to download.", "info");
+      return;
+    }
+
+    setIsZippingBulk(true);
+    try {
+      const res = await downloadInvoicesAsZip(selected);
+      if (res.success) {
+        showToast(
+          "Download Complete",
+          `Successfully packaged and downloaded ${res.totalFiles} attachment(s) (PDF, Word, Images) as ZIP.`,
+          "success"
+        );
+      } else {
+        showToast("Download Notice", res.error || "Could not package ZIP archive.", "info");
+      }
+    } catch (err: any) {
+      showToast("Error", err.message || "ZIP download failed.", "error");
+    } finally {
+      setIsZippingBulk(false);
+    }
+  };
+
+  // Open View Modal for Supplier Invoice
+  const handleOpenViewSupplierInvoice = (inv: SupplierInvoice) => {
+    setViewingSupplierInvoice(inv);
+    setIsViewSupplierModalOpen(true);
+  };
+
+  // Only Approved Jobs for filtering (strictly excludes pending, rejected, and deleted jobs)
+  const approvedJobs = useMemo(() => {
+    return (jobs || []).filter(
+      (j) =>
+        ["APPROVED", "Approved"].includes(j.status) &&
+        !j.isDeleted &&
+        !j.deletedAt
+    );
+  }, [jobs]);
+
+  // Filtered & Paginated Supplier Invoices
+  const filteredSupplierInvoices = useMemo(() => {
+    return supplierInvoices.filter((inv) => {
+      const q = supplierSearch.toLowerCase();
       const matchSearch =
-        inv.invoiceName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.fileName.toLowerCase().includes(searchTerm.toLowerCase());
+        !q ||
+        inv.invoiceNumber.toLowerCase().includes(q) ||
+        (inv.supplierName && inv.supplierName.toLowerCase().includes(q)) ||
+        (inv.supplierCode && inv.supplierCode.toLowerCase().includes(q)) ||
+        (inv.jobCode && inv.jobCode.toLowerCase().includes(q)) ||
+        (inv.jobName && inv.jobName.toLowerCase().includes(q)) ||
+        (inv.clientName && inv.clientName.toLowerCase().includes(q));
 
-      const matchJob = jobFilter === "all" || inv.jobId === jobFilter;
-      const matchSupplier = supplierFilter === "all" || inv.supplierId === supplierFilter;
-      const matchStatus = statusFilter === "all" || inv.status === statusFilter;
+      const matchSupplier = supplierFilterVal === "all" || inv.supplierId === supplierFilterVal;
+      const matchJob = jobFilterVal === "all" || inv.jobId === jobFilterVal;
+      const matchStatus =
+        supplierStatusFilter === "all"
+          ? true
+          : supplierStatusFilter === "approved"
+          ? inv.status === "APPROVED" || inv.status === "PAID"
+          : supplierStatusFilter === "cancelled"
+          ? inv.status === "CANCELLED"
+          : true;
 
-      return matchSearch && matchJob && matchSupplier && matchStatus;
+      return matchSearch && matchSupplier && matchJob && matchStatus;
     });
-  }, [invoices, searchTerm, jobFilter, supplierFilter, statusFilter]);
+  }, [supplierInvoices, supplierSearch, supplierFilterVal, jobFilterVal, supplierStatusFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredInvoices.length / pageSize));
-  const paginatedInvoices = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredInvoices.slice(start, start + pageSize);
-  }, [filteredInvoices, currentPage, pageSize]);
+  const totalSupplierPages = Math.max(1, Math.ceil(filteredSupplierInvoices.length / supplierPageSize));
+  const paginatedSupplierInvoices = useMemo(() => {
+    const start = (supplierPage - 1) * supplierPageSize;
+    return filteredSupplierInvoices.slice(start, start + supplierPageSize);
+  }, [filteredSupplierInvoices, supplierPage, supplierPageSize]);
 
   if (!can("invoices", "view")) {
     return (
@@ -110,519 +254,450 @@ export function InvoicesView() {
           <ShieldAlert className="h-7 w-7" />
         </div>
         <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
-        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-          You do not have authorization to view Vendor Invoices. Contact your system administrator if access is needed.
+        <p className="text-xs text-slate-500 mt-2">
+          You do not have authorization to view or manage Invoices. Contact your system administrator.
         </p>
-        <div className="mt-4 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
-          Active Role: <span className="font-bold text-blue-600 capitalize">{currentRole}</span>
-        </div>
-        <Link
-          href="/admin"
-          className="mt-6 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
-        >
-          Return to Dashboard
-        </Link>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
-      {/* Header */}
+    <div className="space-y-5" suppressHydrationWarning>
+      {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-2 border-b border-slate-200">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">Invoices Management</h2>
+          <h2 className="text-xl font-bold text-slate-900">Supplier Invoices & Expense Control</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            View and manage all uploaded vendor invoices across all jobs.
+            Record supplier bills with multi-item PDF vouchers, track real-time job expenses, and monitor budget utilization.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => exportInvoicesToCsv(filteredInvoices, jobs, suppliers, "invoices_full_report")}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shrink-0"
-            title="Download CSV report of all invoices"
-          >
-            <Download className="h-4 w-4 text-slate-500" />
-            <span>Download All ({filteredInvoices.length})</span>
-          </button>
-
-          {can("invoices", "create") && (
+        {/* Primary Action Button */}
+        <div className="flex items-center gap-2">
+          {canCreate && (
             <button
               type="button"
-              onClick={() => setIsBulkUploadOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors shrink-0"
+              onClick={() => setIsCreateSupplierModalOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors shadow-xs cursor-pointer"
             >
-              <Upload className="h-4 w-4" />
-              Bulk Upload Invoices
+              <Plus className="h-4 w-4" />
+              <span>+ Create Invoice</span>
             </button>
           )}
+
+          <Link
+            href="/admin/profit-loss"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors shadow-2xs"
+          >
+            <TrendingUp className="h-4 w-4 text-emerald-600" />
+            <span>Profit & Loss Summary</span>
+          </Link>
         </div>
       </div>
 
-      {/* 4 Clean Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-slate-200 p-4">
-          <span className="text-xs font-medium text-slate-500">Total Invoices</span>
-          <p className="text-2xl font-bold text-slate-900 mt-1">{totalInvoicesCount}</p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-4">
-          <span className="text-xs font-medium text-slate-500">Total Value</span>
-          <p className="text-2xl font-bold text-slate-900 mt-1">
-            Rs. {totalInvoiceValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-          </p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-4">
-          <span className="text-xs font-medium text-slate-500">Pending Approval</span>
-          <p className="text-2xl font-bold text-amber-600 mt-1">
-            Rs. {pendingValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-          </p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-4">
-          <span className="text-xs font-medium text-slate-500">Paid Invoices</span>
-          <p className="text-2xl font-bold text-emerald-600 mt-1">
-            Rs. {paidValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-          </p>
-        </div>
-      </div>
-
-      {/* Reusable Filter Bar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
-          {/* Search */}
-          <SearchField
-            value={searchTerm}
-            onChange={(val) => {
-              setSearchTerm(val);
-              setCurrentPage(1);
-            }}
-            placeholder="Search invoice or file name..."
-          />
-
-          {/* Job Filter */}
-          <FilterSelect
-            value={jobFilter}
-            onChange={(val) => {
-              setJobFilter(val);
-              setCurrentPage(1);
-            }}
-            options={[
-              { value: "all", label: "All Jobs" },
-              ...jobs.map((j) => ({ value: j.id, label: j.name })),
-            ]}
-          />
-
-          {/* Supplier Filter */}
-          <FilterSelect
-            value={supplierFilter}
-            onChange={(val) => {
-              setSupplierFilter(val);
-              setCurrentPage(1);
-            }}
-            options={[
-              { value: "all", label: "All Suppliers" },
-              ...suppliers.map((s) => ({ value: s.id, label: `${s.name} (${s.code})` })),
-            ]}
-          />
-
-          {/* Status Filter */}
-          <FilterSelect
-            value={statusFilter}
-            onChange={(val) => {
-              setStatusFilter(val);
-              setCurrentPage(1);
-            }}
-            options={[
-              { value: "all", label: "All Statuses" },
-              { value: "Pending", label: "Pending" },
-              { value: "Approved", label: "Approved" },
-              { value: "Under Review", label: "Under Review" },
-              { value: "Paid", label: "Paid" },
-            ]}
-          />
-        </div>
-      </div>
-
-      {/* Bulk Selection Bar */}
-      {selectedInvoiceIds.length > 0 && (
-        <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 text-xs text-blue-900 animate-in fade-in">
-          <div className="flex items-center gap-2">
-            <CheckSquare className="h-4 w-4 text-blue-600" />
-            <span className="font-semibold">
-              {selectedInvoiceIds.length} invoices selected
-            </span>
-            <span className="text-slate-500 text-[11px]">
-              (Combined value: Rs.{" "}
-              {filteredInvoices
-                .filter((i) => selectedInvoiceIds.includes(i.id))
-                .reduce((sum, i) => sum + i.totalValue, 0)
-                .toLocaleString(undefined, { minimumFractionDigits: 2 })}
-              )
-            </span>
+      {/* Metric Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        {/* Total Supplier Invoices */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Total Supplier Invoices</p>
+            <p className="text-2xl font-bold text-slate-900 mt-1 font-mono">
+              {supplierMetrics.totalSupplierInvoices}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Recorded vendor bills</p>
           </div>
+          <div className="h-10 w-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+            <FileText className="h-5 w-5" />
+          </div>
+        </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                const selectedInvs = invoices.filter((i) => selectedInvoiceIds.includes(i.id));
-                exportInvoicesToCsv(selectedInvs, jobs, suppliers, "selected_invoices_report");
-              }}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3 py-1.5 font-semibold text-white hover:bg-[#1d4ed8] shadow-xs"
+        {/* Total Supplier Invoice Amount */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Total Supplier Expense</p>
+            <p className="text-xl font-bold text-amber-600 mt-1 font-mono">
+              {formatCurrency(supplierMetrics.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Actual incurred costs</p>
+          </div>
+          <div className="h-10 w-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+            <DollarSign className="h-5 w-5" />
+          </div>
+        </div>
+
+        {/* Total Approved Job Cost */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Total Approved Job Value</p>
+            <p className="text-xl font-bold text-slate-800 mt-1 font-mono">
+              {formatCurrency(supplierMetrics.totalJobCost, { showCurrencyPrefix: true })}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Approved budget ceiling</p>
+          </div>
+          <div className="h-10 w-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-600">
+            <Briefcase className="h-5 w-5" />
+          </div>
+        </div>
+
+        {/* Total Recorded Profit */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Recorded Gross Profit</p>
+            <p
+              className={`text-xl font-bold mt-1 font-mono ${
+                supplierMetrics.totalProfit >= 0 ? "text-emerald-600" : "text-rose-600"
+              }`}
             >
-              <Download className="h-3.5 w-3.5" />
-              Download Selected CSV ({selectedInvoiceIds.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedInvoiceIds([])}
-              className="text-slate-500 hover:text-slate-700 px-2 py-1 text-xs"
-            >
-              Deselect All
-            </button>
+              {formatCurrency(supplierMetrics.totalProfit, { showCurrencyPrefix: true })}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Budget minus actual bills</p>
+          </div>
+          <div
+            className={`h-10 w-10 rounded-xl border flex items-center justify-center ${
+              supplierMetrics.totalProfit >= 0
+                ? "bg-emerald-50 border-emerald-200 text-emerald-600"
+                : "bg-rose-50 border-rose-200 text-rose-600"
+            }`}
+          >
+            <TrendingUp className="h-5 w-5" />
           </div>
         </div>
-      )}
 
-      {/* Invoices Table */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        {filteredInvoices.length === 0 ? (
-          <div className="p-8 text-center text-xs text-slate-500">
-            No invoices found. Click &quot;Bulk Upload Invoices&quot; to add some.
+        {/* Pending Invoice Payments */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between sm:col-span-2 lg:col-span-1">
+          <div>
+            <p className="text-xs font-medium text-slate-500">Pending Payments</p>
+            <p className="text-2xl font-bold text-indigo-600 mt-1 font-mono">
+              {supplierMetrics.pendingInvoicePayments}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Approved & active bills</p>
           </div>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
-                <tr>
-                  <th className="w-10 px-3 py-3 text-center">
+          <div className="h-10 w-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600">
+            <Clock className="h-5 w-5" />
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="space-y-4">
+        {/* Sub Toolbar: Filters, Search & Bulk Actions */}
+        <div className="bg-white rounded-xl border border-slate-200 p-3 shadow-xs space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            {/* Dropdown Filters */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <FilterSelect
+                label="All Suppliers"
+                value={supplierFilterVal}
+                onChange={setSupplierFilterVal}
+                options={[
+                  { label: "All Suppliers", value: "all" },
+                  ...suppliers.map((s) => ({ label: `${s.name} (${s.code})`, value: s.id })),
+                ]}
+              />
+
+              <FilterSelect
+                label="Approved Jobs"
+                value={jobFilterVal}
+                onChange={setJobFilterVal}
+                options={[
+                  { label: "All Approved Jobs", value: "all" },
+                  ...approvedJobs.map((j) => ({ label: `${j.jobCode || "JOB"} - ${j.name}`, value: j.id })),
+                ]}
+              />
+
+              <FilterSelect
+                label="Status"
+                value={supplierStatusFilter}
+                onChange={setSupplierStatusFilter}
+                options={[
+                  { label: "All Statuses", value: "all" },
+                  { label: "Approved / Active", value: "approved" },
+                  { label: "Cancelled", value: "cancelled" },
+                ]}
+              />
+            </div>
+
+            {/* Right: Search Field & Bulk Actions */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="w-full sm:w-64">
+                <SearchField
+                  value={supplierSearch}
+                  onChange={(val) => {
+                    setSupplierSearch(val);
+                    setSupplierPage(1);
+                  }}
+                  placeholder="Search invoice #, supplier, job..."
+                />
+              </div>
+
+              {selectedSupplierInvoiceIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBulkDownloadZip}
+                  disabled={isZippingBulk}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition-colors shrink-0 disabled:opacity-50"
+                  title="Download all attachments (PDF, Word, Images) from selected supplier invoices as a ZIP"
+                >
+                  {isZippingBulk ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  <span>Download ZIP ({selectedSupplierInvoiceIds.length})</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Supplier Invoices Table */}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
+                  <th className="py-3 px-3 w-10 text-center">
                     <button
                       type="button"
-                      onClick={() => {
-                        if (selectedInvoiceIds.length === filteredInvoices.length) {
-                          setSelectedInvoiceIds([]);
-                        } else {
-                          setSelectedInvoiceIds(filteredInvoices.map((i) => i.id));
-                        }
-                      }}
-                      className="text-slate-400 hover:text-blue-600 inline-flex items-center justify-center"
-                      title={
-                        selectedInvoiceIds.length === filteredInvoices.length
-                          ? "Deselect All"
-                          : "Select All Filtered"
-                      }
+                      onClick={handleSelectAllSupplierInvoices}
+                      className="text-slate-400 hover:text-blue-600"
+                      title="Select / Deselect all on this page"
                     >
-                      {selectedInvoiceIds.length === filteredInvoices.length &&
-                      filteredInvoices.length > 0 ? (
+                      {selectedSupplierInvoiceIds.length === paginatedSupplierInvoices.length &&
+                      paginatedSupplierInvoices.length > 0 ? (
                         <CheckSquare className="h-4 w-4 text-blue-600" />
                       ) : (
                         <Square className="h-4 w-4" />
                       )}
                     </button>
                   </th>
-                  <th className="px-5 py-3">Invoice Name / File</th>
-                  <th className="px-4 py-3">Job Name</th>
-                  <th className="px-4 py-3">Supplier</th>
-                  <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3 text-right">Amount</th>
-                  <th className="px-4 py-3 text-center">Status</th>
-                  <th className="px-5 py-3 text-right">Actions</th>
+                  <th className="py-3 px-3.5">Invoice #</th>
+                  <th className="py-3 px-3.5">Supplier Name</th>
+                  <th className="py-3 px-3.5">Linked Job</th>
+                  <th className="py-3 px-3.5">Invoice Date</th>
+                  <th className="py-3 px-3.5 text-center">Attachments</th>
+                  <th className="py-3 px-3.5 text-right">Invoice Amount (Rs.)</th>
+                  <th className="py-3 px-3.5">Recorded By</th>
+                  <th className="py-3 px-3.5 text-center">Status</th>
+                  <th className="py-3 px-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {paginatedInvoices.map((inv) => {
-                  const job = jobs.find((j) => j.id === inv.jobId);
-                  const supplier = suppliers.find((s) => s.id === inv.supplierId);
-                  const isSelected = selectedInvoiceIds.includes(inv.id);
+                {loadingSupplierInvoices ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-slate-400">
+                      <Loader2 className="h-6 w-6 animate-spin text-blue-600 mx-auto mb-2" />
+                      <p className="text-xs font-semibold">Loading supplier invoices...</p>
+                    </td>
+                  </tr>
+                ) : paginatedSupplierInvoices.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-slate-400">
+                      <FileText className="h-10 w-10 text-slate-300 stroke-[1.5] mx-auto mb-2" />
+                      <p className="text-sm font-semibold text-slate-600">No Supplier Invoices Recorded</p>
+                      <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                        Click &quot;+ Create Invoice&quot; to log actual supplier bills and PDF quotation attachments against approved jobs.
+                      </p>
+                      {canCreate && (
+                        <button
+                          type="button"
+                          onClick={() => setIsCreateSupplierModalOpen(true)}
+                          className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 shadow-xs"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>Record First Invoice</span>
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ) : (
+                  paginatedSupplierInvoices.map((inv) => {
+                    const isSelected = selectedSupplierInvoiceIds.includes(inv.id);
+                    const isCancelled = inv.status === "CANCELLED";
+                    const totalAttCount =
+                      (inv.attachments?.length || 0) +
+                      (inv.items || []).reduce((sum, item) => sum + (item.attachments?.length || 0), 0);
 
-                  return (
-                    <tr
-                      key={inv.id}
-                      className={`hover:bg-slate-50 transition-colors ${
-                        isSelected ? "bg-blue-50/40" : ""
-                      }`}
-                    >
-                      <td className="w-10 px-3 py-3.5 text-center">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedInvoiceIds((prev) => [...prev, inv.id]);
-                            } else {
-                              setSelectedInvoiceIds((prev) =>
-                                prev.filter((id) => id !== inv.id)
-                              );
-                            }
-                          }}
-                          className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                      </td>
-
-                      <td className="px-5 py-3.5">
-                        <div className="space-y-1.5">
-                          <div>
-                            <span className="font-semibold text-slate-900 block">
-                              {inv.invoiceName}
+                    return (
+                      <tr
+                        key={inv.id}
+                        className={`hover:bg-slate-50/70 transition-colors ${
+                          isSelected ? "bg-blue-50/40" : ""
+                        } ${isCancelled ? "bg-slate-50/50 opacity-60" : ""}`}
+                      >
+                        <td className="py-3.5 px-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectSupplierInvoice(inv.id)}
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          />
+                        </td>
+                        <td className="py-3.5 px-3.5 font-mono font-bold text-slate-900">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenViewSupplierInvoice(inv)}
+                            className="text-blue-600 hover:text-blue-800 hover:underline text-left cursor-pointer"
+                          >
+                            {inv.invoiceNumber}
+                          </button>
+                        </td>
+                        <td className="py-3.5 px-3.5">
+                          <div className="font-semibold text-slate-900">{inv.supplierName || "—"}</div>
+                          {inv.supplierCode && (
+                            <span className="font-mono text-[10px] text-slate-400 bg-slate-100 px-1 py-0.2 rounded">
+                              {inv.supplierCode}
                             </span>
-                            <span className="text-[10px] text-slate-400 font-mono">
-                              Primary: {inv.fileName} ({inv.fileSize})
-                            </span>
-                          </div>
-
-                          {/* Multiple files list under invoice */}
-                          {inv.attachments && inv.attachments.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5 pt-0.5">
-                              {inv.attachments.map((att, aIdx) => {
-                                const isPdf = att.fileName.toLowerCase().endsWith(".pdf");
-                                return (
-                                  <div
-                                    key={att.id || aIdx}
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px]"
-                                  >
-                                    <span
-                                      className={`font-mono font-bold uppercase ${
-                                        isPdf ? "text-rose-600" : "text-blue-600"
-                                      }`}
-                                    >
-                                      {isPdf ? "PDF" : "IMG"}
-                                    </span>
-                                    <span className="text-slate-700 max-w-[120px] truncate" title={att.fileName}>
-                                      {att.fileName}
-                                    </span>
-                                    <span className="text-slate-400">({att.fileSize})</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => downloadSingleAttachment(att.fileName, att.fileName)}
-                                      className="text-slate-400 hover:text-blue-600 ml-0.5 p-0.5"
-                                      title={`Download ${att.fileName} separately`}
-                                    >
-                                      <Download className="h-3 w-3" />
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px]">
-                              <span className="font-mono font-bold uppercase text-slate-600">
-                                {inv.fileName?.toLowerCase().endsWith(".pdf") ? "PDF" : "IMG"}
-                              </span>
-                              <span className="text-slate-700">{inv.fileName}</span>
-                              <button
-                                type="button"
-                                onClick={() => downloadSingleAttachment(inv.fileName, inv.fileName)}
-                                className="text-slate-400 hover:text-blue-600 p-0.5 ml-0.5"
-                                title="Download file"
-                              >
-                                <Download className="h-3 w-3" />
-                              </button>
-                            </div>
                           )}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3.5 text-slate-700">
-                        {job ? (
-                          <Link href={`/admin/jobs/${job.id}`} className="hover:text-blue-600 font-medium">
-                            {job.name}
-                          </Link>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-
-                      <td className="px-4 py-3.5 text-slate-700 font-medium">
-                        {supplier ? supplier.name : "—"}
-                      </td>
-
-                      <td className="px-4 py-3.5 text-slate-600 whitespace-nowrap">
-                        {inv.invoiceDate}
-                      </td>
-
-                      <td className="px-4 py-3.5 text-right font-semibold text-slate-900">
-                        Rs. {inv.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </td>
-
-                      <td className="px-4 py-3.5 text-center">
-                        <StatusBadge status={inv.status} />
-                      </td>
-
-                      <td className="px-5 py-3.5 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setPreviewingInvoice(inv)}
-                            className="p-1 rounded text-slate-400 hover:text-blue-600 transition-colors"
-                            title="Preview Invoice Document"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => downloadMockInvoiceFile(inv)}
-                            className="p-1 rounded text-slate-400 hover:text-blue-600 transition-colors"
-                            title={`Download File: ${inv.fileName}`}
-                          >
-                            <Download className="h-4 w-4" />
-                          </button>
-                          {can("invoices", "delete") && (
+                        </td>
+                        <td className="py-3.5 px-3.5">
+                          {inv.jobCode ? (
+                            <Link
+                              href={`/admin/jobs/${inv.jobId}`}
+                              className="font-medium text-slate-800 hover:text-blue-600 block hover:underline"
+                            >
+                              <span className="font-mono text-blue-600 font-semibold mr-1">{inv.jobCode}</span>
+                              <span className="text-slate-600">{inv.jobName}</span>
+                            </Link>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                          {inv.clientName && (
+                            <span className="text-[11px] text-slate-400 block mt-0.5">
+                              Client: {inv.clientName}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-3.5 text-slate-600 font-mono whitespace-nowrap">
+                          {inv.invoiceDate}
+                        </td>
+                        <td className="py-3.5 px-3.5 text-center">
+                          {totalAttCount > 0 ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-semibold">
+                              <FileText className="h-3 w-3" />
+                              <span>{totalAttCount} File{totalAttCount !== 1 ? "s" : ""}</span>
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-slate-400">None</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-3.5 text-right font-mono font-bold text-slate-900">
+                          <span className={isCancelled ? "line-through text-slate-400" : ""}>
+                            {formatCurrency(inv.totalAmount, { showCurrencyPrefix: true })}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-3.5 text-slate-600">
+                          <span className="block font-medium text-slate-800">{inv.createdByName || "Admin"}</span>
+                          <span className="block text-[10px] text-slate-400 font-mono">{inv.createdAt}</span>
+                        </td>
+                        <td className="py-3.5 px-3.5 text-center whitespace-nowrap">
+                          <StatusBadge status={inv.status} />
+                        </td>
+                        <td className="py-3.5 px-3.5 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1">
                             <button
                               type="button"
-                              onClick={() => setDeletingInvoiceId(inv.id)}
-                              className="p-1 rounded text-slate-400 hover:text-rose-600 transition-colors"
-                              title="Delete"
+                              onClick={() => handleOpenViewSupplierInvoice(inv)}
+                              className="p-1 rounded text-slate-400 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+                              title="View Invoice & Audit Trail"
                             >
-                              <Trash2 className="h-4 w-4" />
+                              <Eye className="h-4 w-4" />
                             </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                            {!isCancelled && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditSupplierInvoice(inv)}
+                                className="p-1 rounded text-slate-400 hover:text-amber-600 hover:bg-slate-100 transition-colors"
+                                title="Edit Invoice & Recalculate Finances"
+                              >
+                                <Edit className="h-4 w-4" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => downloadInvoicesAsZip([inv])}
+                              className="p-1 rounded text-slate-400 hover:text-emerald-600 hover:bg-slate-100 transition-colors"
+                              title="Download Attachments (.zip)"
+                            >
+                              <Download className="h-4 w-4" />
+                            </button>
+                            {isAdmin && !isCancelled && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setViewingSupplierInvoice(inv);
+                                  setIsViewSupplierModalOpen(true);
+                                }}
+                                className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-slate-100 transition-colors"
+                                title="Cancel / Void Invoice"
+                              >
+                                <Ban className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
 
-          <Pagination
-            currentPage={currentPage}
-            totalPages={totalPages}
-            totalItems={filteredInvoices.length}
-            pageSize={pageSize}
-            onPageChange={setCurrentPage}
-            onPageSizeChange={(newSize) => {
-              setPageSize(newSize);
-              setCurrentPage(1);
-            }}
-          />
-        </>
-      )}
+          {/* Pagination */}
+          <div className="p-3 border-t border-slate-200 bg-slate-50/50">
+            <Pagination
+              currentPage={supplierPage}
+              totalPages={totalSupplierPages}
+              pageSize={supplierPageSize}
+              totalItems={filteredSupplierInvoices.length}
+              onPageChange={setSupplierPage}
+              onPageSizeChange={(size) => {
+                setSupplierPageSize(size);
+                setSupplierPage(1);
+              }}
+            />
+          </div>
+        </div>
       </div>
 
-      {/* Bulk Upload Modal */}
-      <BulkInvoiceUploadModal
-        isOpen={isBulkUploadOpen}
-        onClose={() => setIsBulkUploadOpen(false)}
+      {/* ========================================================================= */}
+      {/* MODAL: CREATE SUPPLIER INVOICE (DYNAMIC ROWS + MULTI-PDF ATTACHMENTS)     */}
+      {/* ========================================================================= */}
+      <CreateSupplierInvoiceModal
+        isOpen={isCreateSupplierModalOpen}
+        onClose={() => setIsCreateSupplierModalOpen(false)}
+        onSuccess={handleCreateSupplierSuccess}
       />
 
-      {/* Invoice Document Preview Modal */}
-      {previewingInvoice && (
-        <Modal
-          isOpen={true}
-          onClose={() => setPreviewingInvoice(null)}
-          title="Invoice Document Preview"
-          maxWidth="2xl"
-        >
-          <div className="space-y-4">
-            {/* Metadata Bar */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">Invoice Name</span>
-                <span className="font-bold text-slate-900 truncate block">{previewingInvoice.invoiceName}</span>
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">Total Amount</span>
-                <span className="font-bold text-slate-900 block">
-                  Rs. {previewingInvoice.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">Invoice Date</span>
-                <span className="font-semibold text-slate-700 block">{previewingInvoice.invoiceDate}</span>
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">Status</span>
-                <div className="mt-0.5"><StatusBadge status={previewingInvoice.status} /></div>
-              </div>
-            </div>
+      {/* ========================================================================= */}
+      {/* MODAL: VIEW SUPPLIER INVOICE DETAILS & AUDIT LOG                          */}
+      {/* ========================================================================= */}
+      <ViewSupplierInvoiceModal
+        isOpen={isViewSupplierModalOpen}
+        onClose={() => {
+          setIsViewSupplierModalOpen(false);
+          setViewingSupplierInvoice(null);
+        }}
+        invoice={viewingSupplierInvoice}
+        onCancelInvoice={handleCancelSupplierInvoice}
+        onEditInvoice={handleOpenEditSupplierInvoice}
+        isAdmin={isAdmin}
+      />
 
-            {/* Document Preview Pane */}
-            <div className="rounded-xl border border-slate-200 bg-slate-100 p-6 flex flex-col items-center justify-center min-h-[220px] text-center">
-              <div className="h-14 w-14 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center text-blue-600 mb-3">
-                <Receipt className="h-7 w-7" />
-              </div>
-              <p className="text-sm font-bold text-slate-900">{previewingInvoice.fileName}</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                Document verified. Format: {previewingInvoice.fileName?.endsWith('.pdf') ? 'Adobe Acrobat PDF Document' : 'Digital Photo Proof'}.
-              </p>
-              <button
-                type="button"
-                onClick={() => downloadMockInvoiceFile(previewingInvoice)}
-                className="mt-4 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] transition-colors"
-              >
-                <Download className="h-3.5 w-3.5" />
-                Download Original Document
-              </button>
-            </div>
-
-            {/* Attachments Section if multiple exist */}
-            {previewingInvoice.attachments && previewingInvoice.attachments.length > 0 && (
-              <div className="space-y-2">
-                <h4 className="text-xs font-bold text-slate-800">
-                  Attached Documents ({previewingInvoice.attachments.length})
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {previewingInvoice.attachments.map((att: InvoiceAttachment, i: number) => (
-                    <div
-                      key={att.id || i}
-                      className="flex items-center justify-between p-2 rounded-lg border border-slate-200 bg-white text-xs"
-                    >
-                      <span className="font-medium text-slate-800 truncate max-w-[180px]">{att.fileName}</span>
-                      <button
-                        type="button"
-                        onClick={() => downloadSingleAttachment(att.fileName, att.fileName)}
-                        className="p-1 rounded text-blue-600 hover:bg-blue-50"
-                        title="Download file"
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {deletingInvoiceId && (
-        <Modal
-          isOpen={true}
-          onClose={() => setDeletingInvoiceId(null)}
-          title="Delete Invoice"
-          maxWidth="sm"
-        >
-          <div className="space-y-3">
-            <p className="text-xs text-slate-600">
-              Are you sure you want to delete this invoice?
-            </p>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setDeletingInvoiceId(null)}
-                className="h-8 px-3 rounded text-xs text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                className="h-8 px-3.5 rounded bg-rose-600 text-xs font-semibold text-white hover:bg-rose-700"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {/* ========================================================================= */}
+      {/* MODAL: EDIT SUPPLIER INVOICE (DYNAMIC ROWS + MULTI-FORMAT ATTACHMENTS)    */}
+      {/* ========================================================================= */}
+      <EditSupplierInvoiceModal
+        isOpen={isEditSupplierModalOpen}
+        onClose={() => {
+          setIsEditSupplierModalOpen(false);
+          setEditingSupplierInvoice(null);
+        }}
+        invoice={editingSupplierInvoice}
+        onSuccess={handleEditSupplierSuccess}
+        isAdmin={isAdmin}
+      />
     </div>
   );
 }

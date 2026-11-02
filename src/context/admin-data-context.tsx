@@ -19,6 +19,7 @@ import {
   initialAuditLogs,
 } from "@/lib/mock-data";
 import { ERPModule, Action, hasPermission } from "@/lib/permissions";
+import { formatCurrency } from "@/lib/financial";
 
 interface AdminDataContextType {
   // Access Control & RBAC
@@ -379,11 +380,39 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Fetch and sync invoices from PostgreSQL database
+  const fetchDbInvoices = useCallback(async () => {
+    try {
+      const res = await fetch("/api/invoices?status=all");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.success && Array.isArray(json.data)) {
+        const realInvoices: Invoice[] = json.data.map((inv: any) => ({
+          id: inv.id,
+          jobId: inv.jobId || "",
+          supplierId: "",
+          invoiceName: `${inv.invoiceNumber} - ${inv.clientName}`,
+          invoiceDate: inv.issueDate || inv.createdAt?.split("T")[0] || "",
+          totalValue: Number(inv.totalAmount || 0),
+          fileName: `${inv.invoiceNumber}.pdf`,
+          fileSize: "—",
+          uploadDate: inv.createdAt?.split("T")[0] || "",
+          status: inv.status,
+          fileUrl: inv.pdfUrl || "",
+        }));
+        setInvoices(realInvoices);
+      }
+    } catch {
+      // Fallback
+    }
+  }, []);
+
   React.useEffect(() => {
     fetchDbJobs();
+    fetchDbInvoices();
     fetchDbUsers();
     fetchDbAuditLogs();
-  }, [fetchDbJobs, fetchDbUsers, fetchDbAuditLogs]);
+  }, [fetchDbJobs, fetchDbInvoices, fetchDbUsers, fetchDbAuditLogs]);
 
   // Toast System
   const showToast = useCallback(
@@ -407,17 +436,19 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     (jobData: Omit<Job, "id" | "createdAt" | "supplierIds"> & { supplierIds?: string[]; documents?: any[] }): Job => {
       const tempId = "job-" + (Date.now().toString(36) + Math.random().toString(36).substring(2, 5));
       const dateStr = new Date().toISOString().split("T")[0];
+      const initialStatus = jobData.status === "DRAFT" ? "DRAFT" : "PENDING_APPROVAL";
       const newJob: Job = {
         ...jobData,
         id: tempId,
         jobCode: jobData.jobCode || `JOB-${new Date().getFullYear()}-${String(jobs.length + 1).padStart(3, "0")}`,
+        status: initialStatus,
         createdAt: dateStr,
         supplierIds: jobData.supplierIds || [],
         isDeleted: false,
         documents: jobData.documents || [],
       };
       setJobs((prev) => [newJob, ...prev]);
-      showToast("Job Created", `"${newJob.name}" has been initialized successfully.`, "success");
+      showToast("Job Created", `"${newJob.name}" has been initialized successfully with status Pending Approval.`, "success");
 
       // Persist to PostgreSQL database
       fetch("/api/jobs", {
@@ -427,10 +458,18 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
           name: newJob.name,
           jobCode: newJob.jobCode,
           date: newJob.date,
+          commencingDate: newJob.commencingDate,
+          clientName: newJob.clientName,
+          handledBy: newJob.handledBy,
           description: newJob.description,
           remarks: newJob.remarks,
-          status: newJob.status,
+          status: initialStatus,
           supplierIds: newJob.supplierIds,
+          totalCost: newJob.totalCost,
+          grandTotal: newJob.grandTotal,
+          costCategories: newJob.costCategories || [],
+          costItems: newJob.costItems || [],
+          costSummary: newJob.costSummary || null,
           documents: jobData.documents || [],
         }),
       })
@@ -830,7 +869,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       setInvoices((prev) => [newInvoice, ...prev]);
       showToast(
         "Invoice Uploaded",
-        `Invoice "${newInvoice.invoiceName}" added (Rs. ${newInvoice.totalValue.toLocaleString()}).`,
+        `Invoice "${newInvoice.invoiceName}" added (${formatCurrency(newInvoice.totalValue, { showCurrencyPrefix: true })}).`,
         "success"
       );
       return newInvoice;
@@ -851,7 +890,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       const totalAmount = createdInvoices.reduce((acc, curr) => acc + curr.totalValue, 0);
       showToast(
         "Bulk Invoices Uploaded",
-        `${createdInvoices.length} invoices uploaded successfully (Rs. ${totalAmount.toLocaleString()}).`,
+        `${createdInvoices.length} invoices uploaded successfully (${formatCurrency(totalAmount, { showCurrencyPrefix: true })}).`,
         "success"
       );
     },
@@ -1265,10 +1304,12 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   }, [invoices]);
 
   const pendingApprovalsCount = useMemo(() => {
-    const invCount = invoices.filter((i) => i.status === "Pending" || i.status === "Under Review").length;
-    const jobCount = jobs.filter((j) => j.status === "Pending" || j.status === "In Review").length;
-    return invCount + jobCount;
-  }, [invoices, jobs]);
+    return jobs.filter((j) => {
+      if (j.isDeleted) return false;
+      const s = (j.status || "").toUpperCase();
+      return s === "PENDING_APPROVAL" || s.includes("PENDING") || s === "DRAFT" || s.includes("REVIEW");
+    }).length;
+  }, [jobs]);
 
   const value = useMemo(
     () => ({

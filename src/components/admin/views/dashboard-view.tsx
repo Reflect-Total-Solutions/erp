@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -25,6 +25,8 @@ import { StatusBadge } from "@/components/admin/ui/badge";
 import { CreateJobModal } from "@/components/admin/modals/create-job-modal";
 import { RegisterSupplierModal } from "@/components/admin/modals/register-supplier-modal";
 import { BulkInvoiceUploadModal } from "@/components/admin/modals/bulk-invoice-upload-modal";
+import { formatCurrency } from "@/lib/financial";
+import { Job } from "@/types/admin";
 
 export function DashboardView() {
   const router = useRouter();
@@ -47,19 +49,17 @@ export function DashboardView() {
   const [isUploadInvoiceOpen, setIsUploadInvoiceOpen] = useState(false);
 
   // Formatted currency (Rs.)
-  const formattedTotal = `Rs. ${totalInvoiceValue.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  const formattedTotal = formatCurrency(totalInvoiceValue, { showCurrencyPrefix: true });
 
-  // Pending Approvals calculation
-  const pendingInvoices = invoices.filter(
-    (i) => i.status === "Pending" || i.status === "Under Review"
-  );
-  const pendingJobs = jobs.filter(
-    (j) => j.status === "Pending" || j.status === "In Review"
-  );
-  const pendingApprovalsCount = pendingInvoices.length + pendingJobs.length;
+  // Pending Job Approvals calculation (100% database-backed)
+  const pendingJobs = useMemo(() => {
+    return jobs.filter((j) => {
+      if (j.isDeleted) return false;
+      const s = (j.status || "").toUpperCase();
+      return s === "PENDING_APPROVAL" || s.includes("PENDING") || s === "DRAFT" || s.includes("REVIEW");
+    });
+  }, [jobs]);
+  const pendingApprovalsCount = pendingJobs.length;
 
   const recentJobs = jobs.slice(0, 5);
   const recentInvoices = invoices.slice(0, 5);
@@ -231,83 +231,49 @@ export function DashboardView() {
           </div>
 
           <div className="p-4 divide-y divide-slate-100">
-            {pendingInvoices.length === 0 && pendingJobs.length === 0 ? (
+            {pendingJobs.length === 0 ? (
               <div className="py-8 text-center">
                 <CheckCircle2 className="mx-auto h-8 w-8 text-emerald-500" />
                 <p className="text-xs font-medium text-slate-700 mt-2">
-                  All tasks are up to date!
+                  All approvals are up to date!
                 </p>
                 <p className="text-[11px] text-slate-400">
-                  No invoices or jobs currently require authorization.
+                  No project jobs currently require authorization.
                 </p>
               </div>
             ) : (
-              <>
-                {pendingInvoices.slice(0, 3).map((inv) => {
-                  const job = jobs.find((j) => j.id === inv.jobId);
-                  const supplier = suppliers.find((s) => s.id === inv.supplierId);
-                  return (
-                    <div
-                      key={inv.id}
-                      className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-900 truncate">
-                            {inv.invoiceName}
-                          </span>
-                          <span className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 border border-amber-200">
-                            Invoice Approval
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          Job: {job?.name || "General"} • Supplier: {supplier?.name || "Vendor"}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-3 shrink-0">
-                        <span className="text-xs font-bold text-slate-900">
-                          Rs. {inv.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </span>
-                        <Link
-                          href="/admin/approvals"
-                          className="px-2.5 py-1 text-xs font-semibold rounded bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
-                        >
-                          Review
-                        </Link>
-                      </div>
+              pendingJobs.slice(0, 4).map((job: Job) => (
+                <div
+                  key={job.id}
+                  className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-900 truncate">
+                        {job.name}
+                      </span>
+                      <span className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 border border-amber-200">
+                        Pending Approval
+                      </span>
                     </div>
-                  );
-                })}
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Code: {job.jobCode || "NO CODE"} • Client: {job.clientName || "Valued Client"} • Handled By: {job.handledBy || "Admin"}
+                    </p>
+                  </div>
 
-                {pendingJobs.slice(0, 2).map((job) => (
-                  <div
-                    key={job.id}
-                    className="py-3 last:pb-0 flex items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-slate-900 truncate">
-                          {job.name}
-                        </span>
-                        <span className="inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 border border-blue-200">
-                          Job Review
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">
-                        Created on {job.date} • {job.supplierIds.length} suppliers assigned
-                      </p>
-                    </div>
-
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="text-xs font-bold text-slate-900 font-mono">
+                      {formatCurrency(job.grandTotal || job.totalCost || 0, { showCurrencyPrefix: true })}
+                    </span>
                     <Link
-                      href={`/admin/jobs/${job.id}`}
-                      className="px-2.5 py-1 text-xs font-semibold rounded bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors shrink-0"
+                      href="/admin/approvals"
+                      className="px-2.5 py-1 text-xs font-semibold rounded bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
                     >
-                      View Job
+                      Review
                     </Link>
                   </div>
-                ))}
-              </>
+                </div>
+              ))
             )}
           </div>
         </div>
@@ -437,7 +403,7 @@ export function DashboardView() {
                         {job.supplierIds.length}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-slate-900 whitespace-nowrap">
-                        Rs. {val.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {formatCurrency(val, { showCurrencyPrefix: true })}
                       </td>
                       <td className="px-4 py-3 text-center">
                         <StatusBadge status={job.status} />
@@ -520,7 +486,7 @@ export function DashboardView() {
                         {inv.invoiceDate}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-slate-900 whitespace-nowrap">
-                        Rs. {inv.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {formatCurrency(inv.totalValue, { showCurrencyPrefix: true })}
                       </td>
                       <td className="px-5 py-3 text-center">
                         <StatusBadge status={inv.status} />

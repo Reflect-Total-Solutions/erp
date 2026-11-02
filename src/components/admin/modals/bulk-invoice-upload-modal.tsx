@@ -17,6 +17,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { InvoiceStatus } from "@/types/admin";
+import { formatCurrency } from "@/lib/financial";
 
 interface BulkInvoiceUploadModalProps {
   isOpen: boolean;
@@ -502,9 +503,10 @@ export function BulkInvoiceUploadModal({
               <span>
                 Total Batch Value:{" "}
                 <strong className="text-slate-900">
-                  ${stagedInvoices
-                    .reduce((acc, curr) => acc + (parseFloat(curr.totalValue) || 0), 0)
-                    .toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  {formatCurrency(
+                    stagedInvoices.reduce((acc, curr) => acc + (parseFloat(curr.totalValue) || 0), 0),
+                    { showCurrencyPrefix: true }
+                  )}
                 </strong>
               </span>
             )}

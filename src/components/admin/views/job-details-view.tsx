@@ -21,12 +21,29 @@ import {
   CheckSquare,
   Square,
   Loader2,
+  Layers,
+  Printer,
+  Building,
+  User,
+  ShieldAlert,
+  TrendingUp,
+  TrendingDown,
+  AlertTriangle,
+  CheckCircle2,
+  FileArchive,
+  ExternalLink,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { Modal } from "@/components/admin/ui/modal";
 import { BulkInvoiceUploadModal } from "@/components/admin/modals/bulk-invoice-upload-modal";
-import { Invoice, InvoiceStatus } from "@/types/admin";
+import { EditJobCostsModal } from "@/components/admin/modals/edit-job-costs-modal";
+import { CreateSupplierInvoiceModal } from "@/components/admin/modals/create-supplier-invoice-modal";
+import { ViewSupplierInvoiceModal } from "@/components/admin/modals/view-supplier-invoice-modal";
+import { Invoice, InvoiceStatus, Job, JobCostCategory, JobCostItem, JobCostSummary, SupplierInvoice } from "@/types/admin";
+import { downloadProcessedQuotationExcel } from "@/lib/excel-generator";
+import { formatCurrency } from "@/lib/financial";
+import { downloadSingleInvoiceZip } from "@/lib/bulk-download";
 import {
   exportJobDetailedReportToCsv,
   exportInvoicesToCsv,
@@ -57,12 +74,63 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
     removeExcelFile,
     deleteInvoice,
     updateInvoice,
+    refreshJobs,
   } = useAdminData();
 
   const job = getJobById(jobId);
+  const [liveJob, setLiveJob] = useState<Job | null>(null);
+  const [isEditCostModalOpen, setIsEditCostModalOpen] = useState(false);
+  const [isCreateSupplierInvModalOpen, setIsCreateSupplierInvModalOpen] = useState(false);
+  const [selectedSupplierInvoiceId, setSelectedSupplierInvoiceId] = useState<string | null>(null);
+  const [supplierInvSearch, setSupplierInvSearch] = useState("");
 
-  // Active Tab
-  const [activeTab, setActiveTab] = useState<"excel" | "suppliers" | "invoices">("excel");
+  // Active Tab: breakdown (quotation), excel, suppliers, invoices
+  const [activeTab, setActiveTab] = useState<"breakdown" | "excel" | "suppliers" | "invoices">("breakdown");
+
+  // Fetch complete job with dynamic cost categories and items from PostgreSQL
+  const fetchFullJob = React.useCallback(async () => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.success && json.data) {
+        setLiveJob(json.data);
+      }
+    } catch (err) {
+      console.error("Error loading full job details:", err);
+    }
+  }, [jobId]);
+
+  React.useEffect(() => {
+    fetchFullJob();
+  }, [fetchFullJob]);
+
+  const currentJob = liveJob || job;
+
+  const financialOverview = useMemo(() => {
+    if (currentJob?.financialOverview) {
+      return currentJob.financialOverview;
+    }
+    const approvedVal = Number(currentJob?.grandTotal || currentJob?.totalCost || 0);
+    const activeInvs = (currentJob?.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED");
+    const totalSupCost = activeInvs.reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0);
+    const remaining = approvedVal - totalSupCost;
+    const grossProfit = approvedVal - totalSupCost;
+    const profitMargin = approvedVal > 0 ? (grossProfit / approvedVal) * 100 : 0;
+    const costUtil = approvedVal > 0 ? (totalSupCost / approvedVal) * 100 : 0;
+    return {
+      approvedJobValue: approvedVal,
+      totalSupplierCost: totalSupCost,
+      otherCosts: 0,
+      totalActualCost: totalSupCost,
+      remainingBudget: remaining,
+      grossProfit,
+      profitMargin,
+      costUtilization: costUtil,
+      isBudgetExceeded: totalSupCost > approvedVal,
+      supplierInvoicesCount: activeInvs.length,
+    };
+  }, [currentJob]);
 
   // Modal states
   const [isBulkInvoiceOpen, setIsBulkInvoiceOpen] = useState(false);
@@ -90,11 +158,24 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
   const [invSearch, setInvSearch] = useState("");
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
 
+  const filteredSupplierInvoices = useMemo(() => {
+    const list = currentJob?.supplierInvoices || [];
+    if (!supplierInvSearch.trim()) return list;
+    const q = supplierInvSearch.toLowerCase();
+    return list.filter((inv) =>
+      inv.invoiceNumber.toLowerCase().includes(q) ||
+      (inv.supplierName && inv.supplierName.toLowerCase().includes(q)) ||
+      (inv.supplierCode && inv.supplierCode.toLowerCase().includes(q)) ||
+      (inv.notes && inv.notes.toLowerCase().includes(q)) ||
+      (inv.items && inv.items.some((it) => it.description.toLowerCase().includes(q)))
+    );
+  }, [currentJob?.supplierInvoices, supplierInvSearch]);
+
   // Derived data
-  const jobSuppliers = useMemo(() => (job ? getJobSuppliers(job.id) : []), [job, getJobSuppliers]);
-  const jobInvoices = useMemo(() => (job ? getJobInvoices(job.id) : []), [job, getJobInvoices]);
-  const jobExcelFiles = useMemo(() => (job ? getJobExcelFiles(job.id) : []), [job, getJobExcelFiles]);
-  const totalValue = useMemo(() => (job ? getJobTotalInvoiceValue(job.id) : 0), [job, getJobTotalInvoiceValue]);
+  const jobSuppliers = useMemo(() => (currentJob ? getJobSuppliers(currentJob.id) : []), [currentJob, getJobSuppliers]);
+  const jobInvoices = useMemo(() => (currentJob ? getJobInvoices(currentJob.id) : []), [currentJob, getJobInvoices]);
+  const jobExcelFiles = useMemo(() => (currentJob ? getJobExcelFiles(currentJob.id) : []), [currentJob, getJobExcelFiles]);
+  const totalValue = useMemo(() => (currentJob ? getJobTotalInvoiceValue(currentJob.id) : 0), [currentJob, getJobTotalInvoiceValue]);
 
   const filteredInvoices = useMemo(() => {
     return jobInvoices.filter((inv) =>
@@ -327,7 +408,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
     setEditingInvoice(null);
   };
 
-  if (!job) {
+  if (!currentJob) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 p-8 text-center space-y-3">
         <p className="text-sm font-semibold text-slate-800">Job not found</p>
@@ -345,6 +426,71 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
     );
   }
 
+  const handleDownloadOriginalExcel = () => {
+    if (!currentJob) return;
+    const doc = currentJob.documents?.find(
+      (d) => d.fileName?.endsWith(".xlsx") || d.fileName?.endsWith(".xls") || d.fileUrl?.startsWith("http")
+    );
+    if (doc?.fileUrl && doc.fileUrl.startsWith("http")) {
+      const link = document.createElement("a");
+      link.href = doc.fileUrl;
+      link.download = doc.fileName;
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      downloadProcessedQuotationExcel(
+        currentJob,
+        currentJob.costCategories,
+        currentJob.costItems,
+        currentJob.costSummary
+      );
+    }
+  };
+
+  const handleDownloadProcessedExcel = () => {
+    if (!currentJob) return;
+    downloadProcessedQuotationExcel(
+      currentJob,
+      currentJob.costCategories,
+      currentJob.costItems,
+      currentJob.costSummary
+    );
+  };
+
+  const categoriesToRender =
+    currentJob.costCategories && currentJob.costCategories.length > 0
+      ? currentJob.costCategories
+      : [
+          {
+            id: "cat-def",
+            jobId: currentJob.id,
+            name: "Production Cost",
+            sortOrder: 1,
+            subtotal: (currentJob.costItems || []).reduce((s, i) => s + (Number(i.totalCost) || 0), 0),
+            items: currentJob.costItems || [],
+          },
+        ];
+
+  const totalCostItemsCount = categoriesToRender.reduce((sum, c) => sum + (c.items?.length || 0), 0);
+  const summaryData = currentJob.costSummary || {
+    productionCost: currentJob.totalCost || 0,
+    runningCost: 0,
+    agencyOperationFee: 0,
+    agencyProductionFee: 0,
+    adminCharges: 0,
+    monitoringCost: 0,
+    artworkCharges: 0,
+    contingencies: 0,
+    subTotal: currentJob.totalCost || 0,
+    totalBeforeTax: currentJob.totalCost || 0,
+    taxType: "SSCL",
+    taxRate: 2.5,
+    taxAmount: (Number(currentJob.totalCost) || 0) * 0.025,
+    grandTotal: currentJob.grandTotal || currentJob.totalCost || 0,
+  };
+
   return (
     <div className="space-y-5">
       {/* Back button */}
@@ -359,56 +505,102 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
       </div>
 
       {/* Job Header Card */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs">
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-xl font-bold text-slate-900">{job.name}</h2>
-              {job.jobCode && (
-                <span className="text-xs font-mono font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                  {job.jobCode}
+              <h2 className="text-xl font-bold text-slate-900">{currentJob.name}</h2>
+              {currentJob.jobCode && (
+                <span className="text-xs font-mono font-medium text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded border border-blue-200">
+                  {currentJob.jobCode}
                 </span>
               )}
-              <StatusBadge status={job.status} />
+              <StatusBadge status={currentJob.status} />
             </div>
 
-            <div className="flex items-center gap-4 mt-1.5 text-xs text-slate-500 flex-wrap">
+            <div className="flex items-center gap-4 mt-2 text-xs text-slate-500 flex-wrap">
+              {currentJob.clientName && (
+                <span className="flex items-center gap-1.5 text-slate-800 font-semibold bg-slate-50 px-2.5 py-1 rounded border border-slate-200">
+                  <Building className="h-3.5 w-3.5 text-blue-600" />
+                  <span>Client: {currentJob.clientName}</span>
+                </span>
+              )}
+
               <span className="flex items-center gap-1.5">
                 <Calendar className="h-3.5 w-3.5 text-slate-400" />
-                Job Date: <strong className="text-slate-700">{job.date}</strong>
+                Job Date: <strong className="text-slate-700">{currentJob.date}</strong>
               </span>
-              {job.remarks && (
-                <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded text-[11px]">
-                  Remarks: {job.remarks}
+
+              {currentJob.commencingDate && (
+                <span className="flex items-center gap-1.5">
+                  <Calendar className="h-3.5 w-3.5 text-slate-400" />
+                  Commencing: <strong className="text-slate-700">{currentJob.commencingDate}</strong>
+                </span>
+              )}
+
+              {currentJob.handledBy && (
+                <span className="flex items-center gap-1.5">
+                  <User className="h-3.5 w-3.5 text-slate-400" />
+                  Handled By: <strong className="text-slate-700">{currentJob.handledBy}</strong>
                 </span>
               )}
             </div>
 
-            {job.description && (
+            {currentJob.description && (
               <p className="mt-2 text-xs text-slate-600 max-w-2xl leading-relaxed">
-                {job.description}
+                {currentJob.description}
               </p>
             )}
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
+          {/* Action & Download Buttons */}
+          <div className="flex items-center gap-2 flex-wrap shrink-0">
             <button
               type="button"
-              onClick={() => exportJobDetailedReportToCsv(job, jobInvoices, jobSuppliers, jobExcelFiles)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
-              title="Download complete cost breakdown, invoices, and suppliers dossier"
+              onClick={handleDownloadOriginalExcel}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+              title="Download original uploaded Excel quotation from secure storage"
             >
-              <Download className="h-3.5 w-3.5 text-slate-500" />
-              Download Job Dossier
+              <Download className="h-3.5 w-3.5 text-blue-600" />
+              <span>Original Excel</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadProcessedExcel}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+              title="Download clean structured Excel file with all dynamic cost items"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+              <span>Processed Excel</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+              title="Print or save quotation document as PDF"
+            >
+              <Printer className="h-3.5 w-3.5 text-slate-600" />
+              <span>Print / PDF</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsEditCostModalOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 px-3 py-2 text-xs font-semibold hover:bg-blue-100 transition-colors shadow-2xs"
+            >
+              <Edit2 className="h-3.5 w-3.5" />
+              <span>Edit Quotation & Costs</span>
             </button>
 
             <button
               type="button"
               onClick={() => setIsBulkInvoiceOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1d4ed8] transition-colors shadow-2xs"
             >
               <Upload className="h-3.5 w-3.5" />
-              Upload Invoices
+              <span>Upload Invoices</span>
             </button>
           </div>
         </div>
@@ -416,9 +608,15 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
         {/* Quick summary stats */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-4 border-t border-slate-100 text-xs">
           <div>
-            <span className="text-slate-400 block text-[11px]">Total Invoice Value</span>
+            <span className="text-slate-400 block text-[11px]">Quotation Grand Total</span>
+            <span className="font-bold text-blue-700 text-base">
+              {formatCurrency(summaryData.grandTotal || totalValue, { showCurrencyPrefix: true })}
+            </span>
+          </div>
+          <div>
+            <span className="text-slate-400 block text-[11px]">Cost Items Extracted</span>
             <span className="font-bold text-slate-900 text-base">
-              Rs. {totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              {totalCostItemsCount} items ({categoriesToRender.length} categories)
             </span>
           </div>
           <div>
@@ -426,54 +624,393 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
             <span className="font-bold text-slate-900 text-base">{jobSuppliers.length}</span>
           </div>
           <div>
-            <span className="text-slate-400 block text-[11px]">Invoices Uploaded</span>
-            <span className="font-bold text-slate-900 text-base">{jobInvoices.length}</span>
-          </div>
-          <div>
-            <span className="text-slate-400 block text-[11px]">Excel Files Attached</span>
-            <span className="font-bold text-slate-900 text-base">{jobExcelFiles.length}</span>
+            <span className="text-slate-400 block text-[11px]">Vendor Invoices Value</span>
+            <span className="font-bold text-slate-900 text-base">
+              {formatCurrency(totalValue, { showCurrencyPrefix: true })}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Simple Tabs */}
+      {/* Financial Overview & Budget Utilization Card */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+        {/* Warning if budget exceeded */}
+        {financialOverview.isBudgetExceeded && (
+          <div className="flex items-start gap-3 p-3.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-800">
+            <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+            <div className="text-xs space-y-0.5">
+              <span className="font-bold text-rose-900 block">
+                Budget Exceeded: Supplier Expenses Exceed Approved Quotation
+              </span>
+              <p className="text-rose-700">
+                Total supplier costs of <strong>{formatCurrency(financialOverview.totalSupplierCost, { showCurrencyPrefix: true })}</strong> exceed
+                the approved job value of <strong>{formatCurrency(financialOverview.approvedJobValue, { showCurrencyPrefix: true })}</strong> by{" "}
+                <strong className="font-bold underline">{formatCurrency(Math.abs(financialOverview.remainingBudget), { showCurrencyPrefix: true })}</strong>.
+                Budget utilization is at <strong>{financialOverview.costUtilization.toFixed(1)}%</strong>.
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-blue-600" />
+            <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+              Financial Overview & Budget Utilization
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsCreateSupplierInvModalOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors shrink-0"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>Record Supplier Invoice</span>
+          </button>
+        </div>
+
+        {/* Financial KPI Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+            <span className="text-[11px] font-medium text-slate-500 block">Approved Job Value</span>
+            <span className="text-base font-bold text-slate-900 font-mono block mt-1">
+              {formatCurrency(financialOverview.approvedJobValue, { showCurrencyPrefix: true })}
+            </span>
+            <span className="text-[10px] text-slate-400">Approved Quotation</span>
+          </div>
+
+          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+            <span className="text-[11px] font-medium text-slate-500 block">Supplier Invoices Cost</span>
+            <span className="text-base font-bold text-blue-700 font-mono block mt-1">
+              {formatCurrency(financialOverview.totalSupplierCost, { showCurrencyPrefix: true })}
+            </span>
+            <span className="text-[10px] text-slate-400">
+              {financialOverview.supplierInvoicesCount} active invoice{financialOverview.supplierInvoicesCount !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+            <span className="text-[11px] font-medium text-slate-500 block">Remaining Budget</span>
+            <span
+              className={`text-base font-bold font-mono block mt-1 ${
+                financialOverview.remainingBudget < 0 ? "text-rose-600" : "text-emerald-700"
+              }`}
+            >
+              {formatCurrency(financialOverview.remainingBudget, { showCurrencyPrefix: true })}
+            </span>
+            <span className="text-[10px] text-slate-400">
+              {financialOverview.remainingBudget >= 0 ? "Available balance" : "Over-budget deficit"}
+            </span>
+          </div>
+
+          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+            <span className="text-[11px] font-medium text-slate-500 block">Gross Profit</span>
+            <span
+              className={`text-base font-bold font-mono block mt-1 ${
+                financialOverview.grossProfit < 0 ? "text-rose-600" : "text-emerald-700"
+              }`}
+            >
+              {formatCurrency(financialOverview.grossProfit, { showCurrencyPrefix: true })}
+            </span>
+            <span className="text-[10px] text-slate-400">Value minus supplier costs</span>
+          </div>
+
+          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+            <span className="text-[11px] font-medium text-slate-500 block">Profit Margin</span>
+            <div className="flex items-center gap-1.5 mt-1">
+              {financialOverview.profitMargin >= 20 ? (
+                <TrendingUp className="h-4 w-4 text-emerald-600" />
+              ) : (
+                <TrendingDown className="h-4 w-4 text-rose-500" />
+              )}
+              <span
+                className={`text-base font-bold font-mono ${
+                  financialOverview.profitMargin >= 30
+                    ? "text-emerald-600"
+                    : financialOverview.profitMargin >= 10
+                    ? "text-slate-900"
+                    : "text-rose-600"
+                }`}
+              >
+                {financialOverview.profitMargin.toFixed(1)}%
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400">Margin ratio</span>
+          </div>
+        </div>
+
+        {/* Budget Utilization Progress Bar */}
+        <div className="space-y-1.5 pt-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-600 font-medium">
+              Budget Utilization: <strong className="text-slate-900">{financialOverview.costUtilization.toFixed(1)}%</strong>
+            </span>
+            <span className="text-[11px] text-slate-400">
+              {financialOverview.totalSupplierCost <= financialOverview.approvedJobValue
+                ? `${formatCurrency(financialOverview.remainingBudget, { showCurrencyPrefix: true })} remaining`
+                : `${formatCurrency(Math.abs(financialOverview.remainingBudget), { showCurrencyPrefix: true })} over budget`}
+            </span>
+          </div>
+          <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full transition-all duration-500 rounded-full ${
+                financialOverview.costUtilization > 100
+                  ? "bg-rose-500"
+                  : financialOverview.costUtilization > 80
+                  ? "bg-amber-500"
+                  : "bg-emerald-500"
+              }`}
+              style={{ width: `${Math.min(financialOverview.costUtilization, 100)}%` }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation Tabs */}
       <div className="border-b border-slate-200">
-        <div className="flex gap-4">
+        <div className="flex gap-4 overflow-x-auto">
+          <button
+            type="button"
+            onClick={() => setActiveTab("breakdown")}
+            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer ${
+              activeTab === "breakdown"
+                ? "border-[#2563EB] text-[#2563EB]"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5" />
+            <span>1. Quotation & Cost Breakdown ({totalCostItemsCount})</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab("excel")}
-            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors ${
+            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors shrink-0 cursor-pointer ${
               activeTab === "excel"
                 ? "border-[#2563EB] text-[#2563EB]"
                 : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
           >
-            1. Excel Files ({jobExcelFiles.length})
+            2. Attached Documents ({jobExcelFiles.length})
           </button>
+
           <button
             type="button"
             onClick={() => setActiveTab("suppliers")}
-            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors ${
+            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors shrink-0 cursor-pointer ${
               activeTab === "suppliers"
                 ? "border-[#2563EB] text-[#2563EB]"
                 : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
           >
-            2. Suppliers ({jobSuppliers.length})
+            3. Assigned Suppliers ({jobSuppliers.length})
           </button>
+
           <button
             type="button"
             onClick={() => setActiveTab("invoices")}
-            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors ${
+            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors shrink-0 cursor-pointer ${
               activeTab === "invoices"
                 ? "border-[#2563EB] text-[#2563EB]"
                 : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
           >
-            3. Bulk Invoice Upload & Invoices ({jobInvoices.length})
+            4. Supplier Invoices & Actual Expenses ({(currentJob.supplierInvoices || []).length})
           </button>
         </div>
       </div>
+
+      {/* ================= TAB 0: QUOTATION & DYNAMIC COST BREAKDOWN ================= */}
+      {activeTab === "breakdown" && (
+        <div className="space-y-5">
+          {/* Detailed Quotation Document Box */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
+            <div className="flex items-center justify-between px-5 py-3.5 bg-slate-50/80 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <FileSpreadsheet className="h-4 w-4 text-blue-600" />
+                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                  Detailed Cost Breakdown Schedule
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditCostModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+              >
+                <Edit2 className="h-3 w-3 text-slate-500" />
+                <span>Edit Costs</span>
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-100/70 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="px-4 py-2.5 w-14 text-center">No</th>
+                    <th className="px-4 py-2.5">Item Description</th>
+                    <th className="px-3 py-2.5 w-20 text-center">RC / NRC</th>
+                    <th className="px-3 py-2.5 w-20 text-right">Qty</th>
+                    <th className="px-4 py-2.5 w-32 text-right">Rate (Rs.)</th>
+                    <th className="px-5 py-2.5 w-36 text-right">Total Cost (Rs.)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {categoriesToRender.map((cat, catIdx) => (
+                    <React.Fragment key={catIdx}>
+                      <tr className="bg-slate-50/90 font-bold text-slate-800">
+                        <td colSpan={5} className="px-4 py-2 text-xs uppercase tracking-wide">
+                          <span className="text-blue-600 mr-2">📁</span>
+                          <span>{cat.name}</span>
+                        </td>
+                        <td className="px-5 py-2 text-right text-xs font-bold text-slate-900 font-mono">
+                          {formatCurrency(cat.subtotal, { showCurrencyPrefix: true })}
+                        </td>
+                      </tr>
+                      {(cat.items || []).map((item, itemIdx) => (
+                        <tr key={itemIdx} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-4 py-2.5 text-center text-slate-400 text-[11px]">
+                            {item.itemNumber || itemIdx + 1}
+                          </td>
+                          <td className="px-4 py-2.5 font-medium text-slate-800">
+                            {item.description}
+                          </td>
+                          <td className="px-3 py-2.5 text-center">
+                            <span
+                              className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                item.rcNrc === "RC"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-slate-100 text-slate-700"
+                              }`}
+                            >
+                              {item.rcNrc || "NRC"}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-right text-slate-600 font-mono">
+                            {item.quantity}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-slate-600 font-mono">
+                            {formatCurrency(item.rate, { showCurrencyPrefix: false })}
+                          </td>
+                          <td className="px-5 py-2.5 text-right font-semibold text-slate-900 font-mono">
+                            {formatCurrency(item.totalCost, { showCurrencyPrefix: false })}
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Financial Summary Recapitulation Block */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-3">
+              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                <Layers className="h-4 w-4 text-blue-600" />
+                <span>Operational & Agency Breakdown</span>
+              </h4>
+
+              <div className="divide-y divide-slate-100 text-xs">
+                <div className="flex justify-between py-2 text-slate-600">
+                  <span>Total Production Cost (NRC):</span>
+                  <span className="font-semibold text-slate-900 font-mono">
+                    {formatCurrency(summaryData.productionCost || 0, { showCurrencyPrefix: true })}
+                  </span>
+                </div>
+                <div className="flex justify-between py-2 text-slate-600">
+                  <span>Total Running Cost (RC):</span>
+                  <span className="font-semibold text-slate-900 font-mono">
+                    {formatCurrency(summaryData.runningCost || 0, { showCurrencyPrefix: true })}
+                  </span>
+                </div>
+                {Number(summaryData.agencyOperationFee || 0) > 0 && (
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>Agency Fee for Operation Cost:</span>
+                    <span className="font-semibold text-slate-900 font-mono">
+                      {formatCurrency(summaryData.agencyOperationFee, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                )}
+                {Number(summaryData.agencyProductionFee || 0) > 0 && (
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>Agency Fee for Production Cost:</span>
+                    <span className="font-semibold text-slate-900 font-mono">
+                      {formatCurrency(summaryData.agencyProductionFee, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                )}
+                {Number(summaryData.adminCharges || 0) > 0 && (
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>Agency Administration Charges:</span>
+                    <span className="font-semibold text-slate-900 font-mono">
+                      {formatCurrency(summaryData.adminCharges, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                )}
+                {Number(summaryData.monitoringCost || 0) > 0 && (
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>Agency Monitoring Cost:</span>
+                    <span className="font-semibold text-slate-900 font-mono">
+                      {formatCurrency(summaryData.monitoringCost, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                )}
+                {Number(summaryData.artworkCharges || 0) > 0 && (
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>Artwork & AW Charges:</span>
+                    <span className="font-semibold text-slate-900 font-mono">
+                      {formatCurrency(summaryData.artworkCharges, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                )}
+                {Number(summaryData.contingencies || 0) > 0 && (
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>Contingencies:</span>
+                    <span className="font-semibold text-slate-900 font-mono">
+                      {formatCurrency(summaryData.contingencies, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-3 flex flex-col justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5 mb-3">
+                  <DollarSign className="h-4 w-4 text-emerald-600" />
+                  <span>Taxation & Final Payable</span>
+                </h4>
+
+                <div className="divide-y divide-slate-100 text-xs">
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>Grand Total Before Tax:</span>
+                    <span className="font-bold text-slate-900 text-sm font-mono">
+                      {formatCurrency(summaryData.totalBeforeTax || summaryData.subTotal || 0, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-2 text-slate-600">
+                    <span>{summaryData.taxType || "SSCL"} ({summaryData.taxRate || 2.5}%):</span>
+                    <span className="font-semibold text-slate-900 font-mono">
+                      {formatCurrency(summaryData.taxAmount || 0, { showCurrencyPrefix: true })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-blue-50 border border-blue-200 p-4 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] font-bold text-blue-800 uppercase tracking-wider">Final Grand Total</span>
+                  <p className="text-[11px] text-blue-600">Total payable including all taxes & operational fees</p>
+                </div>
+                <span className="text-xl font-extrabold text-blue-900 font-mono">
+                  {formatCurrency(summaryData.grandTotal || 0, { showCurrencyPrefix: true })}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ================= TAB 1: EXCEL UPLOAD ================= */}
       {activeTab === "excel" && (
@@ -481,7 +1018,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
           <div className="bg-white rounded-xl border border-slate-200 p-5">
             <h3 className="text-xs font-bold text-slate-900 mb-1">Upload Excel Files</h3>
             <p className="text-xs text-slate-500 mb-4">
-              Upload multiple Excel files (.xlsx or .xls) for {job.name}.
+              Upload multiple Excel files (.xlsx or .xls) for {currentJob.name}.
             </p>
 
             {/* File Selector */}
@@ -715,7 +1252,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                       <td className="px-5 py-3 text-right">
                         <button
                           type="button"
-                          onClick={() => removeSupplierFromJob(job.id, s.id)}
+                          onClick={() => removeSupplierFromJob(currentJob.id, s.id)}
                           className="text-slate-400 hover:text-rose-600 p-1"
                           title="Remove from job"
                         >
@@ -731,533 +1268,200 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
         </div>
       )}
 
-      {/* ================= TAB 3: INVOICES ================= */}
+      {/* ================= TAB 4: SUPPLIER INVOICES & ACTUAL EXPENSES ================= */}
       {activeTab === "invoices" && (
         <div className="space-y-5">
-          {/* Direct Bulk Invoices Upload Section (Photos & PDFs) */}
-          <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Bulk Invoice Upload (Photos & PDFs)
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Select multiple invoice photos (.jpg, .png) or PDF files (.pdf) for {job.name}. Enter Invoice Name and Date for each file.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  ref={invoiceFileInputRef}
-                  type="file"
-                  multiple
-                  accept=".pdf,.png,.jpg,.jpeg,.webp"
-                  className="hidden"
-                  onChange={(e) => handleSelectInvoiceFiles(e.target.files)}
-                />
-                <button
-                  type="button"
-                  onClick={() => invoiceFileInputRef.current?.click()}
-                  className="h-9 px-3.5 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] flex items-center gap-1.5 shadow-xs"
-                >
-                  <Upload className="h-4 w-4" />
-                  <span>Select Invoices (Photos / PDFs)</span>
-                </button>
-              </div>
+          {/* Section Header & Action Bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <span>Supplier Invoices & Actual Incurred Expenses</span>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                  {(currentJob.supplierInvoices || []).length} recorded
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Record actual supplier bills and PDF quotation attachments against this job without altering the approved quotation.
+              </p>
             </div>
 
-            {/* Drag & Drop or Empty State Area */}
-            {stagedInvoiceFiles.length === 0 ? (
-              <div
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setIsInvoiceDragging(true);
-                }}
-                onDragLeave={() => setIsInvoiceDragging(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setIsInvoiceDragging(false);
-                  handleSelectInvoiceFiles(e.dataTransfer.files);
-                }}
-                onClick={() => invoiceFileInputRef.current?.click()}
-                className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center cursor-pointer transition-colors bg-slate-50/50 ${
-                  isInvoiceDragging
-                    ? "border-blue-500 bg-blue-50/40"
-                    : "border-slate-300 hover:border-blue-400"
-                }`}
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              <div className="relative">
+                <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={supplierInvSearch}
+                  onChange={(e) => setSupplierInvSearch(e.target.value)}
+                  placeholder="Search invoices..."
+                  className="h-8 w-44 sm:w-56 rounded-lg border border-slate-200 pl-8 pr-2.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-600 bg-white"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsCreateSupplierInvModalOpen(true)}
+                className="inline-flex items-center gap-1.5 h-8 rounded-lg bg-blue-600 px-3.5 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors"
               >
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="h-9 w-9 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
-                    <ImageIcon className="h-5 w-5" />
-                  </div>
-                  <div className="h-9 w-9 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
-                    <FileText className="h-5 w-5" />
-                  </div>
-                </div>
-                <p className="text-xs font-bold text-slate-800">
-                  Drop invoice Photos & PDFs here, or click to browse
-                </p>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Supports .jpg, .jpeg, .png, .webp (Camera photos) and .pdf (Scanned vouchers)
-                </p>
-              </div>
-            ) : (
-              /* Staged Invoices List (Each file has its own Name & Date right in front) */
-              <div className="space-y-3 pt-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800">
-                    Selected Invoice Files ({stagedInvoiceFiles.length}):
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setStagedInvoiceFiles([])}
-                    className="text-xs text-rose-600 hover:underline font-medium"
-                  >
-                    Clear All
-                  </button>
-                </div>
+                <Plus className="h-3.5 w-3.5" />
+                <span>Record Supplier Invoice</span>
+              </button>
 
-                <div className="max-h-80 overflow-y-auto space-y-2.5 pr-1">
-                  {stagedInvoiceFiles.map((item, idx) => (
-                    <div
-                      key={item.id}
-                      className="p-3 bg-slate-50/70 rounded-xl border border-slate-200 space-y-2.5"
-                    >
-                      {/* File Header with preview */}
-                      <div className="flex items-center justify-between border-b border-slate-200/80 pb-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          {item.fileType === "image" ? (
-                            item.previewUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={item.previewUrl}
-                                alt="preview"
-                                className="h-7 w-7 rounded object-cover border border-slate-300 shrink-0"
-                              />
-                            ) : (
-                              <div className="h-7 w-7 rounded bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
-                                <ImageIcon className="h-4 w-4" />
-                              </div>
-                            )
-                          ) : (
-                            <div className="h-7 w-7 rounded bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
-                              <FileText className="h-4 w-4" />
-                            </div>
-                          )}
-
-                          <span
-                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase font-mono ${
-                              item.fileType === "pdf"
-                                ? "bg-rose-100 text-rose-700 border border-rose-200"
-                                : "bg-blue-100 text-blue-700 border border-blue-200"
-                            }`}
-                          >
-                            {item.fileType === "pdf" ? "PDF" : "PHOTO"}
-                          </span>
-
-                          <span className="text-xs font-semibold text-slate-900 truncate">
-                            {item.fileName}
-                          </span>
-                          <span className="text-[10px] text-slate-400 font-mono shrink-0">
-                            ({item.fileSize})
-                          </span>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setStagedInvoiceFiles((prev) =>
-                              prev.filter((i) => i.id !== item.id)
-                            )
-                          }
-                          className="text-slate-400 hover:text-rose-600 p-1 rounded"
-                          title="Remove file"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-
-                      {/* Inputs in front of each file: Name, Date, Supplier, Amount */}
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                        {/* Invoice Name */}
-                        <div className="sm:col-span-5">
-                          <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                            Invoice Name / Title *
-                          </label>
-                          <input
-                            type="text"
-                            value={item.invoiceName}
-                            onChange={(e) =>
-                              updateStagedInvoiceItem(item.id, "invoiceName", e.target.value)
-                            }
-                            placeholder="e.g. Concrete Bill #401"
-                            required
-                            className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                          />
-                        </div>
-
-                        {/* Invoice Date */}
-                        <div className="sm:col-span-4">
-                          <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                            Invoice Date *
-                          </label>
-                          <input
-                            type="date"
-                            value={item.invoiceDate}
-                            onChange={(e) =>
-                              updateStagedInvoiceItem(item.id, "invoiceDate", e.target.value)
-                            }
-                            required
-                            className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                          />
-                        </div>
-
-                        {/* Amount */}
-                        <div className="sm:col-span-3">
-                          <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                            Amount (Rs.)
-                          </label>
-                          <div className="relative">
-                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] font-medium text-slate-400">
-                              Rs.
-                            </span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={item.totalValue}
-                              onChange={(e) =>
-                                updateStagedInvoiceItem(item.id, "totalValue", e.target.value)
-                              }
-                              placeholder="0.00"
-                              className="h-8 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Supplier dropdown */}
-                      <div className="pt-0.5">
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                          Supplier
-                        </label>
-                        <select
-                          value={item.supplierId}
-                          onChange={(e) =>
-                            updateStagedInvoiceItem(item.id, "supplierId", e.target.value)
-                          }
-                          className="h-8 w-full sm:w-1/2 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                        >
-                          <option value="">-- Choose Supplier --</option>
-                          {suppliers.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name} ({s.code})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Staged Upload Action Bar */}
-                <div className="flex items-center justify-between pt-2 border-t border-slate-200">
-                  <span className="text-xs text-slate-500">
-                    Total to upload: <strong>{stagedInvoiceFiles.length} Invoices</strong>
-                  </span>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setStagedInvoiceFiles([])}
-                      className="h-8 px-3 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-100"
-                    >
-                      Clear
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleUploadStagedInvoices}
-                      className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] shadow-xs"
-                    >
-                      Upload {stagedInvoiceFiles.length} Invoices
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={() => setIsBulkInvoiceOpen(true)}
+                className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors"
+                title="Bulk upload legacy photos or receipts"
+              >
+                <Upload className="h-3.5 w-3.5 text-slate-500" />
+                <span>Upload Photos / Vouchers</span>
+              </button>
+            </div>
           </div>
 
-          {/* Existing Invoices Table for this Job */}
-          <div className="space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">Uploaded Invoices</h3>
-                <p className="text-xs text-slate-500">
-                  Total for this job:{" "}
-                  <strong className="text-slate-900">
-                    Rs. {totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </strong>{" "}
-                  ({filteredInvoices.length} records)
-                </p>
+          {/* Supplier Invoices Table */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
+            {filteredSupplierInvoices.length === 0 ? (
+              <div className="p-10 text-center space-y-3">
+                <div className="h-12 w-12 rounded-full bg-blue-50 text-blue-600 mx-auto flex items-center justify-center">
+                  <FileText className="h-6 w-6" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-sm font-semibold text-slate-800">
+                    {supplierInvSearch ? "No matching supplier invoices found" : "No supplier invoices recorded for this job yet"}
+                  </h4>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    {supplierInvSearch
+                      ? `No invoices match "${supplierInvSearch}". Try clearing your search term.`
+                      : "Attach actual supplier invoices, multiple PDF quotation vouchers, and itemized descriptions to track cost utilization and profitability."}
+                  </p>
+                </div>
+                {!supplierInvSearch && (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateSupplierInvModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors"
+                    >
+                      <Plus className="h-4 w-4" />
+                      <span>Record First Supplier Invoice</span>
+                    </button>
+                  </div>
+                )}
               </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                {/* Search bar */}
-                <div className="w-full sm:w-56">
-                  <input
-                    type="text"
-                    value={invSearch}
-                    onChange={(e) => setInvSearch(e.target.value)}
-                    placeholder="Search invoices by name..."
-                    className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    exportInvoicesToCsv(
-                      filteredInvoices,
-                      [job],
-                      suppliers,
-                      `${job.jobCode || "JOB"}_invoices_report`
-                    )
-                  }
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-xs shrink-0"
-                  title="Download all invoices for this job"
-                >
-                  <Download className="h-3.5 w-3.5 text-slate-500" />
-                  <span>Download Invoices ({filteredInvoices.length})</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Bulk Selection Bar */}
-            {selectedInvoiceIds.length > 0 && (
-              <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-xl px-4 py-2 text-xs text-blue-900 animate-in fade-in">
-                <div className="flex items-center gap-2">
-                  <CheckSquare className="h-4 w-4 text-blue-600" />
-                  <span className="font-semibold">
-                    {selectedInvoiceIds.length} invoices selected
-                  </span>
-                  <span className="text-slate-500 text-[11px]">
-                    (Subtotal: Rs.{" "}
-                    {filteredInvoices
-                      .filter((i) => selectedInvoiceIds.includes(i.id))
-                      .reduce((sum, i) => sum + i.totalValue, 0)
-                      .toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    )
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const selectedInvs = jobInvoices.filter((i) =>
-                        selectedInvoiceIds.includes(i.id)
-                      );
-                      exportInvoicesToCsv(
-                        selectedInvs,
-                        [job],
-                        suppliers,
-                        `${job.jobCode || "JOB"}_selected_invoices`
-                      );
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-3 py-1 font-semibold text-white hover:bg-[#1d4ed8] shadow-xs text-xs"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Download Selected ({selectedInvoiceIds.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedInvoiceIds([])}
-                    className="text-slate-500 hover:text-slate-700 px-2 py-1 text-xs"
-                  >
-                    Deselect All
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              {filteredInvoices.length === 0 ? (
-                <div className="p-8 text-center text-xs text-slate-500">
-                  No invoices uploaded yet for this job. Use the bulk upload area above to add Photos or PDFs.
-                </div>
-              ) : (
+            ) : (
+              <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
                     <tr>
-                      <th className="w-10 px-3 py-2.5 text-center">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (selectedInvoiceIds.length === filteredInvoices.length) {
-                              setSelectedInvoiceIds([]);
-                            } else {
-                              setSelectedInvoiceIds(filteredInvoices.map((i) => i.id));
-                            }
-                          }}
-                          className="text-slate-400 hover:text-blue-600 inline-flex items-center justify-center"
-                          title={
-                            selectedInvoiceIds.length === filteredInvoices.length
-                              ? "Deselect All"
-                              : "Select All Filtered"
-                          }
-                        >
-                          {selectedInvoiceIds.length === filteredInvoices.length &&
-                          filteredInvoices.length > 0 ? (
-                            <CheckSquare className="h-4 w-4 text-blue-600" />
-                          ) : (
-                            <Square className="h-4 w-4" />
-                          )}
-                        </button>
-                      </th>
-                      <th className="px-5 py-2.5">Invoice & File</th>
-                      <th className="px-4 py-2.5">Supplier</th>
-                      <th className="px-4 py-2.5">Invoice Date</th>
-                      <th className="px-4 py-2.5 text-right">Amount</th>
-                      <th className="px-4 py-2.5 text-center">Status</th>
-                      <th className="px-5 py-2.5 text-right">Actions</th>
+                      <th className="px-5 py-3">Invoice Number</th>
+                      <th className="px-4 py-3">Supplier</th>
+                      <th className="px-4 py-3">Invoice Date</th>
+                      <th className="px-4 py-3">Items / Vouchers</th>
+                      <th className="px-4 py-3">Attachments</th>
+                      <th className="px-4 py-3 text-right">Incurred Cost (Rs.)</th>
+                      <th className="px-4 py-3 text-center">Status</th>
+                      <th className="px-4 py-3">Recorded By</th>
+                      <th className="px-5 py-3 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredInvoices.map((inv) => {
-                      const sup = suppliers.find((s) => s.id === inv.supplierId);
-                      const isPdf = inv.fileName?.toLowerCase().endsWith(".pdf");
-                      const isSelected = selectedInvoiceIds.includes(inv.id);
+                    {filteredSupplierInvoices.map((inv) => {
+                      const isCancelled = inv.status === "CANCELLED";
+                      const totalAttachmentsCount =
+                        (inv.attachments?.length || 0) +
+                        (inv.items || []).reduce((sum, item) => sum + (item.attachments?.length || 0), 0);
 
                       return (
                         <tr
                           key={inv.id}
-                          className={`hover:bg-slate-50 transition-colors ${
-                            isSelected ? "bg-blue-50/40" : ""
+                          className={`hover:bg-slate-50/70 transition-colors ${
+                            isCancelled ? "bg-slate-50/60 opacity-60" : ""
                           }`}
                         >
-                          <td className="w-10 px-3 py-3 text-center">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedInvoiceIds((prev) => [...prev, inv.id]);
-                                } else {
-                                  setSelectedInvoiceIds((prev) =>
-                                    prev.filter((id) => id !== inv.id)
-                                  );
-                                }
-                              }}
-                              className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                            />
+                          <td className="px-5 py-3 font-mono font-bold text-slate-900">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSupplierInvoiceId(inv.id)}
+                              className="text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 text-left"
+                            >
+                              <span>{inv.invoiceNumber}</span>
+                              <ExternalLink className="h-3 w-3 opacity-60" />
+                            </button>
                           </td>
-                          <td className="px-5 py-3">
-                            <div className="space-y-1.5">
-                              <div>
-                                <span className="font-semibold text-slate-900 block">
-                                  {inv.invoiceName}
-                                </span>
-                                <span className="text-[10px] text-slate-400 font-mono">
-                                  Primary: {inv.fileName} ({inv.fileSize})
-                                </span>
-                              </div>
-
-                              {/* Multiple attachments */}
-                              {inv.attachments && inv.attachments.length > 0 ? (
-                                <div className="flex flex-wrap gap-1.5 pt-0.5">
-                                  {inv.attachments.map((att, aIdx) => {
-                                    const isPdf = att.fileName.toLowerCase().endsWith(".pdf");
-                                    return (
-                                      <div
-                                        key={att.id || aIdx}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px]"
-                                      >
-                                        <span
-                                          className={`font-mono font-bold uppercase ${
-                                            isPdf ? "text-rose-600" : "text-blue-600"
-                                          }`}
-                                        >
-                                          {isPdf ? "PDF" : "IMG"}
-                                        </span>
-                                        <span className="text-slate-700 max-w-[120px] truncate" title={att.fileName}>
-                                          {att.fileName}
-                                        </span>
-                                        <span className="text-slate-400">({att.fileSize})</span>
-                                        <button
-                                          type="button"
-                                          onClick={() => downloadSingleAttachment(att.fileName, att.fileName)}
-                                          className="text-slate-400 hover:text-blue-600 ml-0.5 p-0.5"
-                                          title={`Download ${att.fileName} separately`}
-                                        >
-                                          <Download className="h-3 w-3" />
-                                        </button>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              ) : (
-                                <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px]">
-                                  <span className="font-mono font-bold uppercase text-slate-600">
-                                    {inv.fileName?.toLowerCase().endsWith(".pdf") ? "PDF" : "IMG"}
-                                  </span>
-                                  <span className="text-slate-700">{inv.fileName}</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => downloadSingleAttachment(inv.fileName, inv.fileName)}
-                                    className="text-slate-400 hover:text-blue-600 p-0.5 ml-0.5"
-                                    title="Download file"
-                                  >
-                                    <Download className="h-3 w-3" />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
+                          <td className="px-4 py-3">
+                            <div className="font-semibold text-slate-900">{inv.supplierName || "—"}</div>
+                            {inv.supplierCode && (
+                              <span className="text-[10px] font-mono font-medium text-slate-400">
+                                {inv.supplierCode}
+                              </span>
+                            )}
                           </td>
-                          <td className="px-4 py-3 text-slate-700 font-medium">
-                            {sup ? sup.name : "—"}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
+                          <td className="px-4 py-3 text-slate-600 font-mono whitespace-nowrap">
                             {inv.invoiceDate}
                           </td>
-                          <td className="px-4 py-3 text-right font-semibold text-slate-900">
-                            Rs. {inv.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          <td className="px-4 py-3">
+                            <div className="text-slate-800 font-medium">
+                              {(inv.items || []).length} item{(inv.items || []).length !== 1 ? "s" : ""}
+                            </div>
+                            {inv.items && inv.items.length > 0 && (
+                              <div className="text-[11px] text-slate-500 truncate max-w-xs" title={inv.items.map((i) => i.description).join(", ")}>
+                                {inv.items.map((i) => i.description).join(", ")}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {totalAttachmentsCount > 0 ? (
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-semibold">
+                                  <FileText className="h-3 w-3" />
+                                  <span>{totalAttachmentsCount} File{totalAttachmentsCount !== 1 ? "s" : ""}</span>
+                                </span>
+                                {(inv.attachments || []).slice(0, 1).map((att) => (
+                                  <a
+                                    key={att.id}
+                                    href={att.fileUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[10px] text-blue-600 hover:underline truncate max-w-[100px]"
+                                    title={`Open ${att.fileName}`}
+                                  >
+                                    {att.fileName}
+                                  </a>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 text-[11px]">No PDF attached</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono font-bold">
+                            <span className={isCancelled ? "line-through text-slate-400" : "text-slate-900"}>
+                              {formatCurrency(inv.totalAmount, { showCurrencyPrefix: true })}
+                            </span>
                           </td>
                           <td className="px-4 py-3 text-center">
                             <StatusBadge status={inv.status} />
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            <span className="block font-medium text-slate-800">{inv.createdByName || "Admin"}</span>
+                            <span className="block text-[10px] text-slate-400 font-mono">{inv.createdAt}</span>
                           </td>
                           <td className="px-5 py-3 text-right">
                             <div className="flex items-center justify-end gap-1">
                               <button
                                 type="button"
-                                onClick={() => downloadMockInvoiceFile(inv)}
-                                className="text-slate-400 hover:text-blue-600 p-1 rounded transition-colors"
-                                title={`Download File: ${inv.fileName}`}
-                              >
-                                <Download className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setPreviewingInvoice(inv)}
-                                className="text-slate-400 hover:text-blue-600 p-1 rounded transition-colors"
-                                title="Preview Invoice Document"
+                                onClick={() => setSelectedSupplierInvoiceId(inv.id)}
+                                className="p-1 rounded text-slate-400 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+                                title="View invoice details and audit trail"
                               >
                                 <Eye className="h-4 w-4" />
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleOpenEditInvoice(inv)}
-                                className="text-slate-400 hover:text-slate-800 p-1 rounded transition-colors"
-                                title="Edit"
+                                onClick={() => downloadSingleInvoiceZip(inv)}
+                                className="p-1 rounded text-slate-400 hover:text-emerald-600 hover:bg-slate-100 transition-colors"
+                                title="Download invoice PDFs archive (.zip)"
                               >
-                                <Edit2 className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => deleteInvoice(inv.id)}
-                                className="text-slate-400 hover:text-rose-600 p-1 rounded transition-colors"
-                                title="Delete"
-                              >
-                                <Trash2 className="h-4 w-4" />
+                                <Download className="h-4 w-4" />
                               </button>
                             </div>
                           </td>
@@ -1266,8 +1470,8 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                     })}
                   </tbody>
                 </table>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1276,7 +1480,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
       <BulkInvoiceUploadModal
         isOpen={isBulkInvoiceOpen}
         onClose={() => setIsBulkInvoiceOpen(false)}
-        preselectedJobId={job.id}
+        preselectedJobId={currentJob.id}
       />
 
       {/* Modal: Preview Invoice */}
@@ -1297,7 +1501,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
               <div>
                 <span className="text-[11px] text-slate-400 block">Total Value</span>
                 <strong className="text-slate-900 font-mono text-sm">
-                  ${previewingInvoice.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  {formatCurrency(previewingInvoice.totalValue, { showCurrencyPrefix: true })}
                 </strong>
               </div>
               <div>
@@ -1396,7 +1600,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                   >
                     <option value="">-- Choose a supplier --</option>
                     {suppliers.map((s) => {
-                      const already = job.supplierIds.includes(s.id);
+                      const already = currentJob.supplierIds.includes(s.id);
                       return (
                         <option key={s.id} value={s.id} disabled={already}>
                           {s.name} ({s.code}) {already ? "(Already Assigned)" : ""}
@@ -1580,6 +1784,43 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
             </div>
           </form>
         </Modal>
+      )}
+
+      {/* Edit Job Quotation & Costs Modal */}
+      {isEditCostModalOpen && (
+        <EditJobCostsModal
+          isOpen={isEditCostModalOpen}
+          onClose={() => setIsEditCostModalOpen(false)}
+          job={currentJob}
+          onSaveSuccess={(updatedJob) => {
+            setLiveJob(updatedJob);
+            refreshJobs?.();
+          }}
+        />
+      )}
+
+      {/* Create Supplier Invoice Modal */}
+      <CreateSupplierInvoiceModal
+        isOpen={isCreateSupplierInvModalOpen}
+        onClose={() => setIsCreateSupplierInvModalOpen(false)}
+        preselectedJobId={currentJob.id}
+        onSuccess={() => {
+          fetchFullJob();
+          refreshJobs?.();
+        }}
+      />
+
+      {/* View Supplier Invoice Modal */}
+      {selectedSupplierInvoiceId && (
+        <ViewSupplierInvoiceModal
+          isOpen={true}
+          onClose={() => setSelectedSupplierInvoiceId(null)}
+          invoiceId={selectedSupplierInvoiceId}
+          onStatusChange={() => {
+            fetchFullJob();
+            refreshJobs?.();
+          }}
+        />
       )}
     </div>
   );

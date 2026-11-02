@@ -35,6 +35,7 @@ import {
   downloadMockExcelFile,
   downloadAllJobExcelFiles,
 } from "@/lib/export-utils";
+import { formatCurrency } from "@/lib/financial";
 
 export function JobsView() {
   const router = useRouter();
@@ -139,11 +140,22 @@ export function JobsView() {
       const matchSearch =
         job.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (job.jobCode && job.jobCode.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (job.clientName && job.clientName.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (job.handledBy && job.handledBy.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (job.remarks && job.remarks.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (job.description && job.description.toLowerCase().includes(searchTerm.toLowerCase()));
 
       const matchDate = !dateFilter || job.date === dateFilter;
-      const matchStatus = statusFilter === "all" || job.status === statusFilter;
+      const matchStatus =
+        statusFilter === "all"
+          ? true
+          : statusFilter === "PENDING_APPROVAL"
+          ? (job.status || "").toUpperCase() === "PENDING_APPROVAL" || (job.status || "").toLowerCase().includes("pending")
+          : statusFilter === "APPROVED"
+          ? (job.status || "").toUpperCase() === "APPROVED" || (job.status || "").toLowerCase().includes("approved")
+          : statusFilter === "REJECTED"
+          ? (job.status || "").toUpperCase() === "REJECTED" || (job.status || "").toLowerCase().includes("reject")
+          : (job.status || "").toUpperCase() === statusFilter.toUpperCase();
 
       return matchSearch && matchDate && matchStatus;
     });
@@ -286,10 +298,10 @@ export function JobsView() {
             }}
             options={[
               { value: "all", label: "All Statuses" },
-              { value: "Active", label: "Active" },
-              { value: "In Review", label: "In Review" },
-              { value: "Pending", label: "Pending" },
-              { value: "Completed", label: "Completed" },
+              { value: "PENDING_APPROVAL", label: "Pending Approval" },
+              { value: "APPROVED", label: "Approved" },
+              { value: "REJECTED", label: "Rejected" },
+              { value: "DRAFT", label: "Draft" },
             ]}
           />
 
@@ -328,11 +340,13 @@ export function JobsView() {
               {selectedJobIds.length} jobs selected
             </span>
             <span className="text-slate-500 text-[11px]">
-              (Total combined cost: Rs.{" "}
-              {filteredJobs
-                .filter((j) => selectedJobIds.includes(j.id))
-                .reduce((sum, j) => sum + getJobTotalInvoiceValue(j.id), 0)
-                .toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              (Total combined cost:{" "}
+              {formatCurrency(
+                filteredJobs
+                  .filter((j) => selectedJobIds.includes(j.id))
+                  .reduce((sum, j) => sum + getJobTotalInvoiceValue(j.id), 0),
+                { showCurrencyPrefix: true }
+              )}
               )
             </span>
           </div>
@@ -436,7 +450,7 @@ export function JobsView() {
                   <th className="px-4 py-3">Job Date</th>
                   <th className="px-4 py-3 text-center">Suppliers</th>
                   <th className="px-4 py-3 text-center">Invoices</th>
-                  <th className="px-4 py-3 text-right">Total Invoice Value</th>
+                  <th className="px-4 py-3 text-right">Quotation / Invoices</th>
                   <th className="px-4 py-3 text-center">Status</th>
                   <th className="px-5 py-3 text-right">Actions</th>
                 </tr>
@@ -483,6 +497,11 @@ export function JobsView() {
                             {job.jobCode && (
                               <span className="text-[10px] font-mono font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 shrink-0">
                                 {job.jobCode}
+                              </span>
+                            )}
+                            {job.clientName && (
+                              <span className="text-[10px] font-medium text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
+                                {job.clientName}
                               </span>
                             )}
                           </div>
@@ -546,8 +565,19 @@ export function JobsView() {
                       <td className="px-4 py-3.5 text-center font-medium text-slate-700">
                         {invCount}
                       </td>
-                      <td className="px-4 py-3.5 text-right font-semibold text-slate-900">
-                        Rs. {val.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      <td className="px-4 py-3.5 text-right font-semibold text-slate-900 whitespace-nowrap">
+                        {job.grandTotal || job.totalCost ? (
+                          <div>
+                            <span className="text-blue-700 font-bold block">
+                              {formatCurrency(job.grandTotal || job.totalCost || 0, { showCurrencyPrefix: true })}
+                            </span>
+                            <span className="text-[10px] text-slate-400 block font-normal">
+                              Invoices: {formatCurrency(val, { showCurrencyPrefix: true })}
+                            </span>
+                          </div>
+                        ) : (
+                          <span>{formatCurrency(val, { showCurrencyPrefix: true })}</span>
+                        )}
                       </td>
                       <td className="px-4 py-3.5 text-center">
                         <StatusBadge status={job.status} />
@@ -714,10 +744,10 @@ export function JobsView() {
                   onChange={(e) => setEditStatus(e.target.value as JobStatus)}
                   className="h-9 w-full rounded-lg border border-slate-200 px-2.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
                 >
-                  <option value="Active">Active</option>
-                  <option value="In Review">In Review</option>
-                  <option value="Pending">Pending</option>
-                  <option value="Completed">Completed</option>
+                  <option value="PENDING_APPROVAL">Pending Approval</option>
+                  <option value="APPROVED">Approved</option>
+                  <option value="REJECTED">Rejected</option>
+                  <option value="DRAFT">Draft</option>
                 </select>
               </div>
             </div>

@@ -11,9 +11,9 @@ import {
   FileText,
   X,
   ShieldCheck,
-  ClipboardCheck,
   CheckCircle,
   Eye,
+  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAdminData } from "@/context/admin-data-context";
@@ -62,11 +62,19 @@ const NAV_ITEMS: NavItem[] = [
     action: "view",
   },
   {
-    name: "Approvals",
+    name: "Approval",
     href: "/admin/approvals",
     icon: CheckCircle,
     exact: false,
     module: "approvals",
+    action: "view",
+  },
+  {
+    name: "Profit & Loss",
+    href: "/admin/profit-loss",
+    icon: TrendingUp,
+    exact: false,
+    module: "dashboard",
     action: "view",
   },
   {
@@ -75,14 +83,6 @@ const NAV_ITEMS: NavItem[] = [
     icon: ShieldCheck,
     exact: false,
     module: "accessControl",
-    action: "view",
-  },
-  {
-    name: "Audit Controller",
-    href: "/admin/audit-controller",
-    icon: ClipboardCheck,
-    exact: false,
-    module: "auditController",
     action: "view",
   },
 ];
@@ -100,7 +100,6 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
     () => false
   );
   const {
-    pendingApprovalsCount,
     can,
     currentRole,
     activeUserId,
@@ -185,7 +184,6 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
           {visibleNavItems.map((item) => {
             const active = mounted ? isLinkActive(item.href, item.exact) : false;
             const Icon = item.icon;
-            const isApprovals = item.name === "Approvals";
 
             return (
               <Link
@@ -207,18 +205,6 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
                   <Icon className={cn("h-4 w-4", active ? "text-white" : "text-slate-500")} />
                   <span>{item.name}</span>
                 </div>
-                {isApprovals && pendingApprovalsCount > 0 && (
-                  <span
-                    className={cn(
-                      "rounded-full px-2 py-0.5 text-[10px] font-bold tracking-tight transition-colors",
-                      active
-                        ? "bg-white text-blue-700 font-extrabold"
-                        : "bg-amber-100 text-amber-800"
-                    )}
-                  >
-                    {pendingApprovalsCount}
-                  </span>
-                )}
               </Link>
             );
           })}

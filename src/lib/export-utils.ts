@@ -1,4 +1,5 @@
 import { Job, Invoice, Supplier, ExcelFile } from "@/types/admin";
+import { toDecimal, sumFinancial } from "@/lib/financial";
 
 /**
  * Escapes CSV special characters and quotes fields
@@ -170,14 +171,14 @@ export function exportInvoicesToCsv(
       escapeCsv(sup?.name || "—"),
       escapeCsv(sup?.code || "—"),
       escapeCsv(inv.invoiceDate),
-      inv.totalValue.toFixed(2),
+      toDecimal(inv.totalValue || 0).toFixed(2),
       escapeCsv(inv.status),
       escapeCsv(inv.uploadDate),
       escapeCsv(inv.fileSize),
     ].join(",");
   });
 
-  const totalAmount = invoices.reduce((sum, inv) => sum + inv.totalValue, 0);
+  const totalAmount = sumFinancial(invoices.map((i) => i.totalValue || 0)).toFixed(2);
 
   // Summary row at the bottom
   const summaryRow = [
@@ -190,7 +191,7 @@ export function exportInvoicesToCsv(
     '""',
     '""',
     '""',
-    totalAmount.toFixed(2),
+    totalAmount,
     '""',
     '""',
     '""',
@@ -222,15 +223,15 @@ export function exportJobsToCsv(
     "Description",
   ];
 
-  let grandTotalCost = 0;
   let totalInvoices = 0;
+  const allJobCosts: (number | string)[] = [];
 
   const rows = jobs.map((job) => {
     const jobInvs = invoices.filter((inv) => inv.jobId === job.id);
     const jobExcels = excelFiles.filter((xf) => xf.jobId === job.id);
-    const jobCost = jobInvs.reduce((sum, inv) => sum + inv.totalValue, 0);
+    const jobCost = sumFinancial(jobInvs.map((inv) => inv.totalValue || 0)).toFixed(2);
 
-    grandTotalCost += jobCost;
+    allJobCosts.push(jobCost);
     totalInvoices += jobInvs.length;
 
     return [
@@ -241,11 +242,13 @@ export function exportJobsToCsv(
       job.supplierIds.length,
       jobInvs.length,
       jobExcels.length,
-      jobCost.toFixed(2),
+      jobCost,
       escapeCsv(job.remarks || "—"),
       escapeCsv(job.description || "—"),
     ].join(",");
   });
+
+  const grandTotalCost = sumFinancial(allJobCosts).toFixed(2);
 
   const summaryRow = [
     escapeCsv("GRAND TOTAL"),
@@ -255,7 +258,7 @@ export function exportJobsToCsv(
     '""',
     totalInvoices,
     '""',
-    grandTotalCost.toFixed(2),
+    grandTotalCost,
     '""',
     '""',
   ].join(",");
@@ -273,7 +276,7 @@ export function exportJobDetailedReportToCsv(
   jobSuppliers: Supplier[],
   jobExcelFiles: ExcelFile[]
 ) {
-  const totalCost = jobInvoices.reduce((sum, inv) => sum + inv.totalValue, 0);
+  const totalCost = sumFinancial(jobInvoices.map((inv) => inv.totalValue || 0)).toFixed(2);
 
   const lines = [
     `"=== JOB MASTER DETAILS ==="`,
@@ -281,7 +284,7 @@ export function exportJobDetailedReportToCsv(
     `"Job Name",${escapeCsv(job.name)}`,
     `"Job Date",${escapeCsv(job.date)}`,
     `"Status",${escapeCsv(job.status)}`,
-    `"Total Invoice Value",${totalCost.toFixed(2)}`,
+    `"Total Invoice Value",${totalCost}`,
     `"Remarks",${escapeCsv(job.remarks || "—")}`,
     `"Description",${escapeCsv(job.description || "—")}`,
     "",
@@ -306,11 +309,11 @@ export function exportJobDetailedReportToCsv(
         escapeCsv(inv.fileName),
         escapeCsv(sup ? sup.name : "—"),
         escapeCsv(inv.invoiceDate),
-        inv.totalValue.toFixed(2),
+        toDecimal(inv.totalValue || 0).toFixed(2),
         escapeCsv(inv.status),
       ].join(",");
     }),
-    `"TOTAL COST","","","",${totalCost.toFixed(2)},""`,
+    `"TOTAL COST","","","",${totalCost},""`,
   ];
 
   const filename = `${job.jobCode || "JOB"}_${job.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_full_cost_report.csv`;
