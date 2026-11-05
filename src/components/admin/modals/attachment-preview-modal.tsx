@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { Modal } from "@/components/admin/ui/modal";
 import {
   FileText,
@@ -10,6 +10,7 @@ import {
   X,
   FileSpreadsheet,
   AlertCircle,
+  Loader2,
 } from "lucide-react";
 import { FileCategory } from "@/lib/file-validation";
 
@@ -32,6 +33,14 @@ export function AttachmentPreviewModal({
   onClose,
   attachment,
 }: AttachmentPreviewModalProps) {
+  const [isLoadingContent, setIsLoadingContent] = useState(true);
+
+  useEffect(() => {
+    if (attachment) {
+      setIsLoadingContent(attachment.category === "image" || attachment.category === "pdf");
+    }
+  }, [attachment?.url, attachment?.category]);
+
   if (!isOpen || !attachment) return null;
 
   const isImage = attachment.category === "image";
@@ -102,13 +111,22 @@ export function AttachmentPreviewModal({
         </div>
 
         {/* Preview Content */}
-        <div className="rounded-xl border border-slate-200 overflow-hidden bg-slate-900/5 min-h-[350px] flex items-center justify-center">
+        <div className="relative rounded-xl border border-slate-200 overflow-hidden bg-slate-900/5 min-h-[350px] flex items-center justify-center">
+          {isLoadingContent && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-100/80 backdrop-blur-2xs z-10 text-slate-600 gap-2">
+              <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+              <span className="text-xs font-semibold">Loading attachment preview...</span>
+            </div>
+          )}
+
           {/* 1. Image Preview (High-res zoomable view) */}
           {isImage && (
             <div className="w-full flex items-center justify-center p-4 bg-slate-950/95 min-h-[450px] max-h-[72vh] overflow-auto">
               <img
                 src={attachment.url}
                 alt={attachment.name}
+                onLoad={() => setIsLoadingContent(false)}
+                onError={() => setIsLoadingContent(false)}
                 className="max-w-full max-h-[68vh] object-contain rounded-lg shadow-2xl transition-transform"
               />
             </div>
@@ -120,6 +138,7 @@ export function AttachmentPreviewModal({
               <iframe
                 src={`${attachment.url}#toolbar=1&navpanes=0`}
                 title={attachment.name}
+                onLoad={() => setIsLoadingContent(false)}
                 className="w-full h-full border-0"
               />
             </div>

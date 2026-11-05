@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   Loader2,
   FileText,
+  Lock,
 } from "lucide-react";
 
 interface JobApprovalModalProps {
@@ -67,6 +68,10 @@ export function JobApprovalModal({
   const isRejected = statusNorm.includes("rejected");
   const isPending = statusNorm.includes("pending");
 
+  const activeSupplierInvoicesCount = typeof job.supplierInvoiceCount === "number" ? job.supplierInvoiceCount : (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").length;
+  const activeSupplierInvoicesTotal = typeof job.supplierInvoiceTotal === "number" ? job.supplierInvoiceTotal : (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0);
+  const isApprovalLocked = isApproved && activeSupplierInvoicesCount > 0;
+
   const costSummary = job.costSummary || {
     productionCost: job.totalCost || 0,
     runningCost: 0,
@@ -91,6 +96,13 @@ export function JobApprovalModal({
     if (!actionConfirm) return;
     setErrorMsg("");
 
+    if ((actionConfirm === "RESET" || (actionConfirm as string) === "MOVE_TO_PENDING") && isApprovalLocked) {
+      setErrorMsg(
+        `Cannot Move Job to Pending: Supplier invoices have already been recorded for this Job (${activeSupplierInvoicesCount} active invoice(s) totaling ${formatCurrency(activeSupplierInvoicesTotal, { showCurrencyPrefix: true })}). The Job cannot be moved back to Pending Approval.`
+      );
+      return;
+    }
+
     if ((actionConfirm === "REJECT" || actionConfirm === "RESET" || (actionConfirm as string) === "MOVE_TO_PENDING") && !reason.trim()) {
       setErrorMsg(
         actionConfirm === "REJECT"
@@ -114,6 +126,12 @@ export function JobApprovalModal({
 
       const json = await res.json();
       if (!res.ok || !json.success) {
+        if (json.blocked) {
+          setErrorMsg(
+            `${json.title || "Cannot Move Job to Pending"}: ${json.message || json.error} (Invoices: ${json.supplierInvoiceCount ?? activeSupplierInvoicesCount}, Total: ${formatCurrency(json.totalSupplierInvoiceAmount ?? activeSupplierInvoicesTotal, { showCurrencyPrefix: true })})`
+          );
+          return;
+        }
         throw new Error(json.error || "Failed to process approval action.");
       }
 
@@ -171,6 +189,34 @@ export function JobApprovalModal({
             </span>
           </div>
         </div>
+
+        {/* Strict Approval Lock Notice */}
+        {isApprovalLocked && (
+          <div className="p-3.5 rounded-xl border border-amber-300 bg-amber-50 flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-amber-100 text-amber-700 shrink-0 mt-0.5">
+              <Lock className="h-5 w-5" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-amber-950 uppercase tracking-wide">
+                  🔒 Approval Locked
+                </span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-200 text-amber-900 border border-amber-300">
+                  Status Change: BLOCKED
+                </span>
+              </div>
+              <p className="text-xs text-amber-900 font-medium leading-relaxed">
+                Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval.
+              </p>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-amber-900 pt-1">
+                <span>Job Number: <strong className="font-mono">{job.jobCode || "NO-CODE"}</strong></span>
+                <span>Job Title: <strong>{job.name}</strong></span>
+                <span>Active Supplier Invoices: <strong>{activeSupplierInvoicesCount}</strong></span>
+                <span>Total Supplier Invoice Amount: <strong>{formatCurrency(activeSupplierInvoicesTotal, { showCurrencyPrefix: true })}</strong></span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tab Navigation */}
         <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
@@ -566,7 +612,21 @@ export function JobApprovalModal({
               </>
             )}
 
-            {isAdmin && (isApproved || isRejected) && !actionConfirm && (
+            {isAdmin && isApproved && isApprovalLocked && !actionConfirm && (
+              <div className="relative group inline-block">
+                <button
+                  type="button"
+                  disabled
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-100 text-slate-400 font-semibold text-xs flex items-center gap-1.5 cursor-not-allowed opacity-80"
+                  title={`Approval Locked: ${activeSupplierInvoicesCount} active supplier invoice(s) recorded`}
+                >
+                  <Lock className="h-3.5 w-3.5 text-amber-600" />
+                  <span>Move to Pending (Locked)</span>
+                </button>
+              </div>
+            )}
+
+            {isAdmin && (isApproved || isRejected) && !isApprovalLocked && !actionConfirm && (
               <button
                 type="button"
                 onClick={() => setActionConfirm("RESET")}

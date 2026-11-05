@@ -123,6 +123,8 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadCurrentIndex, setUploadCurrentIndex] = useState(0);
   const [uploadTotalCount, setUploadTotalCount] = useState(0);
+  const [uploadCompletedCount, setUploadCompletedCount] = useState(0);
+  const [uploadFailedCount, setUploadFailedCount] = useState(0);
   const [uploadCurrentFileName, setUploadCurrentFileName] = useState("");
   const [uploadOverallProgress, setUploadOverallProgress] = useState(0);
   const [uploadCurrentStage, setUploadCurrentStage] = useState("");
@@ -139,6 +141,8 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
     setIsSubmitting(false);
     setUploadCurrentIndex(0);
     setUploadTotalCount(0);
+    setUploadCompletedCount(0);
+    setUploadFailedCount(0);
     setUploadOverallProgress(0);
     setUploadCurrentFileName("");
     setUploadCurrentStage("");
@@ -344,41 +348,26 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
     setIsSubmitting(true);
     setUploadCurrentIndex(0);
     setUploadTotalCount(targetFiles.length);
+    setUploadCompletedCount(0);
+    setUploadFailedCount(0);
     setUploadOverallProgress(0);
 
     const successfullyCreated: CreatedJobInfo[] = [];
     const failedList: FailedFileInfo[] = [];
     let combinedCost = 0;
 
-    const dynamicStages = [
-      "Reading Excel worksheets...",
-      "Extracting Job Information...",
-      "Extracting Cost Categories...",
-      "Extracting Cost Items...",
-      "Extracting Quantities and Rates...",
-      "Calculating Cost Summaries...",
-      "Validating Financial Totals...",
-      "Saving Job Information to Database...",
-      "Saving Excel File to Storage...",
-    ];
-
     for (let i = 0; i < targetFiles.length; i++) {
       const f = targetFiles[i];
       setUploadCurrentIndex(i + 1);
       setUploadCurrentFileName(f.fileName);
-      setUploadCurrentStage(dynamicStages[0]);
+      setUploadCurrentStage("1. Uploading Excel file...");
 
       // Update state for this specific file
       setStagedFiles((prev) =>
         prev.map((item) => (item.id === f.id ? { ...item, status: "uploading", uploadProgress: 5 } : item))
       );
 
-      // Start dynamic stage description cycling
-      let currentStageIdx = 0;
-      const stageTimer = setInterval(() => {
-        currentStageIdx = (currentStageIdx + 1) % dynamicStages.length;
-        setUploadCurrentStage(dynamicStages[currentStageIdx]);
-      }, 400);
+      let serverStageTimer: any = null;
 
       try {
         const formData = new FormData();
@@ -417,14 +406,43 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
               const filePercent = Math.round((event.loaded / event.total) * 100);
               const overall = Math.round(((i + filePercent / 100) / targetFiles.length) * 100);
               setUploadOverallProgress(overall);
+              setUploadCurrentStage(`1. Uploading Excel file (${filePercent}%)...`);
               setStagedFiles((prev) =>
                 prev.map((item) => (item.id === f.id ? { ...item, uploadProgress: filePercent } : item))
               );
+
+              if (filePercent >= 100) {
+                // Bytes transferred; advancing through server processing stages
+                const backendStages = [
+                  "2. Reading worksheets...",
+                  "3. Extracting Job Information...",
+                  "4. Extracting Cost Categories...",
+                  "5. Extracting Cost Items...",
+                  "6. Calculating Financial Totals...",
+                  "7. Validating Excel Data...",
+                  "8. Saving to Database...",
+                ];
+                let bIdx = 0;
+                setUploadCurrentStage(backendStages[0]);
+                serverStageTimer = setInterval(() => {
+                  bIdx++;
+                  if (bIdx < backendStages.length) {
+                    setUploadCurrentStage(backendStages[bIdx]);
+                  } else {
+                    clearInterval(serverStageTimer);
+                  }
+                }, 300);
+              }
             }
           };
 
           xhr.onload = () => {
-            clearInterval(stageTimer);
+            if (serverStageTimer) clearInterval(serverStageTimer);
+            setUploadCurrentStage("9. Saving Original Excel to Storage...");
+            setTimeout(() => {
+              setUploadCurrentStage("10. Completing Job Creation...");
+            }, 100);
+
             try {
               const data = JSON.parse(xhr.responseText);
               resolve(data);
@@ -434,7 +452,7 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
           };
 
           xhr.onerror = () => {
-            clearInterval(stageTimer);
+            if (serverStageTimer) clearInterval(serverStageTimer);
             reject(new Error("Network connection error during file upload."));
           };
 
@@ -455,6 +473,7 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
             originalFile: f.file,
           });
           combinedCost += created.grandTotal || 0;
+          setUploadCompletedCount((c) => c + 1);
 
           setStagedFiles((prev) =>
             prev.map((item) =>
@@ -476,6 +495,7 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
             isDuplicate: failed.isDuplicate,
             duplicateDetails: failed.duplicateDetails,
           });
+          setUploadFailedCount((c) => c + 1);
 
           setStagedFiles((prev) =>
             prev.map((item) =>
@@ -492,7 +512,8 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
           );
         }
       } catch (fileErr: any) {
-        clearInterval(stageTimer);
+        if (serverStageTimer) clearInterval(serverStageTimer);
+        setUploadFailedCount((c) => c + 1);
         failedList.push({
           fileName: f.fileName,
           error: fileErr.message || "Failed to process file.",
@@ -884,13 +905,16 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
               </span>
             </div>
 
-            {/* Badges for Completed, Remaining */}
+            {/* Badges for Completed, Failed, Remaining */}
             <div className="flex items-center gap-2 pt-1 border-t border-blue-200/60 text-[11px]">
               <span className="rounded bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-800">
-                Completed: {Math.max(0, uploadCurrentIndex - 1)}
+                Completed: {uploadCompletedCount}
+              </span>
+              <span className="rounded bg-rose-100 px-2 py-0.5 font-semibold text-rose-800">
+                Failed: {uploadFailedCount}
               </span>
               <span className="rounded bg-slate-200 px-2 py-0.5 font-semibold text-slate-700">
-                Remaining: {Math.max(0, uploadTotalCount - uploadCurrentIndex + 1)}
+                Remaining: {Math.max(0, uploadTotalCount - uploadCompletedCount - uploadFailedCount)}
               </span>
             </div>
           </div>

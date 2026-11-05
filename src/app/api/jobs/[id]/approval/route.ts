@@ -136,6 +136,46 @@ export async function POST(
           { status: 400 }
         );
       }
+
+      // Strict Approval Lock: Prevent Approved Jobs with active Supplier Invoices from returning to Pending
+      if (isCurrentlyApproved) {
+        const activeSupplierInvoices = await prisma.supplierInvoice.findMany({
+          where: {
+            jobId: id,
+            deletedAt: null,
+            status: { not: "CANCELLED" },
+          },
+          select: {
+            id: true,
+            invoiceNumber: true,
+            totalAmount: true,
+          },
+        });
+
+        if (activeSupplierInvoices.length > 0) {
+          const supplierInvoiceCount = activeSupplierInvoices.length;
+          const totalSupplierInvoiceAmount = activeSupplierInvoices.reduce(
+            (sum, inv) => sum + Number(inv.totalAmount || 0),
+            0
+          );
+
+          return NextResponse.json(
+            {
+              success: false,
+              blocked: true,
+              error: "Cannot Move Job to Pending: Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval.",
+              title: "Cannot Move Job to Pending",
+              message: "Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval.",
+              jobNumber: job.jobCode || "NO-CODE",
+              jobTitle: job.name,
+              supplierInvoiceCount,
+              totalSupplierInvoiceAmount,
+              statusChange: "BLOCKED",
+            },
+            { status: 422 }
+          );
+        }
+      }
     }
 
     const previousStatus = job.status;
@@ -149,8 +189,23 @@ export async function POST(
       newStatus = "PENDING_APPROVAL";
     }
 
-    // Atomic transaction: update status, record approval history, preserve existing invoice
+    // Atomic transaction: update status, record approval history, preserve existing invoice & concurrency check
     const result = await prisma.$transaction(async (tx) => {
+      if (action === "MOVE_TO_PENDING" && isCurrentlyApproved) {
+        const activeInvoiceCount = await tx.supplierInvoice.count({
+          where: {
+            jobId: id,
+            deletedAt: null,
+            status: { not: "CANCELLED" },
+          },
+        });
+        if (activeInvoiceCount > 0) {
+          throw new Error(
+            "Cannot Move Job to Pending: Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval."
+          );
+        }
+      }
+
       const updatedJob = await tx.job.update({
         where: { id },
         data: {

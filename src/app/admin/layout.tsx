@@ -5,6 +5,7 @@ import { AdminDataProvider } from "@/context/admin-data-context";
 import { AdminSidebar } from "@/components/admin/layout/sidebar";
 import { AdminHeader } from "@/components/admin/layout/header";
 import { ToastContainer } from "@/components/admin/ui/toast-container";
+import { NavigationProgressBar } from "@/components/ui/loading/navigation-progress-bar";
 
 export default function AdminLayout({
   children,
@@ -60,6 +61,7 @@ export default function AdminLayout({
 
   return (
     <AdminDataProvider>
+      <NavigationProgressBar />
       <div className="flex min-h-screen bg-[#F8FAFC]">
         {/* Left Sidebar */}
         <React.Suspense fallback={<aside className="hidden lg:block w-64 bg-white border-r border-slate-200" />}>

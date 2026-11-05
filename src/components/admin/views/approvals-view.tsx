@@ -22,11 +22,14 @@ import {
   User,
   DollarSign,
   ArrowRight,
+  Lock,
+  Receipt,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
+import { TableSkeleton } from "@/components/ui/loading/table-skeleton";
 import { JobApprovalModal } from "@/components/admin/modals/job-approval-modal";
 import { Job } from "@/types/admin";
 import {
@@ -37,6 +40,7 @@ import { formatCurrency } from "@/lib/financial";
 export function ApprovalsView() {
   const {
     jobs,
+    isLoadingJobs,
     showToast,
     refreshJobs,
     can,
@@ -335,6 +339,7 @@ export function ApprovalsView() {
           <div className="w-full sm:w-72">
             <SearchField
               value={searchTerm}
+              isLoading={isLoadingJobs}
               onChange={(val) => {
                 setSearchTerm(val);
                 setCurrentPage(1);
@@ -347,7 +352,11 @@ export function ApprovalsView() {
 
       {/* Main Job Approvals Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
+        {isLoadingJobs && jobs.length === 0 ? (
+          <TableSkeleton rows={6} columns={10} />
+        ) : (
+          <>
+            <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
@@ -395,6 +404,9 @@ export function ApprovalsView() {
                   const isJobApproved = statusNorm.includes("approved");
                   const isJobRejected = statusNorm.includes("rejected");
                   const hasInvoice = Boolean(job.invoice);
+                  const activeSupplierInvoicesCount = typeof job.supplierInvoiceCount === "number" ? job.supplierInvoiceCount : (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").length;
+                  const activeSupplierInvoicesTotal = typeof job.supplierInvoiceTotal === "number" ? job.supplierInvoiceTotal : (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0);
+                  const isApprovalLocked = isJobApproved && activeSupplierInvoicesCount > 0;
 
                   return (
                     <tr key={job.id} className="hover:bg-slate-50/70 transition-colors">
@@ -550,8 +562,34 @@ export function ApprovalsView() {
                             </button>
                           )}
 
-                          {/* Move Back to Pending Button (Admin Only) */}
-                          {isAdmin && (isJobApproved || isJobRejected) && (
+                          {/* Move Back to Pending Button (Admin Only) with Approval Lock */}
+                          {isAdmin && isJobApproved && isApprovalLocked && (
+                            <div className="relative group inline-block">
+                              <button
+                                type="button"
+                                disabled
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 bg-slate-100 border border-slate-200 cursor-not-allowed opacity-80"
+                                title={`Approval Locked: ${activeSupplierInvoicesCount} active supplier invoice(s) recorded`}
+                              >
+                                <Lock className="h-3.5 w-3.5 text-amber-600" />
+                                <span>Locked</span>
+                              </button>
+                              <div className="absolute right-0 bottom-full mb-1.5 hidden group-hover:block z-50 w-72 p-2.5 bg-slate-900 text-white text-[11px] rounded-lg shadow-xl border border-slate-700 pointer-events-none">
+                                <div className="flex items-center gap-1.5 font-bold text-amber-400">
+                                  <Lock className="h-3.5 w-3.5" />
+                                  <span>Approval Locked</span>
+                                </div>
+                                <p className="mt-1 text-slate-300 leading-relaxed">
+                                  This Job has <strong>{activeSupplierInvoicesCount}</strong> active Supplier Invoice{activeSupplierInvoicesCount === 1 ? "" : "s"} totaling <strong>{formatCurrency(activeSupplierInvoicesTotal, { showCurrencyPrefix: true })}</strong>.
+                                </p>
+                                <p className="text-rose-400 font-semibold mt-1">
+                                  Cannot be moved back to Pending Approval.
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {isAdmin && (isJobApproved || isJobRejected) && !isApprovalLocked && (
                             <button
                               type="button"
                               onClick={() => openJobReview(job, "RESET")}
@@ -586,6 +624,8 @@ export function ApprovalsView() {
             }}
           />
         </div>
+        </>
+        )}
       </div>
 
       {/* Job Details & Approval / Rejection Modal */}

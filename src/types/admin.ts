@@ -169,6 +169,9 @@ export interface Job {
   invoice?: CustomerInvoice | null;
   submittedBy?: { id: string; name: string; email: string } | null;
   supplierInvoices?: SupplierInvoice[];
+  supplierInvoiceCount?: number;
+  supplierInvoiceTotal?: number;
+  invoiceStatusSummary?: string;
   financialOverview?: {
     approvedJobValue: number;
     totalSupplierCost: number;
@@ -384,4 +387,20 @@ export interface JobProfitLossSummary {
   profitMargin: number;
   financialStatus: "High Margin" | "Healthy" | "Low Margin" | "Over Budget";
   supplierInvoicesCount: number;
+}
+
+export interface DashboardStats {
+  totalJobs: number;
+  pendingJobs: number;
+  approvedJobs: number;
+  rejectedJobs: number;
+  totalSuppliers: number;
+  totalSupplierInvoices: number;
+  totalSupplierInvoiceAmount: number;
+  jobsWithSupplierInvoices: number;
+  jobsWithoutSupplierInvoices: number;
+  totalActualJobCosts: number;
+  totalApprovedJobValue: number;
+  totalRecordedGrossProfit: number;
+  pendingApprovalsCount: number;
 }

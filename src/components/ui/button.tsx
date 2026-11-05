@@ -1,6 +1,7 @@
 import * as React from "react"
 import { Slot } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
+import { Loader2 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -36,21 +37,58 @@ export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   asChild?: boolean
+  isLoading?: boolean
+  loadingText?: React.ReactNode
+  spinnerPlacement?: "start" | "end"
 }
 
 const Button = React.forwardRef<
   React.ComponentRef<"button">,
   ButtonProps
->(({ className, variant, size, asChild = false, ...props }, ref) => {
-  const Comp = asChild ? Slot : "button"
-  return (
-    <Comp
-      className={cn(buttonVariants({ variant, size, className }))}
-      ref={ref}
-      {...props}
-    />
-  )
-})
+>(
+  (
+    {
+      className,
+      variant,
+      size,
+      asChild = false,
+      isLoading = false,
+      loadingText,
+      spinnerPlacement = "start",
+      disabled,
+      children,
+      ...props
+    },
+    ref
+  ) => {
+    const Comp = asChild ? Slot : "button"
+    const isDisabled = disabled || isLoading
+
+    const spinner = (
+      <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+    )
+
+    return (
+      <Comp
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        disabled={isDisabled}
+        aria-busy={isLoading}
+        {...props}
+      >
+        {isLoading ? (
+          <>
+            {spinnerPlacement === "start" && spinner}
+            <span>{loadingText !== undefined ? loadingText : children}</span>
+            {spinnerPlacement === "end" && spinner}
+          </>
+        ) : (
+          children
+        )}
+      </Comp>
+    )
+  }
+)
 Button.displayName = "Button"
 
 export { Button, buttonVariants }

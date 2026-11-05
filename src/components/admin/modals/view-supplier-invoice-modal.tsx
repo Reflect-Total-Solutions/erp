@@ -559,7 +559,7 @@ export function ViewSupplierInvoiceModal({
                 ) : (
                   <Ban className="h-3.5 w-3.5" />
                 )}
-                <span>Confirm Cancellation</span>
+                <span>{isProcessingCancel ? "Cancelling Invoice & Recalculating..." : "Confirm Cancellation"}</span>
               </button>
             </div>
           </div>

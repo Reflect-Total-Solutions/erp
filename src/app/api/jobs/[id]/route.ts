@@ -6,6 +6,7 @@ import { getSession } from "@/lib/auth";
 import { jobUpdateSchema } from "@/lib/validations/job";
 import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
+import { cleanupOrphanedStorageFiles } from "@/lib/supabase";
 
 // GET /api/jobs/[id]
 export async function GET(
@@ -247,6 +248,15 @@ export async function GET(
         attachments: inv.attachments || [],
         createdAt: inv.createdAt ? new Date(inv.createdAt).toISOString().split("T")[0] : "",
       })),
+      supplierInvoiceCount: (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").length,
+      supplierInvoiceTotal: (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0),
+      invoiceStatusSummary: (() => {
+        const active = (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED");
+        if (active.length === 0) return (job.supplierInvoices || []).length > 0 ? "Cancelled" : "No Invoices";
+        if (active.every((i: any) => i.status === "PAID")) return "Paid";
+        if (active.some((i: any) => i.status === "PAID")) return "Partially Paid";
+        return "Approved";
+      })(),
       financialOverview: (() => {
         const approvedJobValue = Number(job.grandTotal || job.totalCost || 0);
         const activeInvoices = (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED");
@@ -366,13 +376,59 @@ export async function PUT(
       }
     }
 
-    // Strict status transition security checks (Section 6)
+    // Strict status transition security checks (Section 6 & 8)
     const isAdmin = session.roles.some((r) => r.toLowerCase() === "admin");
     if (status && status !== existing.status) {
-      const isCurrentlyApproved = existing.status.toLowerCase().includes("approved");
-      const isCurrentlyInvoiced = existing.status.toLowerCase().includes("invoic");
+      const isCurrentlyApproved =
+        existing.status.toLowerCase().includes("approved") ||
+        existing.status.toLowerCase().includes("invoic") ||
+        existing.status.toLowerCase() === "active";
+      const isTargetPending =
+        status.toLowerCase().includes("pending") ||
+        status.toLowerCase().includes("draft") ||
+        status.toLowerCase().includes("review");
 
-      if ((isCurrentlyApproved || isCurrentlyInvoiced) && !isAdmin) {
+      // Strict Approval Lock: Prevent Approved Jobs with active Supplier Invoices from returning to Pending
+      if (isCurrentlyApproved && isTargetPending) {
+        const activeSupplierInvoices = await prisma.supplierInvoice.findMany({
+          where: {
+            jobId: id,
+            deletedAt: null,
+            status: { not: "CANCELLED" },
+          },
+          select: {
+            id: true,
+            invoiceNumber: true,
+            totalAmount: true,
+          },
+        });
+
+        if (activeSupplierInvoices.length > 0) {
+          const supplierInvoiceCount = activeSupplierInvoices.length;
+          const totalSupplierInvoiceAmount = activeSupplierInvoices.reduce(
+            (sum, inv) => sum + Number(inv.totalAmount || 0),
+            0
+          );
+
+          return NextResponse.json(
+            {
+              success: false,
+              blocked: true,
+              error: "Cannot Move Job to Pending: Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval.",
+              title: "Cannot Move Job to Pending",
+              message: "Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval.",
+              jobNumber: existing.jobCode || "NO-CODE",
+              jobTitle: existing.name,
+              supplierInvoiceCount,
+              totalSupplierInvoiceAmount,
+              statusChange: "BLOCKED",
+            },
+            { status: 422 }
+          );
+        }
+      }
+
+      if (isCurrentlyApproved && !isAdmin) {
         return NextResponse.json(
           {
             success: false,
@@ -384,6 +440,33 @@ export async function PUT(
     }
 
     const updatedJob = await prisma.$transaction(async (tx) => {
+      // Concurrency check inside transaction
+      if (status && status !== existing.status) {
+        const isCurrentlyApproved =
+          existing.status.toLowerCase().includes("approved") ||
+          existing.status.toLowerCase().includes("invoic") ||
+          existing.status.toLowerCase() === "active";
+        const isTargetPending =
+          status.toLowerCase().includes("pending") ||
+          status.toLowerCase().includes("draft") ||
+          status.toLowerCase().includes("review");
+
+        if (isCurrentlyApproved && isTargetPending) {
+          const activeCount = await tx.supplierInvoice.count({
+            where: {
+              jobId: id,
+              deletedAt: null,
+              status: { not: "CANCELLED" },
+            },
+          });
+          if (activeCount > 0) {
+            throw new Error(
+              "Cannot Move Job to Pending: Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval."
+            );
+          }
+        }
+      }
+
       // 1. Update Job record
       const job = await tx.job.update({
         where: { id },
@@ -548,8 +631,95 @@ export async function DELETE(
     }
 
     if (permanent) {
-      // Hard delete from DB
-      await prisma.job.delete({ where: { id } });
+      // Find storage paths for documents and attachments linked to this job before deletion
+      const [jobDocs, supplierAttachments] = await Promise.all([
+        prisma.jobDocument.findMany({
+          where: { jobId: id },
+          select: { storagePath: true },
+        }),
+        prisma.supplierInvoiceAttachment.findMany({
+          where: {
+            OR: [
+              { jobId: id },
+              { invoice: { jobId: id } },
+            ],
+          },
+          select: { storagePath: true },
+        }),
+      ]);
+
+      const storagePathsToClean: string[] = [
+        ...jobDocs.map((d) => d.storagePath).filter((p): p is string => Boolean(p)),
+        ...supplierAttachments.map((a) => a.storagePath).filter((p): p is string => Boolean(p)),
+      ];
+
+      // Atomic cascade deletion in proper dependency order
+      await prisma.$transaction(async (tx) => {
+        // 1. Delete customer invoices & revisions
+        const customerInvoices = await tx.invoice.findMany({
+          where: { jobId: id },
+          select: { id: true },
+        });
+        const invoiceIds = customerInvoices.map((inv) => inv.id);
+        if (invoiceIds.length > 0) {
+          await tx.invoiceRevision.deleteMany({
+            where: { invoiceId: { in: invoiceIds } },
+          });
+          await tx.invoice.deleteMany({
+            where: { id: { in: invoiceIds } },
+          });
+        }
+
+        // 2. Delete supplier invoices, items, attachments, and audit logs
+        const supplierInvoices = await tx.supplierInvoice.findMany({
+          where: { jobId: id },
+          select: { id: true },
+        });
+        const supplierInvoiceIds = supplierInvoices.map((s) => s.id);
+
+        await tx.supplierInvoiceAttachment.deleteMany({
+          where: {
+            OR: [
+              { jobId: id },
+              ...(supplierInvoiceIds.length > 0 ? [{ invoiceId: { in: supplierInvoiceIds } }] : []),
+            ],
+          },
+        });
+
+        if (supplierInvoiceIds.length > 0) {
+          await tx.supplierInvoiceAuditLog.deleteMany({
+            where: { invoiceId: { in: supplierInvoiceIds } },
+          });
+          await tx.supplierInvoiceItem.deleteMany({
+            where: { invoiceId: { in: supplierInvoiceIds } },
+          });
+          await tx.supplierInvoice.deleteMany({
+            where: { id: { in: supplierInvoiceIds } },
+          });
+        }
+
+        // 3. Delete job documents & upload logs
+        await tx.jobDocument.deleteMany({ where: { jobId: id } });
+        await tx.jobUploadLog.deleteMany({ where: { jobId: id } });
+
+        // 4. Delete job approvals
+        await tx.jobApproval.deleteMany({ where: { jobId: id } });
+
+        // 5. Delete cost items, cost categories, and cost summary
+        await tx.jobCostItem.deleteMany({ where: { jobId: id } });
+        await tx.jobCostCategory.deleteMany({ where: { jobId: id } });
+        await tx.jobCostSummary.deleteMany({ where: { jobId: id } });
+
+        // 6. Finally delete the job itself
+        await tx.job.delete({ where: { id } });
+      });
+
+      // Asynchronously clean up files from Supabase Storage without blocking the response
+      if (storagePathsToClean.length > 0) {
+        cleanupOrphanedStorageFiles(storagePathsToClean).catch((cleanupErr) => {
+          console.warn("Storage cleanup error after job deletion:", cleanupErr);
+        });
+      }
 
       await logAuditEvent({
         userId: session.userId,
@@ -586,7 +756,7 @@ export async function DELETE(
   } catch (err: any) {
     console.error(`DELETE /api/jobs/${id} error:`, err);
     return NextResponse.json(
-      { success: false, error: "Failed to delete job." },
+      { success: false, error: err?.message || "Failed to delete job." },
       { status: 500 }
     );
   }

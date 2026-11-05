@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   FileText,
   DollarSign,
@@ -31,6 +32,9 @@ import { EditSupplierInvoiceModal } from "@/components/admin/modals/edit-supplie
 import { SupplierInvoice } from "@/types/admin";
 import { formatCurrency } from "@/lib/financial";
 import { downloadInvoicesAsZip } from "@/lib/bulk-download";
+import { DashboardSkeleton } from "@/components/ui/loading/dashboard-skeleton";
+import { TableSkeleton } from "@/components/ui/loading/table-skeleton";
+import { DownloadLoader } from "@/components/ui/loading/download-loader";
 
 export function InvoicesView() {
   const {
@@ -69,6 +73,36 @@ export function InvoicesView() {
   const [editingSupplierInvoice, setEditingSupplierInvoice] = useState<SupplierInvoice | null>(null);
   const [isEditSupplierModalOpen, setIsEditSupplierModalOpen] = useState(false);
   const [isZippingBulk, setIsZippingBulk] = useState(false);
+  const searchParams = useSearchParams();
+  const createForJob = searchParams?.get("createForJob") || null;
+
+  useEffect(() => {
+    if (createForJob) {
+      setIsCreateSupplierModalOpen(true);
+    }
+  }, [createForJob]);
+
+  // Download Loader progress state
+  const [downloadProgress, setDownloadProgress] = useState<{
+    isOpen: boolean;
+    title: string;
+    currentFileName: string;
+    completedFiles: number;
+    totalFiles: number;
+    percent: number;
+    statusText: string;
+    isComplete: boolean;
+    errorMessage?: string;
+  }>({
+    isOpen: false,
+    title: "Downloading Invoice Attachments",
+    currentFileName: "",
+    completedFiles: 0,
+    totalFiles: 0,
+    percent: 0,
+    statusText: "",
+    isComplete: false,
+  });
 
   const isAdmin = currentRole.toLowerCase() === "admin";
   const isSupervisor = currentRole.toLowerCase() === "supervisor";
@@ -178,19 +212,57 @@ export function InvoicesView() {
       return;
     }
 
+    setDownloadProgress({
+      isOpen: true,
+      title: "Downloading Invoice Attachments",
+      currentFileName: "Scanning invoice records...",
+      completedFiles: 0,
+      totalFiles: 0,
+      percent: 0,
+      statusText: "Packaging multi-format attachments into ZIP...",
+      isComplete: false,
+    });
     setIsZippingBulk(true);
+
     try {
-      const res = await downloadInvoicesAsZip(selected);
+      const res = await downloadInvoicesAsZip(selected, (progress) => {
+        setDownloadProgress((prev) => ({
+          ...prev,
+          completedFiles: progress.completedFiles,
+          totalFiles: progress.totalFiles,
+          percent: progress.percent,
+          currentFileName: progress.currentFileName,
+          statusText: `Adding ${progress.currentFileName} (${progress.completedFiles + 1}/${progress.totalFiles})...`,
+        }));
+      });
+
       if (res.success) {
+        setDownloadProgress((prev) => ({
+          ...prev,
+          percent: 100,
+          isComplete: true,
+          statusText: `Successfully created ZIP with ${res.totalFiles} attachment(s)!`,
+        }));
         showToast(
           "Download Complete",
           `Successfully packaged and downloaded ${res.totalFiles} attachment(s) (PDF, Word, Images) as ZIP.`,
           "success"
         );
+        setTimeout(() => {
+          setDownloadProgress((prev) => ({ ...prev, isOpen: false }));
+        }, 1500);
       } else {
+        setDownloadProgress((prev) => ({
+          ...prev,
+          errorMessage: res.error || "Could not package ZIP archive.",
+        }));
         showToast("Download Notice", res.error || "Could not package ZIP archive.", "info");
       }
     } catch (err: any) {
+      setDownloadProgress((prev) => ({
+        ...prev,
+        errorMessage: err.message || "ZIP download failed.",
+      }));
       showToast("Error", err.message || "ZIP download failed.", "error");
     } finally {
       setIsZippingBulk(false);
@@ -296,87 +368,91 @@ export function InvoicesView() {
       </div>
 
       {/* Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {/* Total Supplier Invoices */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Total Supplier Invoices</p>
-            <p className="text-2xl font-bold text-slate-900 mt-1 font-mono">
-              {supplierMetrics.totalSupplierInvoices}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Recorded vendor bills</p>
+      {loadingSupplierInvoices && supplierInvoices.length === 0 ? (
+        <DashboardSkeleton cardCount={5} />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {/* Total Supplier Invoices */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-slate-500">Total Supplier Invoices</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1 font-mono">
+                {supplierMetrics.totalSupplierInvoices}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Recorded vendor bills</p>
+            </div>
+            <div className="h-10 w-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+              <FileText className="h-5 w-5" />
+            </div>
           </div>
-          <div className="h-10 w-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
-            <FileText className="h-5 w-5" />
-          </div>
-        </div>
 
-        {/* Total Supplier Invoice Amount */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Total Supplier Expense</p>
-            <p className="text-xl font-bold text-amber-600 mt-1 font-mono">
-              {formatCurrency(supplierMetrics.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Actual incurred costs</p>
+          {/* Total Supplier Invoice Amount */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-slate-500">Total Supplier Expense</p>
+              <p className="text-xl font-bold text-amber-600 mt-1 font-mono">
+                {formatCurrency(supplierMetrics.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Actual incurred costs</p>
+            </div>
+            <div className="h-10 w-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+              <DollarSign className="h-5 w-5" />
+            </div>
           </div>
-          <div className="h-10 w-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
-            <DollarSign className="h-5 w-5" />
-          </div>
-        </div>
 
-        {/* Total Approved Job Cost */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Total Approved Job Value</p>
-            <p className="text-xl font-bold text-slate-800 mt-1 font-mono">
-              {formatCurrency(supplierMetrics.totalJobCost, { showCurrencyPrefix: true })}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Approved budget ceiling</p>
+          {/* Total Approved Job Cost */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-slate-500">Total Approved Job Value</p>
+              <p className="text-xl font-bold text-slate-800 mt-1 font-mono">
+                {formatCurrency(supplierMetrics.totalJobCost, { showCurrencyPrefix: true })}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Approved budget ceiling</p>
+            </div>
+            <div className="h-10 w-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-600">
+              <Briefcase className="h-5 w-5" />
+            </div>
           </div>
-          <div className="h-10 w-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-600">
-            <Briefcase className="h-5 w-5" />
-          </div>
-        </div>
 
-        {/* Total Recorded Profit */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Recorded Gross Profit</p>
-            <p
-              className={`text-xl font-bold mt-1 font-mono ${
-                supplierMetrics.totalProfit >= 0 ? "text-emerald-600" : "text-rose-600"
+          {/* Total Recorded Profit */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-slate-500">Recorded Gross Profit</p>
+              <p
+                className={`text-xl font-bold mt-1 font-mono ${
+                  supplierMetrics.totalProfit >= 0 ? "text-emerald-600" : "text-rose-600"
+                }`}
+              >
+                {formatCurrency(supplierMetrics.totalProfit, { showCurrencyPrefix: true })}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Budget minus actual bills</p>
+            </div>
+            <div
+              className={`h-10 w-10 rounded-xl border flex items-center justify-center ${
+                supplierMetrics.totalProfit >= 0
+                  ? "bg-emerald-50 border-emerald-200 text-emerald-600"
+                  : "bg-rose-50 border-rose-200 text-rose-600"
               }`}
             >
-              {formatCurrency(supplierMetrics.totalProfit, { showCurrencyPrefix: true })}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Budget minus actual bills</p>
+              <TrendingUp className="h-5 w-5" />
+            </div>
           </div>
-          <div
-            className={`h-10 w-10 rounded-xl border flex items-center justify-center ${
-              supplierMetrics.totalProfit >= 0
-                ? "bg-emerald-50 border-emerald-200 text-emerald-600"
-                : "bg-rose-50 border-rose-200 text-rose-600"
-            }`}
-          >
-            <TrendingUp className="h-5 w-5" />
-          </div>
-        </div>
 
-        {/* Pending Invoice Payments */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between sm:col-span-2 lg:col-span-1">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Pending Payments</p>
-            <p className="text-2xl font-bold text-indigo-600 mt-1 font-mono">
-              {supplierMetrics.pendingInvoicePayments}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Approved & active bills</p>
-          </div>
-          <div className="h-10 w-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600">
-            <Clock className="h-5 w-5" />
+          {/* Pending Invoice Payments */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between sm:col-span-2 lg:col-span-1">
+            <div>
+              <p className="text-xs font-medium text-slate-500">Pending Payments</p>
+              <p className="text-2xl font-bold text-indigo-600 mt-1 font-mono">
+                {supplierMetrics.pendingInvoicePayments}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Approved & active bills</p>
+            </div>
+            <div className="h-10 w-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600">
+              <Clock className="h-5 w-5" />
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Main Content Area */}
       <div className="space-y-4">
@@ -422,6 +498,7 @@ export function InvoicesView() {
               <div className="w-full sm:w-64">
                 <SearchField
                   value={supplierSearch}
+                  isLoading={loadingSupplierInvoices}
                   onChange={(val) => {
                     setSupplierSearch(val);
                     setSupplierPage(1);
@@ -452,8 +529,12 @@ export function InvoicesView() {
 
         {/* Supplier Invoices Table */}
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
+          {loadingSupplierInvoices && supplierInvoices.length === 0 ? (
+            <TableSkeleton rows={6} columns={10} />
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
                   <th className="py-3 px-3 w-10 text-center">
@@ -658,6 +739,8 @@ export function InvoicesView() {
               }}
             />
           </div>
+        </>
+        )}
         </div>
       </div>
 
@@ -668,6 +751,7 @@ export function InvoicesView() {
         isOpen={isCreateSupplierModalOpen}
         onClose={() => setIsCreateSupplierModalOpen(false)}
         onSuccess={handleCreateSupplierSuccess}
+        preselectedJobId={createForJob || undefined}
       />
 
       {/* ========================================================================= */}
@@ -697,6 +781,22 @@ export function InvoicesView() {
         invoice={editingSupplierInvoice}
         onSuccess={handleEditSupplierSuccess}
         isAdmin={isAdmin}
+      />
+
+      {/* ========================================================================= */}
+      {/* MODAL: BULK DOWNLOAD PACKAGING PROGRESS LOADER                            */}
+      {/* ========================================================================= */}
+      <DownloadLoader
+        isOpen={downloadProgress.isOpen}
+        title={downloadProgress.title}
+        currentFileName={downloadProgress.currentFileName}
+        completedFiles={downloadProgress.completedFiles}
+        totalFiles={downloadProgress.totalFiles}
+        percent={downloadProgress.percent}
+        statusText={downloadProgress.statusText}
+        isComplete={downloadProgress.isComplete}
+        errorMessage={downloadProgress.errorMessage}
+        onClose={() => setDownloadProgress((prev) => ({ ...prev, isOpen: false }))}
       />
     </div>
   );

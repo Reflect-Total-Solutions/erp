@@ -93,6 +93,23 @@ export async function GET(req: NextRequest) {
             include: { user: { select: { id: true, name: true, email: true } } },
           },
           invoice: true,
+          supplierInvoices: {
+            where: { deletedAt: null },
+            orderBy: { createdAt: "desc" },
+            include: {
+              supplier: { select: { id: true, code: true, name: true, phone: true, email: true } },
+              createdBy: { select: { id: true, name: true, email: true } },
+              attachments: {
+                select: {
+                  id: true,
+                  fileName: true,
+                  fileSize: true,
+                  fileType: true,
+                  fileUrl: true,
+                },
+              },
+            },
+          },
         },
         orderBy: { createdAt: "desc" },
         skip,
@@ -102,24 +119,68 @@ export async function GET(req: NextRequest) {
     ]);
 
     // Format jobs to match UI interface
-    const formattedJobs = jobs.map((j) => ({
-      id: j.id,
-      jobCode: j.jobCode,
-      name: j.name,
-      date: j.date,
-      commencingDate: j.commencingDate || j.date,
-      clientName: j.clientName || "",
-      handledBy: j.handledBy || "",
-      description: j.description || "",
-      remarks: j.remarks || "",
-      status: j.status,
-      supplierIds: j.supplierIds || [],
-      totalCost: j.totalCost || 0,
-      grandTotal: j.grandTotal || 0,
-      createdAt: j.createdAt.toISOString().split("T")[0],
-      deletedAt: j.deletedAt ? j.deletedAt.toISOString() : null,
-      isDeleted: j.deletedAt !== null,
-      submittedBy: j.submittedBy,
+    const formattedJobs = jobs.map((j) => {
+      const allSupplierInvoices = (j as any).supplierInvoices || [];
+      const activeSupplierInvoices = allSupplierInvoices.filter(
+        (si: any) => si.status !== "CANCELLED"
+      );
+      const supplierInvoiceCount = activeSupplierInvoices.length;
+      const supplierInvoiceTotal = activeSupplierInvoices.reduce(
+        (sum: number, si: any) => sum + Number(si.totalAmount || 0),
+        0
+      );
+
+      let invoiceStatusSummary = "No Invoices";
+      if (activeSupplierInvoices.length > 0) {
+        const allPaid = activeSupplierInvoices.every((si: any) => si.status === "PAID");
+        const somePaid = activeSupplierInvoices.some((si: any) => si.status === "PAID");
+        if (allPaid) {
+          invoiceStatusSummary = "Paid";
+        } else if (somePaid) {
+          invoiceStatusSummary = "Partially Paid";
+        } else {
+          invoiceStatusSummary = "Approved";
+        }
+      } else if (allSupplierInvoices.length > 0) {
+        invoiceStatusSummary = "Cancelled";
+      }
+
+      return {
+        id: j.id,
+        jobCode: j.jobCode,
+        name: j.name,
+        date: j.date,
+        commencingDate: j.commencingDate || j.date,
+        clientName: j.clientName || "",
+        handledBy: j.handledBy || "",
+        description: j.description || "",
+        remarks: j.remarks || "",
+        status: j.status,
+        supplierIds: j.supplierIds || [],
+        totalCost: j.totalCost || 0,
+        grandTotal: j.grandTotal || 0,
+        createdAt: j.createdAt.toISOString().split("T")[0],
+        deletedAt: j.deletedAt ? j.deletedAt.toISOString() : null,
+        isDeleted: j.deletedAt !== null,
+        supplierInvoiceCount,
+        supplierInvoiceTotal,
+        invoiceStatusSummary,
+        supplierInvoices: allSupplierInvoices.map((inv: any) => ({
+          id: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          supplierId: inv.supplierId,
+          supplierName: inv.supplier?.name || "Unknown Supplier",
+          supplierCode: inv.supplier?.code || "—",
+          invoiceDate: inv.invoiceDate ? new Date(inv.invoiceDate).toISOString().split("T")[0] : "",
+          totalAmount: Number(inv.totalAmount || 0),
+          status: inv.status,
+          attachmentsCount: (inv.attachments || []).length,
+          attachments: inv.attachments || [],
+          createdByName: inv.createdBy?.name || "System Admin",
+          createdAt: inv.createdAt ? new Date(inv.createdAt).toISOString().split("T")[0] : "",
+          notes: inv.notes || null,
+        })),
+        submittedBy: j.submittedBy,
       approvals: j.approvals.map((a) => ({
         id: a.id,
         jobId: a.jobId,
@@ -209,7 +270,8 @@ export async function GET(req: NextRequest) {
         status: doc.status,
         uploadDateTime: doc.createdAt.toISOString(),
       })),
-    }));
+    };
+  });
 
     return NextResponse.json({
       success: true,

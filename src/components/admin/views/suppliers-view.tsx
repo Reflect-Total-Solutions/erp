@@ -17,11 +17,13 @@ import {
   Archive,
   CheckCircle2,
   ShieldAlert,
+  Loader2,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
+import { TableSkeleton } from "@/components/ui/loading/table-skeleton";
 import { RegisterSupplierModal } from "@/components/admin/modals/register-supplier-modal";
 import { Supplier } from "@/types/admin";
 import { supplierCreateSchema } from "@/lib/validations/supplier";
@@ -30,6 +32,7 @@ export function SuppliersView() {
   const {
     suppliers,
     jobs,
+    isLoadingSuppliers,
     updateSupplier,
     softDeleteSupplier,
     restoreSupplier,
@@ -54,6 +57,12 @@ export function SuppliersView() {
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [softDeletingSupplier, setSoftDeletingSupplier] = useState<Supplier | null>(null);
   const [permanentDeletingSupplier, setPermanentDeletingSupplier] = useState<Supplier | null>(null);
+
+  // Async action processing states
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [isSoftDeleting, setIsSoftDeleting] = useState(false);
+  const [isPermanentDeleting, setIsPermanentDeleting] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -129,32 +138,54 @@ export function SuppliersView() {
     return true;
   };
 
-  const handleSaveEdit = (e: React.FormEvent) => {
+  const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateEdit() || !editingSupplier) return;
 
-    updateSupplier(editingSupplier.id, {
-      name: editName.trim(),
-      code: editCode.trim().toUpperCase(),
-      contactPerson: editContact.trim(),
-      phone: editPhone.trim(),
-      email: editEmail.trim().toLowerCase(),
-      address: editAddress.trim(),
-    });
-    setEditingSupplier(null);
-  };
-
-  const handleConfirmSoftDelete = () => {
-    if (softDeletingSupplier) {
-      softDeleteSupplier(softDeletingSupplier.id);
-      setSoftDeletingSupplier(null);
+    setIsSavingEdit(true);
+    try {
+      await updateSupplier(editingSupplier.id, {
+        name: editName.trim(),
+        code: editCode.trim().toUpperCase(),
+        contactPerson: editContact.trim(),
+        phone: editPhone.trim(),
+        email: editEmail.trim().toLowerCase(),
+        address: editAddress.trim(),
+      });
+      setEditingSupplier(null);
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
-  const handleConfirmPermanentDelete = () => {
-    if (permanentDeletingSupplier) {
-      permanentlyDeleteSupplier(permanentDeletingSupplier.id);
+  const handleConfirmSoftDelete = async () => {
+    if (!softDeletingSupplier) return;
+    setIsSoftDeleting(true);
+    try {
+      await softDeleteSupplier(softDeletingSupplier.id);
+      setSoftDeletingSupplier(null);
+    } finally {
+      setIsSoftDeleting(false);
+    }
+  };
+
+  const handleConfirmPermanentDelete = async () => {
+    if (!permanentDeletingSupplier) return;
+    setIsPermanentDeleting(true);
+    try {
+      await permanentlyDeleteSupplier(permanentDeletingSupplier.id);
       setPermanentDeletingSupplier(null);
+    } finally {
+      setIsPermanentDeleting(false);
+    }
+  };
+
+  const handleRestore = async (id: string) => {
+    setRestoringId(id);
+    try {
+      await restoreSupplier(id);
+    } finally {
+      setRestoringId(null);
     }
   };
 
@@ -285,6 +316,7 @@ export function SuppliersView() {
           <div className="w-full sm:w-72">
             <SearchField
               value={searchTerm}
+              isLoading={isLoadingSuppliers}
               onChange={(val) => {
                 setSearchTerm(val);
                 setCurrentPage(1);
@@ -297,7 +329,9 @@ export function SuppliersView() {
 
       {/* Suppliers Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
-        {filteredSuppliers.length === 0 ? (
+        {isLoadingSuppliers && suppliers.length === 0 ? (
+          <TableSkeleton rows={6} columns={7} />
+        ) : filteredSuppliers.length === 0 ? (
           <div className="p-10 text-center text-xs text-slate-500">
             {activeTab === "active" ? (
               <div>
@@ -399,12 +433,17 @@ export function SuppliersView() {
                                   <>
                                     <button
                                       type="button"
-                                      onClick={() => restoreSupplier(s.id)}
-                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer"
+                                      disabled={restoringId === s.id}
+                                      onClick={() => handleRestore(s.id)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer disabled:opacity-50"
                                       title="Restore to Active"
                                     >
-                                      <RotateCcw className="h-3 w-3" />
-                                      <span>Restore</span>
+                                      {restoringId === s.id ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <RotateCcw className="h-3 w-3" />
+                                      )}
+                                      <span>{restoringId === s.id ? "Restoring..." : "Restore"}</span>
                                     </button>
                                     <button
                                       type="button"
@@ -604,15 +643,24 @@ export function SuppliersView() {
               <button
                 type="button"
                 onClick={() => setEditingSupplier(null)}
-                className="h-8 px-3.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+                disabled={isSavingEdit}
+                className="h-8 px-3.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors cursor-pointer"
+                disabled={isSavingEdit}
+                className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors cursor-pointer disabled:opacity-50"
               >
-                Save Changes
+                {isSavingEdit ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <span>Save Changes</span>
+                )}
               </button>
             </div>
           </form>
@@ -623,7 +671,7 @@ export function SuppliersView() {
       {softDeletingSupplier && (
         <Modal
           isOpen={true}
-          onClose={() => setSoftDeletingSupplier(null)}
+          onClose={() => !isSoftDeleting && setSoftDeletingSupplier(null)}
           title="Soft Delete Supplier"
           maxWidth="sm"
         >
@@ -642,16 +690,25 @@ export function SuppliersView() {
               <button
                 type="button"
                 onClick={() => setSoftDeletingSupplier(null)}
-                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+                disabled={isSoftDeleting}
+                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmSoftDelete}
-                className="h-8 px-3.5 rounded-lg bg-amber-600 text-xs font-semibold text-white hover:bg-amber-700 transition-colors cursor-pointer"
+                disabled={isSoftDeleting}
+                className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-amber-600 text-xs font-semibold text-white hover:bg-amber-700 transition-colors cursor-pointer disabled:opacity-50"
               >
-                Archive Supplier
+                {isSoftDeleting ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Archiving...</span>
+                  </>
+                ) : (
+                  <span>Archive Supplier</span>
+                )}
               </button>
             </div>
           </div>
@@ -662,7 +719,7 @@ export function SuppliersView() {
       {permanentDeletingSupplier && (
         <Modal
           isOpen={true}
-          onClose={() => setPermanentDeletingSupplier(null)}
+          onClose={() => !isPermanentDeleting && setPermanentDeletingSupplier(null)}
           title="Permanently Delete Supplier"
           maxWidth="sm"
         >
@@ -681,16 +738,25 @@ export function SuppliersView() {
               <button
                 type="button"
                 onClick={() => setPermanentDeletingSupplier(null)}
-                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+                disabled={isPermanentDeleting}
+                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmPermanentDelete}
-                className="h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-semibold text-white hover:bg-rose-700 transition-colors cursor-pointer"
+                disabled={isPermanentDeleting}
+                className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-semibold text-white hover:bg-rose-700 transition-colors cursor-pointer disabled:opacity-50"
               >
-                Permanently Delete
+                {isPermanentDeleting ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <span>Permanently Delete</span>
+                )}
               </button>
             </div>
           </div>

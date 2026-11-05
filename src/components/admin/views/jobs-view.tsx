@@ -20,7 +20,11 @@ import {
   RotateCcw,
   AlertTriangle,
   Briefcase,
+  Loader2,
+  Receipt,
+  FileText,
 } from "lucide-react";
+import { ButtonLoader } from "@/components/ui/loading/button-loader";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { Modal } from "@/components/admin/ui/modal";
@@ -28,6 +32,8 @@ import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
 import { FilterSelect, FilterDate } from "@/components/admin/ui/filter-controls";
 import { CreateJobModal } from "@/components/admin/modals/create-job-modal";
+import { JobSupplierInvoicesModal } from "@/components/admin/modals/job-supplier-invoices-modal";
+import { ViewSupplierInvoiceModal } from "@/components/admin/modals/view-supplier-invoice-modal";
 import { Job, JobStatus } from "@/types/admin";
 import {
   exportJobsToCsv,
@@ -54,6 +60,7 @@ export function JobsView() {
     getJobExcelFiles,
     can,
     currentRole,
+    isLoadingJobs,
   } = useAdminData();
 
   // Tab: "active" | "trash"
@@ -71,11 +78,15 @@ export function JobsView() {
   // Bulk Selection
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
 
-  // Modals
+  // Modals & Action loading
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<Job | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [restoringJobId, setRestoringJobId] = useState<string | null>(null);
+  const [viewingJobInvoices, setViewingJobInvoices] = useState<Job | null>(null);
+  const [viewingSupplierInvoice, setViewingSupplierInvoice] = useState<any | null>(null);
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -110,17 +121,37 @@ export function JobsView() {
     setEditingJob(null);
   };
 
-  const handleConfirmDelete = () => {
-    if (deletingJobId) {
-      deleteJob(deletingJobId);
+  const handleConfirmDelete = async () => {
+    if (!deletingJobId || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      await deleteJob(deletingJobId);
       setDeletingJobId(null);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
-  const handleConfirmPermanentDelete = () => {
-    if (permanentDeleteTarget) {
-      permanentlyDeleteJob(permanentDeleteTarget.id);
-      setPermanentDeleteTarget(null);
+  const handleConfirmPermanentDelete = async () => {
+    if (!permanentDeleteTarget || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const success = await permanentlyDeleteJob(permanentDeleteTarget.id);
+      if (success) {
+        setPermanentDeleteTarget(null);
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleRestoreJob = async (id: string) => {
+    if (restoringJobId) return;
+    setRestoringJobId(id);
+    try {
+      await restoreJob(id);
+    } finally {
+      setRestoringJobId(null);
     }
   };
 
@@ -278,6 +309,7 @@ export function JobsView() {
               setCurrentPage(1);
             }}
             placeholder="Search by job name, code, description..."
+            isLoading={isLoadingJobs}
           />
 
           {/* Date Filter */}
@@ -456,9 +488,42 @@ export function JobsView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {paginatedJobs.map((job) => {
-                  const val = getJobTotalInvoiceValue(job.id);
-                  const invCount = getJobInvoices(job.id).length;
+                {isLoadingJobs ? (
+                  Array.from({ length: 6 }).map((_, rIdx) => (
+                    <tr key={rIdx} className="hover:bg-slate-50/50">
+                      {Array.from({ length: 8 }).map((_, cIdx) => (
+                        <td key={cIdx} className="py-3.5 px-3.5">
+                          <div
+                            className="h-3.5 bg-slate-100 rounded animate-pulse"
+                            style={{
+                              width:
+                                cIdx === 0
+                                  ? "18px"
+                                  : cIdx === 1
+                                  ? "75%"
+                                  : `${Math.max(30, 80 - ((rIdx + cIdx) % 3) * 20)}%`,
+                            }}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                ) : paginatedJobs.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-12 text-center text-slate-400">
+                      <Briefcase className="h-10 w-10 text-slate-300 stroke-[1.5] mx-auto mb-2" />
+                      <p className="text-sm font-semibold text-slate-600">No Projects Found</p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        {searchTerm || dateFilter || statusFilter !== "all"
+                          ? "No projects match your filter criteria."
+                          : "Create a job or upload Excel quotation files to get started."}
+                      </p>
+                    </td>
+                  </tr>
+                ) : (
+                  paginatedJobs.map((job) => {
+                  const val = typeof job.supplierInvoiceTotal === "number" ? job.supplierInvoiceTotal : getJobTotalInvoiceValue(job.id);
+                  const invCount = typeof job.supplierInvoiceCount === "number" ? job.supplierInvoiceCount : (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").length;
                   const isSelected = selectedJobIds.includes(job.id);
 
                   return (
@@ -562,8 +627,20 @@ export function JobsView() {
                       <td className="px-4 py-3.5 text-center font-medium text-slate-700">
                         {job.supplierIds.length}
                       </td>
-                      <td className="px-4 py-3.5 text-center font-medium text-slate-700">
-                        {invCount}
+                      <td className="px-4 py-3.5 text-center font-medium">
+                        <button
+                          type="button"
+                          onClick={() => setViewingJobInvoices(job)}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold transition-all ${
+                            invCount > 0
+                              ? "bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200"
+                              : "text-slate-400 hover:bg-slate-100"
+                          }`}
+                          title={`View ${invCount} Supplier Invoice(s) for ${job.name}`}
+                        >
+                          <Receipt className="h-3 w-3" />
+                          <span>{invCount}</span>
+                        </button>
                       </td>
                       <td className="px-4 py-3.5 text-right font-semibold text-slate-900 whitespace-nowrap">
                         {job.grandTotal || job.totalCost ? (
@@ -571,12 +648,34 @@ export function JobsView() {
                             <span className="text-blue-700 font-bold block">
                               {formatCurrency(job.grandTotal || job.totalCost || 0, { showCurrencyPrefix: true })}
                             </span>
-                            <span className="text-[10px] text-slate-400 block font-normal">
-                              Invoices: {formatCurrency(val, { showCurrencyPrefix: true })}
+                            <span className="text-[10px] text-slate-500 block font-normal">
+                              Supplier Invoices: {formatCurrency(val, { showCurrencyPrefix: true })}
                             </span>
+                            {job.invoiceStatusSummary && job.invoiceStatusSummary !== "No Invoices" && (
+                              <span
+                                className={`inline-block text-[9px] font-bold px-1.5 py-0.5 rounded mt-0.5 border ${
+                                  job.invoiceStatusSummary === "Paid"
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                    : job.invoiceStatusSummary === "Partially Paid"
+                                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                                    : job.invoiceStatusSummary === "Cancelled"
+                                    ? "bg-rose-50 text-rose-700 border-rose-200"
+                                    : "bg-blue-50 text-blue-700 border-blue-200"
+                                }`}
+                              >
+                                {job.invoiceStatusSummary}
+                              </span>
+                            )}
                           </div>
                         ) : (
-                          <span>{formatCurrency(val, { showCurrencyPrefix: true })}</span>
+                          <div>
+                            <span>{formatCurrency(val, { showCurrencyPrefix: true })}</span>
+                            {job.invoiceStatusSummary && job.invoiceStatusSummary !== "No Invoices" && (
+                              <span className="text-[10px] text-slate-400 block font-normal">
+                                {job.invoiceStatusSummary}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-3.5 text-center">
@@ -586,6 +685,14 @@ export function JobsView() {
                         <div className="flex items-center justify-end gap-1.5">
                           {activeTab === "active" ? (
                             <>
+                              <button
+                                type="button"
+                                onClick={() => setViewingJobInvoices(job)}
+                                className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+                                title={`View Supplier Invoices (${invCount})`}
+                              >
+                                <Receipt className="h-4 w-4" />
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => {
@@ -632,12 +739,17 @@ export function JobsView() {
                               {can("jobs", "edit") && (
                                 <button
                                   type="button"
-                                  onClick={() => restoreJob(job.id)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer"
+                                  onClick={() => handleRestoreJob(job.id)}
+                                  disabled={restoringJobId === job.id}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer disabled:opacity-60"
                                   title="Restore to Active"
                                 >
-                                  <RotateCcw className="h-3 w-3" />
-                                  <span>Restore</span>
+                                  {restoringJobId === job.id ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <RotateCcw className="h-3 w-3" />
+                                  )}
+                                  <span>{restoringJobId === job.id ? "Restoring..." : "Restore"}</span>
                                 </button>
                               )}
                               {can("jobs", "delete") && (
@@ -656,7 +768,7 @@ export function JobsView() {
                       </td>
                     </tr>
                   );
-                })}
+                }))}
               </tbody>
             </table>
           </div>
@@ -818,17 +930,21 @@ export function JobsView() {
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
               <button
                 type="button"
+                disabled={isDeleting}
                 onClick={() => setDeletingJobId(null)}
-                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
+                disabled={isDeleting}
                 onClick={handleConfirmDelete}
-                className="h-8 px-3.5 rounded-lg bg-amber-600 text-xs font-medium text-white hover:bg-amber-700"
+                className="h-8 px-3.5 rounded-lg bg-amber-600 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-60 cursor-pointer inline-flex items-center gap-1.5"
               >
-                Move to Trash
+                <ButtonLoader isLoading={isDeleting} loadingText="Moving to Trash...">
+                  Move to Trash
+                </ButtonLoader>
               </button>
             </div>
           </div>
@@ -839,7 +955,7 @@ export function JobsView() {
       {permanentDeleteTarget && (
         <Modal
           isOpen={true}
-          onClose={() => setPermanentDeleteTarget(null)}
+          onClose={() => !isDeleting && setPermanentDeleteTarget(null)}
           title="Permanently Delete Job"
           maxWidth="sm"
         >
@@ -857,21 +973,51 @@ export function JobsView() {
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
               <button
                 type="button"
+                disabled={isDeleting}
                 onClick={() => setPermanentDeleteTarget(null)}
-                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
+                disabled={isDeleting}
                 onClick={handleConfirmPermanentDelete}
-                className="h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-medium text-white hover:bg-rose-700"
+                className="h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-60 cursor-pointer inline-flex items-center gap-1.5"
               >
-                Permanently Delete
+                <ButtonLoader isLoading={isDeleting} loadingText="Deleting...">
+                  Permanently Delete
+                </ButtonLoader>
               </button>
             </div>
           </div>
         </Modal>
+      )}
+
+      {/* Job Supplier Invoices Modal */}
+      {viewingJobInvoices && (
+        <JobSupplierInvoicesModal
+          isOpen={true}
+          onClose={() => setViewingJobInvoices(null)}
+          job={viewingJobInvoices}
+          onViewInvoiceDetails={(inv) => {
+            setViewingSupplierInvoice(inv);
+          }}
+          onCreateInvoice={(jobId) => {
+            router.push(`/admin/invoices?createForJob=${jobId}`);
+          }}
+        />
+      )}
+
+      {/* Individual Supplier Invoice View Modal */}
+      {viewingSupplierInvoice && (
+        <ViewSupplierInvoiceModal
+          isOpen={true}
+          onClose={() => setViewingSupplierInvoice(null)}
+          invoice={viewingSupplierInvoice}
+          invoiceId={viewingSupplierInvoice.id}
+          isAdmin={currentRole === "admin"}
+        />
       )}
     </div>
   );

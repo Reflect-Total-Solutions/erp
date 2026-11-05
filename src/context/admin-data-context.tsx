@@ -10,6 +10,7 @@ import {
   Role,
   UserAccess,
   AccessAuditLog,
+  DashboardStats,
 } from "@/types/admin";
 import {
   initialSuppliers,
@@ -37,6 +38,16 @@ interface AdminDataContextType {
   usersAccess: UserAccess[];
   auditLogs: AccessAuditLog[];
 
+  // Loading & Database Processing States
+  isLoadingJobs: boolean;
+  isLoadingSuppliers: boolean;
+  isLoadingInvoices: boolean;
+  isLoadingUsers: boolean;
+  isLoadingAuditLogs: boolean;
+  isLoadingInitial: boolean;
+  refreshSuppliers: () => Promise<void>;
+  refreshInvoices: () => Promise<void>;
+
   // Toast actions
   showToast: (title: string, message?: string, type?: "success" | "error" | "info") => void;
   removeToast: (id: string) => void;
@@ -47,7 +58,7 @@ interface AdminDataContextType {
   deleteJob: (id: string) => void;
   softDeleteJob: (id: string) => void;
   restoreJob: (id: string) => void;
-  permanentlyDeleteJob: (id: string) => void;
+  permanentlyDeleteJob: (id: string) => Promise<boolean>;
   refreshJobs: () => Promise<void>;
   getJobById: (id: string) => Job | undefined;
 
@@ -108,11 +119,15 @@ interface AdminDataContextType {
   getJobSuppliers: (jobId: string) => Supplier[];
   getJobExcelFiles: (jobId: string) => ExcelFile[];
   getJobTotalInvoiceValue: (jobId: string) => number;
+  getJobSupplierInvoices: (jobId: string) => any[];
+  getJobSupplierInvoiceCount: (jobId: string) => number;
   totalJobsCount: number;
   totalSuppliersCount: number;
   totalInvoicesCount: number;
   totalInvoiceValue: number;
   pendingApprovalsCount: number;
+  dashboardStats: DashboardStats | null;
+  refreshDashboardStats: () => Promise<void>;
 }
 
 const AdminDataContext = createContext<AdminDataContextType | undefined>(undefined);
@@ -130,6 +145,16 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   const [currentUserId, setCurrentUserId] = useState<string>("");
   const [activeUserId, setActiveUserId] = useState<string>("");
   const [userPermissions, setUserPermissions] = useState<Record<string, Record<Action, boolean>> | null>(null);
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
+
+  // Database Processing & Loading States
+  const [isLoadingJobs, setIsLoadingJobs] = useState(true);
+  const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(true);
+  const [isLoadingInvoices, setIsLoadingInvoices] = useState(true);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(true);
+  const [isLoadingAuditLogs, setIsLoadingAuditLogs] = useState(true);
+
+  const isLoadingInitial = isLoadingJobs || isLoadingSuppliers || isLoadingInvoices;
 
   // Derive the active user persona
   const activeUser = useMemo(() => {
@@ -294,30 +319,31 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   );
 
   // Initial load of suppliers from PostgreSQL database
-  React.useEffect(() => {
-    let isMounted = true;
-    const fetchDbSuppliers = async () => {
-      try {
-        const res = await fetch("/api/suppliers?status=all");
-        if (!res.ok) return;
-        const json = await res.json();
-        if (json?.success && Array.isArray(json.data) && isMounted) {
-          if (json.data.length > 0) {
-            setSuppliers(json.data);
-          }
+  const fetchDbSuppliers = useCallback(async () => {
+    setIsLoadingSuppliers(true);
+    try {
+      const res = await fetch("/api/suppliers?status=all");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.success && Array.isArray(json.data)) {
+        if (json.data.length > 0) {
+          setSuppliers(json.data);
         }
-      } catch {
-        // Fallback to initialSuppliers if offline or API unreachable
       }
-    };
-    fetchDbSuppliers();
-    return () => {
-      isMounted = false;
-    };
+    } catch {
+      // Fallback to initialSuppliers if offline or API unreachable
+    } finally {
+      setIsLoadingSuppliers(false);
+    }
   }, []);
+
+  React.useEffect(() => {
+    fetchDbSuppliers();
+  }, [fetchDbSuppliers]);
 
   // Fetch and sync users from PostgreSQL database (no mock data)
   const fetchDbUsers = useCallback(async () => {
+    setIsLoadingUsers(true);
     try {
       const res = await fetch("/api/users?status=all");
       if (!res.ok) return;
@@ -327,11 +353,14 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {
       // Fallback
+    } finally {
+      setIsLoadingUsers(false);
     }
   }, []);
 
   // Fetch and sync real security audit trail from PostgreSQL database
   const fetchDbAuditLogs = useCallback(async () => {
+    setIsLoadingAuditLogs(true);
     try {
       const res = await fetch("/api/audit");
       if (!res.ok) return;
@@ -341,12 +370,30 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {
       // Fallback
+    } finally {
+      setIsLoadingAuditLogs(false);
+    }
+  }, []);
+
+  // Fetch and sync real-time dashboard statistics from database
+  const fetchDashboardStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/dashboard/stats");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.success && json.data) {
+        setDashboardStats(json.data);
+      }
+    } catch {
+      // Fallback
     }
   }, []);
 
   // Fetch and sync jobs and documents from PostgreSQL database
   const fetchDbJobs = useCallback(async () => {
+    setIsLoadingJobs(true);
     try {
+      fetchDashboardStats().catch(() => {});
       const res = await fetch("/api/jobs?status=all");
       if (!res.ok) return;
       const json = await res.json();
@@ -377,11 +424,14 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {
       // Fallback
+    } finally {
+      setIsLoadingJobs(false);
     }
-  }, []);
+  }, [fetchDashboardStats]);
 
   // Fetch and sync invoices from PostgreSQL database
   const fetchDbInvoices = useCallback(async () => {
+    setIsLoadingInvoices(true);
     try {
       const res = await fetch("/api/invoices?status=all");
       if (!res.ok) return;
@@ -404,15 +454,18 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {
       // Fallback
+    } finally {
+      setIsLoadingInvoices(false);
     }
   }, []);
 
   React.useEffect(() => {
     fetchDbJobs();
     fetchDbInvoices();
+    fetchDashboardStats();
     fetchDbUsers();
     fetchDbAuditLogs();
-  }, [fetchDbJobs, fetchDbInvoices, fetchDbUsers, fetchDbAuditLogs]);
+  }, [fetchDbJobs, fetchDbInvoices, fetchDashboardStats, fetchDbUsers, fetchDbAuditLogs]);
 
   // Toast System
   const showToast = useCallback(
@@ -521,22 +574,29 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const softDeleteJob = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
       const target = jobs.find((j) => j.id === id);
-      setJobs((prev) =>
-        prev.map((job) =>
-          job.id === id ? { ...job, isDeleted: true, deletedAt: new Date().toISOString() } : job
-        )
-      );
-      showToast(
-        "Job Moved to Trash",
-        target ? `"${target.name}" moved to trash. You can restore it anytime.` : "Job moved to trash.",
-        "info"
-      );
-
-      fetch(`/api/jobs/${id}`, { method: "DELETE" }).catch((e) =>
-        console.error("Error soft-deleting job in DB:", e)
-      );
+      try {
+        const res = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to move job to trash.");
+        }
+        setJobs((prev) =>
+          prev.map((job) =>
+            job.id === id ? { ...job, isDeleted: true, deletedAt: new Date().toISOString() } : job
+          )
+        );
+        showToast(
+          "Job Moved to Trash",
+          target ? `"${target.name}" moved to trash. You can restore it anytime.` : "Job moved to trash.",
+          "info"
+        );
+        return true;
+      } catch (e: any) {
+        showToast("Delete Failed", e.message || "Error moving job to trash.", "error");
+        return false;
+      }
     },
     [jobs, showToast]
   );
@@ -544,39 +604,55 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   const deleteJob = softDeleteJob;
 
   const restoreJob = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
       const target = jobs.find((j) => j.id === id);
-      setJobs((prev) =>
-        prev.map((job) => (job.id === id ? { ...job, isDeleted: false, deletedAt: null } : job))
-      );
-      showToast(
-        "Job Restored",
-        target ? `"${target.name}" has been restored to active jobs.` : "Job restored.",
-        "success"
-      );
-
-      fetch(`/api/jobs/${id}/restore`, { method: "POST" }).catch((e) =>
-        console.error("Error restoring job in DB:", e)
-      );
+      try {
+        const res = await fetch(`/api/jobs/${id}/restore`, { method: "POST" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to restore job.");
+        }
+        setJobs((prev) =>
+          prev.map((job) => (job.id === id ? { ...job, isDeleted: false, deletedAt: null } : job))
+        );
+        showToast(
+          "Job Restored",
+          target ? `"${target.name}" has been restored to active jobs.` : "Job restored.",
+          "success"
+        );
+        return true;
+      } catch (e: any) {
+        showToast("Restore Failed", e.message || "Error restoring job.", "error");
+        return false;
+      }
     },
     [jobs, showToast]
   );
 
   const permanentlyDeleteJob = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
       const target = jobs.find((j) => j.id === id);
-      setJobs((prev) => prev.filter((j) => j.id !== id));
-      setInvoices((prev) => prev.filter((inv) => inv.jobId !== id));
-      setExcelFiles((prev) => prev.filter((xf) => xf.jobId !== id));
-      showToast(
-        "Job Permanently Removed",
-        target ? `"${target.name}" and associated records permanently deleted.` : "Job removed.",
-        "error"
-      );
-
-      fetch(`/api/jobs/${id}?permanent=true`, { method: "DELETE" }).catch((e) =>
-        console.error("Error permanently deleting job from DB:", e)
-      );
+      try {
+        const res = await fetch(`/api/jobs/${id}?permanent=true`, { method: "DELETE" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to permanently delete job.");
+        }
+        setJobs((prev) => prev.filter((j) => j.id !== id));
+        setInvoices((prev) => prev.filter((inv) => inv.jobId !== id));
+        setExcelFiles((prev) => prev.filter((xf) => xf.jobId !== id));
+        fetchDbJobs().catch(() => {});
+        fetchDbInvoices().catch(() => {});
+        showToast(
+          "Job Permanently Removed",
+          target ? `"${target.name}" and associated records permanently deleted.` : "Job removed.",
+          "error"
+        );
+        return true;
+      } catch (e: any) {
+        showToast("Action Failed", e.message || "Could not permanently delete job.", "error");
+        return false;
+      }
     },
     [jobs, showToast]
   );
@@ -674,125 +750,99 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
 
   // Soft Delete Supplier
   const softDeleteSupplier = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
       const target = suppliers.find((s) => s.id === id);
-      if (!target) return;
+      if (!target) return false;
 
-      // Optimistic soft-delete
-      setSuppliers((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? { ...s, isDeleted: true, deletedAt: new Date().toISOString() }
-            : s
-        )
-      );
-
-      // Call API
-      fetch(`/api/suppliers/${id}`, {
-        method: "DELETE",
-      })
-        .then(async (res) => {
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || "Failed to archive supplier.");
-          }
-          return res.json();
-        })
-        .then(() => {
-          showToast(
-            "Supplier Archived",
-            `"${target.name}" moved to trash. Associated invoices and jobs remain intact.`,
-            "info"
-          );
-        })
-        .catch((err) => {
-          showToast("Archive Error", err.message || "Could not soft-delete supplier.", "error");
-        });
+      try {
+        const res = await fetch(`/api/suppliers/${id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to archive supplier.");
+        }
+        setSuppliers((prev) =>
+          prev.map((s) =>
+            s.id === id
+              ? { ...s, isDeleted: true, deletedAt: new Date().toISOString() }
+              : s
+          )
+        );
+        showToast(
+          "Supplier Archived",
+          `"${target.name}" moved to trash. Associated invoices and jobs remain intact.`,
+          "info"
+        );
+        return true;
+      } catch (err: any) {
+        showToast("Archive Error", err.message || "Could not soft-delete supplier.", "error");
+        return false;
+      }
     },
     [suppliers, showToast]
   );
 
   // Restore Soft-Deleted Supplier
   const restoreSupplier = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
       const target = suppliers.find((s) => s.id === id);
-      if (!target) return;
+      if (!target) return false;
 
-      // Optimistic restore
-      setSuppliers((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? { ...s, isDeleted: false, deletedAt: undefined }
-            : s
-        )
-      );
-
-      // Call API
-      fetch(`/api/suppliers/${id}/restore`, {
-        method: "POST",
-      })
-        .then(async (res) => {
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || "Failed to restore supplier.");
-          }
-          return res.json();
-        })
-        .then(() => {
-          showToast(
-            "Supplier Restored",
-            `"${target.name}" has been restored to the active supplier registry.`,
-            "success"
-          );
-        })
-        .catch((err) => {
-          // Revert optimistic update on failure
-          setSuppliers((prev) =>
-            prev.map((s) =>
-              s.id === id
-                ? { ...s, isDeleted: true, deletedAt: target.deletedAt }
-                : s
-            )
-          );
-          showToast("Restore Error", err.message || "Could not restore supplier.", "error");
-        });
+      try {
+        const res = await fetch(`/api/suppliers/${id}/restore`, { method: "POST" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to restore supplier.");
+        }
+        setSuppliers((prev) =>
+          prev.map((s) =>
+            s.id === id
+              ? { ...s, isDeleted: false, deletedAt: undefined }
+              : s
+          )
+        );
+        showToast(
+          "Supplier Restored",
+          `"${target.name}" has been restored to the active supplier registry.`,
+          "success"
+        );
+        return true;
+      } catch (err: any) {
+        showToast("Restore Error", err.message || "Could not restore supplier.", "error");
+        return false;
+      }
     },
     [suppliers, showToast]
   );
 
   // Permanently Delete Supplier
   const permanentlyDeleteSupplier = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
       const target = suppliers.find((s) => s.id === id);
-      setSuppliers((prev) => prev.filter((s) => s.id !== id));
-      // Remove from all jobs
-      setJobs((prev) =>
-        prev.map((job) => ({
-          ...job,
-          supplierIds: job.supplierIds.filter((sId) => sId !== id),
-        }))
-      );
+      if (!target) return false;
 
-      fetch(`/api/suppliers/${id}?permanent=true`, {
-        method: "DELETE",
-      })
-        .then(async (res) => {
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || "Failed to permanently purge supplier.");
-          }
-          return res.json();
-        })
-        .then(() => {
-          showToast(
-            "Supplier Permanently Deleted",
-            target ? `"${target.name}" has been permanently purged.` : "Supplier purged.",
-            "error"
-          );
-        })
-        .catch((err) => {
-          showToast("Purge Error", err.message || "Could not permanently delete.", "error");
-        });
+      try {
+        const res = await fetch(`/api/suppliers/${id}?permanent=true`, { method: "DELETE" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to permanently delete supplier.");
+        }
+        setSuppliers((prev) => prev.filter((s) => s.id !== id));
+        setJobs((prev) =>
+          prev.map((job) => ({
+            ...job,
+            supplierIds: job.supplierIds.filter((sId) => sId !== id),
+          }))
+        );
+        showToast(
+          "Supplier Permanently Deleted",
+          `"${target.name}" has been permanently purged from the system.`,
+          "error"
+        );
+        return true;
+      } catch (err: any) {
+        showToast("Delete Error", err.message || "Could not permanently delete supplier.", "error");
+        return false;
+      }
     },
     [suppliers, showToast]
   );
@@ -1286,30 +1336,69 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
 
   const getJobTotalInvoiceValue = useCallback(
     (jobId: string) => {
+      const job = jobs.find((j) => j.id === jobId);
+      if (job && typeof job.supplierInvoiceTotal === "number") {
+        return job.supplierInvoiceTotal;
+      }
+      const list = (job?.supplierInvoices || []).filter((inv: any) => inv.status !== "CANCELLED");
+      if (list.length > 0) {
+        return list.reduce((acc: number, curr: any) => acc + (Number(curr.totalAmount) || 0), 0);
+      }
       const jobInvs = invoices.filter((inv) => inv.jobId === jobId);
       return jobInvs.reduce((acc, curr) => acc + curr.totalValue, 0);
     },
-    [invoices]
+    [jobs, invoices]
   );
 
-  const totalJobsCount = jobs.length;
-  // Active suppliers count
-  const totalSuppliersCount = useMemo(
-    () => suppliers.filter((s) => !s.isDeleted).length,
-    [suppliers]
+  const getJobSupplierInvoices = useCallback(
+    (jobId: string) => {
+      const job = jobs.find((j) => j.id === jobId);
+      return (job?.supplierInvoices || []) as any[];
+    },
+    [jobs]
   );
-  const totalInvoicesCount = invoices.length;
+
+  const getJobSupplierInvoiceCount = useCallback(
+    (jobId: string) => {
+      const job = jobs.find((j) => j.id === jobId);
+      if (job && typeof job.supplierInvoiceCount === "number") {
+        return job.supplierInvoiceCount;
+      }
+      const list = (job?.supplierInvoices || []).filter((inv: any) => inv.status !== "CANCELLED");
+      return list.length;
+    },
+    [jobs]
+  );
+
+  const totalJobsCount = useMemo(() => {
+    if (dashboardStats) return dashboardStats.totalJobs;
+    return jobs.filter((j) => !j.isDeleted).length;
+  }, [dashboardStats, jobs]);
+
+  // Active suppliers count
+  const totalSuppliersCount = useMemo(() => {
+    if (dashboardStats) return dashboardStats.totalSuppliers;
+    return suppliers.filter((s) => !s.isDeleted).length;
+  }, [dashboardStats, suppliers]);
+
+  const totalInvoicesCount = useMemo(() => {
+    if (dashboardStats) return dashboardStats.totalSupplierInvoices;
+    return jobs.reduce((sum, j) => sum + (j.supplierInvoiceCount || 0), 0);
+  }, [dashboardStats, jobs]);
+
   const totalInvoiceValue = useMemo(() => {
-    return invoices.reduce((acc, curr) => acc + curr.totalValue, 0);
-  }, [invoices]);
+    if (dashboardStats) return dashboardStats.totalSupplierInvoiceAmount;
+    return jobs.reduce((sum, j) => sum + (Number(j.supplierInvoiceTotal) || 0), 0);
+  }, [dashboardStats, jobs]);
 
   const pendingApprovalsCount = useMemo(() => {
+    if (dashboardStats) return dashboardStats.pendingJobs;
     return jobs.filter((j) => {
       if (j.isDeleted) return false;
       const s = (j.status || "").toUpperCase();
       return s === "PENDING_APPROVAL" || s.includes("PENDING") || s === "DRAFT" || s.includes("REVIEW");
     }).length;
-  }, [jobs]);
+  }, [dashboardStats, jobs]);
 
   const value = useMemo(
     () => ({
@@ -1371,11 +1460,23 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       getJobSuppliers,
       getJobExcelFiles,
       getJobTotalInvoiceValue,
+      getJobSupplierInvoices,
+      getJobSupplierInvoiceCount,
       totalJobsCount,
       totalSuppliersCount,
       totalInvoicesCount,
       totalInvoiceValue,
       pendingApprovalsCount,
+      dashboardStats,
+      refreshDashboardStats: fetchDashboardStats,
+      isLoadingJobs,
+      isLoadingSuppliers,
+      isLoadingInvoices,
+      isLoadingUsers,
+      isLoadingAuditLogs,
+      isLoadingInitial,
+      refreshSuppliers: fetchDbSuppliers,
+      refreshInvoices: fetchDbInvoices,
     }),
     [
       currentRole,
@@ -1436,11 +1537,23 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       getJobSuppliers,
       getJobExcelFiles,
       getJobTotalInvoiceValue,
+      getJobSupplierInvoices,
+      getJobSupplierInvoiceCount,
       totalJobsCount,
       totalSuppliersCount,
       totalInvoicesCount,
       totalInvoiceValue,
       pendingApprovalsCount,
+      dashboardStats,
+      fetchDashboardStats,
+      isLoadingJobs,
+      isLoadingSuppliers,
+      isLoadingInvoices,
+      isLoadingUsers,
+      isLoadingAuditLogs,
+      isLoadingInitial,
+      fetchDbSuppliers,
+      fetchDbInvoices,
     ]
   );
 

@@ -19,12 +19,19 @@ import {
   ShieldCheck,
   ShieldAlert,
   CheckCircle,
+  TrendingUp,
+  TrendingDown,
+  Layers,
+  CheckCheck,
+  XCircle,
+  FileText,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { CreateJobModal } from "@/components/admin/modals/create-job-modal";
 import { RegisterSupplierModal } from "@/components/admin/modals/register-supplier-modal";
 import { BulkInvoiceUploadModal } from "@/components/admin/modals/bulk-invoice-upload-modal";
+import { DashboardSkeleton } from "@/components/ui/loading/dashboard-skeleton";
 import { formatCurrency } from "@/lib/financial";
 import { Job } from "@/types/admin";
 
@@ -39,8 +46,10 @@ export function DashboardView() {
     totalInvoicesCount,
     totalInvoiceValue,
     getJobTotalInvoiceValue,
+    dashboardStats,
     can,
     currentRole,
+    isLoadingInitial,
   } = useAdminData();
 
   // Modals state
@@ -48,10 +57,87 @@ export function DashboardView() {
   const [isRegisterSupplierOpen, setIsRegisterSupplierOpen] = useState(false);
   const [isUploadInvoiceOpen, setIsUploadInvoiceOpen] = useState(false);
 
-  // Formatted currency (Rs.)
-  const formattedTotal = formatCurrency(totalInvoiceValue, { showCurrencyPrefix: true });
+  // 10 Key Dashboard Metrics (backed by PostgreSQL aggregation & live jobs)
+  const stats = useMemo(() => {
+    const totalJobs = dashboardStats?.totalJobs ?? jobs.filter((j) => !j.isDeleted).length;
+    const pendingJobsCount =
+      dashboardStats?.pendingJobs ??
+      jobs.filter((j) => {
+        if (j.isDeleted) return false;
+        const s = (j.status || "").toUpperCase();
+        return s === "PENDING_APPROVAL" || s.includes("PENDING") || s === "DRAFT" || s.includes("REVIEW");
+      }).length;
+    const approvedJobsCount =
+      dashboardStats?.approvedJobs ??
+      jobs.filter((j) => {
+        if (j.isDeleted) return false;
+        const s = (j.status || "").toUpperCase();
+        return s === "APPROVED" || s === "ACTIVE" || s.includes("INVOIC");
+      }).length;
+    const rejectedJobsCount =
+      dashboardStats?.rejectedJobs ??
+      jobs.filter((j) => {
+        if (j.isDeleted) return false;
+        return (j.status || "").toUpperCase().includes("REJECT");
+      }).length;
 
-  // Pending Job Approvals calculation (100% database-backed)
+    const totalSuppliers = dashboardStats?.totalSuppliers ?? suppliers.filter((s) => !s.isDeleted).length;
+
+    const totalSupplierInvoices =
+      dashboardStats?.totalSupplierInvoices ??
+      jobs.reduce((sum, j) => sum + (j.supplierInvoiceCount || 0), 0);
+
+    const totalSupplierInvoiceAmount =
+      dashboardStats?.totalSupplierInvoiceAmount ??
+      jobs.reduce((sum, j) => sum + (Number(j.supplierInvoiceTotal) || 0), 0);
+
+    const jobsWithSupplierInvoices =
+      dashboardStats?.jobsWithSupplierInvoices ??
+      jobs.filter((j) => !j.isDeleted && (j.supplierInvoiceCount || 0) > 0).length;
+
+    const jobsWithoutSupplierInvoices =
+      dashboardStats?.jobsWithoutSupplierInvoices ??
+      Math.max(0, totalJobs - jobsWithSupplierInvoices);
+
+    const totalActualJobCosts =
+      dashboardStats?.totalActualJobCosts ?? totalSupplierInvoiceAmount;
+
+    const totalApprovedJobValue =
+      dashboardStats?.totalApprovedJobValue ??
+      jobs
+        .filter((j) => {
+          if (j.isDeleted) return false;
+          const s = (j.status || "").toUpperCase();
+          return s === "APPROVED" || s === "ACTIVE" || s.includes("INVOIC");
+        })
+        .reduce((sum, j) => sum + Number(j.grandTotal || j.totalCost || 0), 0);
+
+    const totalRecordedGrossProfit =
+      dashboardStats?.totalRecordedGrossProfit ?? (totalApprovedJobValue - totalActualJobCosts);
+
+    const profitMargin =
+      totalApprovedJobValue > 0
+        ? Number(((totalRecordedGrossProfit / totalApprovedJobValue) * 100).toFixed(1))
+        : 0;
+
+    return {
+      totalJobs,
+      pendingJobsCount,
+      approvedJobsCount,
+      rejectedJobsCount,
+      totalSuppliers,
+      totalSupplierInvoices,
+      totalSupplierInvoiceAmount,
+      jobsWithSupplierInvoices,
+      jobsWithoutSupplierInvoices,
+      totalActualJobCosts,
+      totalApprovedJobValue,
+      totalRecordedGrossProfit,
+      profitMargin,
+    };
+  }, [dashboardStats, jobs, suppliers]);
+
+  // Pending Job Approvals list
   const pendingJobs = useMemo(() => {
     return jobs.filter((j) => {
       if (j.isDeleted) return false;
@@ -59,10 +145,30 @@ export function DashboardView() {
       return s === "PENDING_APPROVAL" || s.includes("PENDING") || s === "DRAFT" || s.includes("REVIEW");
     });
   }, [jobs]);
-  const pendingApprovalsCount = pendingJobs.length;
+  const pendingApprovalsCount = stats.pendingJobsCount;
 
-  const recentJobs = jobs.slice(0, 5);
-  const recentInvoices = invoices.slice(0, 5);
+  const recentJobs = useMemo(() => jobs.filter((j) => !j.isDeleted).slice(0, 5), [jobs]);
+
+  // Recent Supplier Invoices (flattened from jobs)
+  const recentSupplierInvoices = useMemo(() => {
+    const list: any[] = [];
+    jobs.forEach((j) => {
+      (j.supplierInvoices || []).forEach((inv) => {
+        list.push({
+          ...inv,
+          jobId: j.id,
+          jobName: j.name,
+          jobCode: j.jobCode,
+        });
+      });
+    });
+    list.sort((a, b) => new Date(b.createdAt || b.invoiceDate).getTime() - new Date(a.createdAt || a.invoiceDate).getTime());
+    return list.slice(0, 5);
+  }, [jobs]);
+
+  if (isLoadingInitial) {
+    return <DashboardSkeleton cardCount={4} />;
+  }
 
   if (!can("dashboard", "view")) {
     return (
@@ -137,7 +243,7 @@ export function DashboardView() {
         </div>
       </div>
 
-      {/* 5 Clean Metric Summary Cards */}
+      {/* 5 Primary Executive Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {/* Total Jobs */}
         <div className="bg-white rounded-xl border border-slate-200 p-4 transition-all hover:border-slate-300">
@@ -147,8 +253,60 @@ export function DashboardView() {
               <Briefcase className="h-4 w-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900 mt-2">{totalJobsCount}</p>
-          <p className="text-[11px] text-slate-400 mt-1">Active business projects</p>
+          <p className="text-2xl font-bold text-slate-900 mt-2">{stats.totalJobs}</p>
+          <p className="text-[11px] text-slate-400 mt-1">
+            {stats.approvedJobsCount} Approved • {stats.pendingJobsCount} Pending
+          </p>
+        </div>
+
+        {/* Total Supplier Invoices */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4 transition-all hover:border-slate-300">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-500">Supplier Invoices</span>
+            <div className="p-2 rounded-lg bg-amber-50 text-amber-600">
+              <Receipt className="h-4 w-4" />
+            </div>
+          </div>
+          <p className="text-2xl font-bold text-slate-900 mt-2">{stats.totalSupplierInvoices}</p>
+          <p className="text-[11px] text-slate-400 mt-1">Active recorded bills</p>
+        </div>
+
+        {/* Total Supplier Invoice Amount */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4 transition-all hover:border-slate-300">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-500">Total Invoice Cost</span>
+            <div className="p-2 rounded-lg bg-indigo-50 text-indigo-600">
+              <DollarSign className="h-4 w-4" />
+            </div>
+          </div>
+          <p
+            className="text-xl font-bold text-slate-900 mt-2 truncate"
+            title={formatCurrency(stats.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
+          >
+            {formatCurrency(stats.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
+          </p>
+          <p className="text-[11px] text-slate-400 mt-1">Actual supplier costs</p>
+        </div>
+
+        {/* Recorded Gross Profit */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4 transition-all hover:border-slate-300">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-500">Gross Profit</span>
+            <div className={`p-2 rounded-lg ${stats.totalRecordedGrossProfit >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`}>
+              <TrendingUp className="h-4 w-4" />
+            </div>
+          </div>
+          <p
+            className={`text-xl font-bold mt-2 truncate ${
+              stats.totalRecordedGrossProfit >= 0 ? "text-emerald-600" : "text-rose-600"
+            }`}
+            title={formatCurrency(stats.totalRecordedGrossProfit, { showCurrencyPrefix: true })}
+          >
+            {formatCurrency(stats.totalRecordedGrossProfit, { showCurrencyPrefix: true })}
+          </p>
+          <p className="text-[11px] text-slate-400 mt-1">
+            {stats.profitMargin}% gross margin
+          </p>
         </div>
 
         {/* Total Suppliers */}
@@ -159,54 +317,91 @@ export function DashboardView() {
               <Users className="h-4 w-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900 mt-2">{totalSuppliersCount}</p>
-          <p className="text-[11px] text-slate-400 mt-1">Registered vendors</p>
+          <p className="text-2xl font-bold text-slate-900 mt-2">{stats.totalSuppliers}</p>
+          <p className="text-[11px] text-slate-400 mt-1">Active vendor partners</p>
         </div>
+      </div>
 
-        {/* Total Invoices */}
-        <div className="bg-white rounded-xl border border-slate-200 p-4 transition-all hover:border-slate-300">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500">Total Invoices</span>
-            <div className="p-2 rounded-lg bg-amber-50 text-amber-600">
-              <Receipt className="h-4 w-4" />
-            </div>
+      {/* Synchronized Operational & Financial Status Panel (Section 4) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        {/* Pending Jobs */}
+        <div className="bg-white rounded-lg border border-slate-200 p-3">
+          <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+            <span>Pending Jobs</span>
+            <Clock className="h-3.5 w-3.5 text-amber-500" />
           </div>
-          <p className="text-2xl font-bold text-slate-900 mt-2">{totalInvoicesCount}</p>
-          <p className="text-[11px] text-slate-400 mt-1">Recorded vouchers</p>
-        </div>
-
-        {/* Pending Approvals (Required) */}
-        <div className="bg-white rounded-xl border border-slate-200 p-4 transition-all hover:border-slate-300">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500">Pending Approvals</span>
-            <div className="p-2 rounded-lg bg-rose-50 text-rose-600">
-              <Clock className="h-4 w-4" />
-            </div>
-          </div>
-          <p className="text-2xl font-bold text-rose-600 mt-2">{pendingApprovalsCount}</p>
-          <div className="flex items-center justify-between mt-1">
-            <span className="text-[11px] text-slate-400">Needs review</span>
-            <Link
-              href="/admin/approvals"
-              className="text-[11px] font-semibold text-blue-600 hover:underline"
-            >
+          <div className="flex items-baseline justify-between mt-1.5">
+            <span className="text-lg font-bold text-amber-600">{stats.pendingJobsCount}</span>
+            <Link href="/admin/approvals" className="text-[10px] font-semibold text-blue-600 hover:underline">
               Review →
             </Link>
           </div>
         </div>
 
-        {/* Total Invoice Value */}
-        <div className="bg-white rounded-xl border border-slate-200 p-4 transition-all hover:border-slate-300 sm:col-span-2 lg:col-span-1">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500">Gross Value</span>
-            <div className="p-2 rounded-lg bg-indigo-50 text-indigo-600">
-              <DollarSign className="h-4 w-4" />
-            </div>
+        {/* Approved Jobs */}
+        <div className="bg-white rounded-lg border border-slate-200 p-3">
+          <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+            <span>Approved Jobs</span>
+            <CheckCheck className="h-3.5 w-3.5 text-emerald-600" />
           </div>
-          <p className="text-xl font-bold text-slate-900 mt-2 truncate" title={formattedTotal}>
-            {formattedTotal}
-          </p>
-          <p className="text-[11px] text-slate-400 mt-1">Total invoiced costs</p>
+          <div className="flex items-baseline justify-between mt-1.5">
+            <span className="text-lg font-bold text-slate-900">{stats.approvedJobsCount}</span>
+            <span className="text-[10px] text-slate-400">Authorized</span>
+          </div>
+        </div>
+
+        {/* Rejected Jobs */}
+        <div className="bg-white rounded-lg border border-slate-200 p-3">
+          <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+            <span>Rejected Jobs</span>
+            <XCircle className="h-3.5 w-3.5 text-rose-500" />
+          </div>
+          <div className="flex items-baseline justify-between mt-1.5">
+            <span className="text-lg font-bold text-slate-900">{stats.rejectedJobsCount}</span>
+            <span className="text-[10px] text-slate-400">Declined</span>
+          </div>
+        </div>
+
+        {/* Jobs With Supplier Invoices */}
+        <div className="bg-white rounded-lg border border-slate-200 p-3">
+          <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+            <span>With Invoices</span>
+            <Receipt className="h-3.5 w-3.5 text-blue-600" />
+          </div>
+          <div className="flex items-baseline justify-between mt-1.5">
+            <span className="text-lg font-bold text-slate-900">{stats.jobsWithSupplierInvoices}</span>
+            <span className="text-[10px] text-slate-400">
+              {stats.totalJobs > 0 ? `${Math.round((stats.jobsWithSupplierInvoices / stats.totalJobs) * 100)}%` : "0%"}
+            </span>
+          </div>
+        </div>
+
+        {/* Jobs Without Supplier Invoices */}
+        <div className="bg-white rounded-lg border border-slate-200 p-3">
+          <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+            <span>Without Invoices</span>
+            <Layers className="h-3.5 w-3.5 text-slate-400" />
+          </div>
+          <div className="flex items-baseline justify-between mt-1.5">
+            <span className="text-lg font-bold text-slate-900">{stats.jobsWithoutSupplierInvoices}</span>
+            <span className="text-[10px] text-slate-400">Pending Bills</span>
+          </div>
+        </div>
+
+        {/* Total Actual Job Costs */}
+        <div className="bg-white rounded-lg border border-slate-200 p-3">
+          <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+            <span>Total Actual Cost</span>
+            <DollarSign className="h-3.5 w-3.5 text-indigo-600" />
+          </div>
+          <div className="flex items-baseline justify-between mt-1.5">
+            <span
+              className="text-sm font-bold text-slate-900 truncate"
+              title={formatCurrency(stats.totalActualJobCosts, { showCurrencyPrefix: true })}
+            >
+              {formatCurrency(stats.totalActualJobCosts, { showCurrencyPrefix: true })}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -297,7 +492,7 @@ export function DashboardView() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-medium text-slate-800">
-                  Invoice <span className="font-semibold text-slate-900">{recentInvoices[0]?.invoiceName || "INV-001"}</span> recorded
+                  Invoice <span className="font-semibold text-slate-900">{recentSupplierInvoices[0]?.invoiceNumber || "INV-001"}</span> recorded
                 </p>
                 <p className="text-[10px] text-slate-400 mt-0.5">10 minutes ago • Finance Dept</p>
               </div>
@@ -380,7 +575,7 @@ export function DashboardView() {
                   </tr>
                 ) : (
                   recentJobs.map((job) => {
-                  const val = getJobTotalInvoiceValue(job.id);
+                  const val = typeof job.supplierInvoiceTotal === "number" ? job.supplierInvoiceTotal : getJobTotalInvoiceValue(job.id);
                   return (
                     <tr key={job.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-5 py-3">
@@ -390,6 +585,11 @@ export function DashboardView() {
                         >
                           {job.name}
                         </Link>
+                        {job.jobCode && (
+                          <span className="text-[10px] font-mono text-blue-600 ml-1.5 font-medium">
+                            {job.jobCode}
+                          </span>
+                        )}
                         {job.description && (
                           <p className="text-[11px] text-slate-400 truncate max-w-sm mt-0.5">
                             {job.description}
@@ -431,8 +631,8 @@ export function DashboardView() {
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-50/50">
             <div>
-              <h2 className="text-sm font-bold text-slate-900">Recent Invoices</h2>
-              <p className="text-[11px] text-slate-500">Latest uploaded supplier invoices</p>
+              <h2 className="text-sm font-bold text-slate-900">Recent Supplier Invoices</h2>
+              <p className="text-[11px] text-slate-500">Latest recorded supplier vouchers</p>
             </div>
             <Link
               href="/admin/invoices"
@@ -447,7 +647,7 @@ export function DashboardView() {
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
                 <tr>
-                  <th className="px-5 py-3">Invoice Name</th>
+                  <th className="px-5 py-3">Invoice Ref</th>
                   <th className="px-4 py-3">Job</th>
                   <th className="px-4 py-3">Supplier</th>
                   <th className="px-4 py-3">Date</th>
@@ -456,44 +656,52 @@ export function DashboardView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {recentInvoices.map((inv) => {
-                  const job = jobs.find((j) => j.id === inv.jobId);
-                  const supplier = suppliers.find((s) => s.id === inv.supplierId);
-
-                  return (
+                {recentSupplierInvoices.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-8 text-center text-xs text-slate-400">
+                      No supplier invoices recorded yet. Click &quot;Upload Invoices&quot; or visit the Invoices section to record your first supplier bill.
+                    </td>
+                  </tr>
+                ) : (
+                  recentSupplierInvoices.map((inv) => (
                     <tr key={inv.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-5 py-3">
-                        <span className="font-semibold text-slate-900 block">
-                          {inv.invoiceName}
+                        <span className="font-semibold text-slate-900 block font-mono">
+                          {inv.invoiceNumber}
                         </span>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {inv.fileName}
+                        <span className="text-[10px] text-slate-400">
+                          {inv.attachmentsCount || (inv.attachments || []).length} attachment(s)
                         </span>
                       </td>
                       <td className="px-4 py-3 text-slate-700">
-                        {job ? (
-                          <Link href={`/admin/jobs/${job.id}`} className="hover:text-blue-600 font-medium">
-                            {job.name}
+                        {inv.jobId ? (
+                          <Link href={`/admin/jobs/${inv.jobId}`} className="hover:text-blue-600 font-medium">
+                            {inv.jobName}
                           </Link>
                         ) : (
                           "—"
                         )}
+                        {inv.jobCode && (
+                          <span className="text-[10px] text-slate-400 block font-mono">
+                            {inv.jobCode}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-700 font-medium">
-                        {supplier ? supplier.name : "—"}
+                        {inv.supplierName || "—"}
                       </td>
                       <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
-                        {inv.invoiceDate}
+                        {inv.invoiceDate || "—"}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-slate-900 whitespace-nowrap">
-                        {formatCurrency(inv.totalValue, { showCurrencyPrefix: true })}
+                        {formatCurrency(inv.totalAmount || 0, { showCurrencyPrefix: true })}
                       </td>
                       <td className="px-5 py-3 text-center">
                         <StatusBadge status={inv.status} />
                       </td>
                     </tr>
-                  );
-                })}
+                  ))
+                )}
               </tbody>
             </table>
           </div>

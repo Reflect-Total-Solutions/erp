@@ -23,12 +23,15 @@ import { useAdminData } from "@/context/admin-data-context";
 import { formatCurrency } from "@/lib/financial";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
+import { DashboardSkeleton } from "@/components/ui/loading/dashboard-skeleton";
+import { TableSkeleton } from "@/components/ui/loading/table-skeleton";
 import { JobProfitLossSummary } from "@/types/admin";
 
 export function ProfitLossView() {
   const { can, currentRole } = useAdminData();
 
   const [loading, setLoading] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
   const [jobs, setJobs] = useState<JobProfitLossSummary[]>([]);
   const [summary, setSummary] = useState({
     totalJobsCount: 0,
@@ -101,48 +104,53 @@ export function ProfitLossView() {
   }, [filteredJobs, currentPage, pageSize]);
 
   // Export to CSV
-  const handleExportCsv = () => {
-    if (jobs.length === 0) return;
-    const headers = [
-      "Job Number",
-      "Job Title",
-      "Client Name",
-      "Job Date",
-      "Approved Quotation Value",
-      "Recorded Supplier Expenses",
-      "Total Actual Cost",
-      "Gross Profit",
-      "Profit Margin (%)",
-      "Financial Status",
-    ];
+  const handleExportCsv = async () => {
+    if (jobs.length === 0 || isExporting) return;
+    setIsExporting(true);
+    try {
+      const headers = [
+        "Job Number",
+        "Job Title",
+        "Client Name",
+        "Job Date",
+        "Approved Quotation Value",
+        "Recorded Supplier Expenses",
+        "Total Actual Cost",
+        "Gross Profit",
+        "Profit Margin (%)",
+        "Financial Status",
+      ];
 
-    const rowsData = jobs.map((j) => [
-      `"${j.jobCode}"`,
-      `"${j.jobName.replace(/"/g, '""')}"`,
-      `"${j.clientName.replace(/"/g, '""')}"`,
-      `"${j.jobDate}"`,
-      j.approvedJobValue.toFixed(2),
-      j.totalSupplierCost.toFixed(2),
-      j.totalActualCost.toFixed(2),
-      j.grossProfit.toFixed(2),
-      `${j.profitMargin}%`,
-      `"${j.financialStatus}"`,
-    ]);
+      const rowsData = jobs.map((j) => [
+        `"${j.jobCode}"`,
+        `"${j.jobName.replace(/"/g, '""')}"`,
+        `"${j.clientName.replace(/"/g, '""')}"`,
+        `"${j.jobDate}"`,
+        j.approvedJobValue.toFixed(2),
+        j.totalSupplierCost.toFixed(2),
+        j.totalActualCost.toFixed(2),
+        j.grossProfit.toFixed(2),
+        `${j.profitMargin}%`,
+        `"${j.financialStatus}"`,
+      ]);
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [headers.join(","), ...rowsData.map((e) => e.join(","))].join("\n");
+      const csvContent =
+        "data:text/csv;charset=utf-8," +
+        [headers.join(","), ...rowsData.map((e) => e.join(","))].join("\n");
 
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute(
-      "download",
-      `Job_Profit_Loss_Report_${new Date().toISOString().split("T")[0]}.csv`
-    );
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute(
+        "download",
+        `Job_Profit_Loss_Report_${new Date().toISOString().split("T")[0]}.csv`
+      );
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } finally {
+      setTimeout(() => setIsExporting(false), 500);
+    }
   };
 
   if (!can("dashboard", "view")) {
@@ -173,11 +181,20 @@ export function ProfitLossView() {
         <button
           type="button"
           onClick={handleExportCsv}
-          disabled={jobs.length === 0}
+          disabled={jobs.length === 0 || isExporting}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs self-start sm:self-auto disabled:opacity-50"
         >
-          <Download className="h-3.5 w-3.5 text-slate-500" />
-          <span>Export P&L Report</span>
+          {isExporting ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+              <span>Preparing CSV...</span>
+            </>
+          ) : (
+            <>
+              <Download className="h-3.5 w-3.5 text-slate-500" />
+              <span>Export P&L Report</span>
+            </>
+          )}
         </button>
       </div>
 
@@ -195,7 +212,10 @@ export function ProfitLossView() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {loading ? (
+        <DashboardSkeleton cardCount={4} />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Quoted Value */}
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
           <div>
@@ -264,6 +284,7 @@ export function ProfitLossView() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Filter Toolbar */}
       <div className="bg-white rounded-xl border border-slate-200 p-3 shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -329,6 +350,7 @@ export function ProfitLossView() {
         <div className="w-full sm:w-72">
           <SearchField
             value={searchTerm}
+            isLoading={loading}
             onChange={(val) => {
               setSearchTerm(val);
               setCurrentPage(1);
@@ -340,40 +362,37 @@ export function ProfitLossView() {
 
       {/* Main Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
-                <th className="py-3 px-3.5">Job Info</th>
-                <th className="py-3 px-3.5">Client & Date</th>
-                <th className="py-3 px-3.5 text-right">Approved Value</th>
-                <th className="py-3 px-3.5 text-right">Supplier Cost</th>
-                <th className="py-3 px-3.5 text-right">Total Actual Cost</th>
-                <th className="py-3 px-3.5 text-right">Gross Profit</th>
-                <th className="py-3 px-3.5 text-center">Profit Margin</th>
-                <th className="py-3 px-3.5 text-center">Status</th>
-                <th className="py-3 px-3.5 text-right">Details</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
-                    <Loader2 className="h-6 w-6 animate-spin mx-auto text-blue-600 mb-2" />
-                    <span>Calculating Job Profit & Loss...</span>
-                  </td>
-                </tr>
-              ) : paginatedJobs.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
-                    <Briefcase className="h-10 w-10 text-slate-300 stroke-[1.5] mx-auto mb-2" />
-                    <p className="text-sm font-semibold text-slate-600">No Job Financial Records Found</p>
-                    <p className="text-xs text-slate-400 mt-1">
-                      {searchTerm ? "No jobs match your search criteria." : "No jobs found for the selected filter."}
-                    </p>
-                  </td>
-                </tr>
-              ) : (
+        {loading && jobs.length === 0 ? (
+          <TableSkeleton rows={6} columns={9} />
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
+                    <th className="py-3 px-3.5">Job Info</th>
+                    <th className="py-3 px-3.5">Client & Date</th>
+                    <th className="py-3 px-3.5 text-right">Approved Value</th>
+                    <th className="py-3 px-3.5 text-right">Supplier Cost</th>
+                    <th className="py-3 px-3.5 text-right">Total Actual Cost</th>
+                    <th className="py-3 px-3.5 text-right">Gross Profit</th>
+                    <th className="py-3 px-3.5 text-center">Profit Margin</th>
+                    <th className="py-3 px-3.5 text-center">Status</th>
+                    <th className="py-3 px-3.5 text-right">Details</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {paginatedJobs.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-12 text-center text-slate-400">
+                        <Briefcase className="h-10 w-10 text-slate-300 stroke-[1.5] mx-auto mb-2" />
+                        <p className="text-sm font-semibold text-slate-600">No Job Financial Records Found</p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          {searchTerm ? "No jobs match your search criteria." : "No jobs found for the selected filter."}
+                        </p>
+                      </td>
+                    </tr>
+                  ) : (
                 paginatedJobs.map((j) => (
                   <tr key={j.jobId} className="hover:bg-slate-50/70 transition-colors">
                     {/* Job Info */}
@@ -489,6 +508,8 @@ export function ProfitLossView() {
             }}
           />
         </div>
+        </>
+        )}
       </div>
     </div>
   );

@@ -133,12 +133,16 @@ export function EditSupplierInvoiceModal({
 
   // UI / Preview / Submission state
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStageText, setUploadStageText] = useState("");
   const [submitError, setSubmitError] = useState("");
   const [previewAttachment, setPreviewAttachment] = useState<PreviewableAttachment | null>(null);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
 
   const supplierSearchTimeout = useRef<NodeJS.Timeout | null>(null);
   const jobSearchTimeout = useRef<NodeJS.Timeout | null>(null);
+  const supplierSearchSeq = useRef(0);
+  const jobSearchSeq = useRef(0);
 
   // 1. Fetch full invoice details on open
   useEffect(() => {
@@ -230,24 +234,29 @@ export function EditSupplierInvoiceModal({
 
   // Search Suppliers
   const searchSuppliers = async (query: string) => {
+    const currentSeq = ++supplierSearchSeq.current;
     setIsLoadingSuppliers(true);
     let apiSuccess = false;
     try {
       const res = await fetch(`/api/suppliers/search?search=${encodeURIComponent(query)}`);
       if (res.ok) {
         const json = await res.json();
-        if (json.success && Array.isArray(json.data)) {
+        if (currentSeq === supplierSearchSeq.current && json.success && Array.isArray(json.data)) {
           setSuppliersList(json.data);
           apiSuccess = true;
         }
       }
     } catch (err) {
-      console.error("searchSuppliers error:", err);
+      if (currentSeq === supplierSearchSeq.current) {
+        console.error("searchSuppliers error:", err);
+      }
     } finally {
-      setIsLoadingSuppliers(false);
+      if (currentSeq === supplierSearchSeq.current) {
+        setIsLoadingSuppliers(false);
+      }
     }
 
-    if (!apiSuccess && contextSuppliers && contextSuppliers.length > 0) {
+    if (!apiSuccess && currentSeq === supplierSearchSeq.current && contextSuppliers && contextSuppliers.length > 0) {
       const filtered = contextSuppliers
         .filter((s) => !s.isDeleted && !s.deletedAt)
         .filter((s) => {
@@ -273,19 +282,24 @@ export function EditSupplierInvoiceModal({
 
   // Search Approved Jobs
   const searchApprovedJobs = async (query: string) => {
+    const currentSeq = ++jobSearchSeq.current;
     setIsLoadingJobs(true);
     try {
       const res = await fetch(`/api/jobs/approved?search=${encodeURIComponent(query)}`);
       if (res.ok) {
         const json = await res.json();
-        if (json.success && Array.isArray(json.data)) {
+        if (currentSeq === jobSearchSeq.current && json.success && Array.isArray(json.data)) {
           setApprovedJobsList(json.data);
         }
       }
     } catch (err) {
-      console.error("searchApprovedJobs error:", err);
+      if (currentSeq === jobSearchSeq.current) {
+        console.error("searchApprovedJobs error:", err);
+      }
     } finally {
-      setIsLoadingJobs(false);
+      if (currentSeq === jobSearchSeq.current) {
+        setIsLoadingJobs(false);
+      }
     }
   };
 
@@ -519,7 +533,15 @@ export function EditSupplierInvoiceModal({
       }
     }
 
+    const totalNewAttachments = rows.reduce((acc, r) => acc + (r.newAttachments?.length || 0), 0);
     setIsSubmitting(true);
+    setUploadProgress(0);
+    setUploadStageText(
+      totalNewAttachments > 0
+        ? "1. Uploading modified attachments to Supabase Storage..."
+        : "1. Preparing updated invoice data..."
+    );
+
     try {
       const formData = new FormData();
       formData.append("supplierId", selectedSupplier.id);
@@ -545,15 +567,47 @@ export function EditSupplierInvoiceModal({
         });
       });
 
-      const res = await fetch(`/api/supplier-invoices/${currentInvoice.id}`, {
-        method: "PUT",
-        body: formData,
-      });
+      // Track byte progress with XMLHttpRequest
+      const json: any = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", `/api/supplier-invoices/${currentInvoice.id}`);
 
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || "Failed to update supplier invoice.");
-      }
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const pct = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(pct);
+            if (pct < 100) {
+              setUploadStageText(
+                totalNewAttachments > 0
+                  ? `1. Uploading attachments (${pct}%)...`
+                  : `1. Sending update payload (${pct}%)...`
+              );
+            } else {
+              setUploadStageText("2. Updating invoice line items & storage references...");
+            }
+          }
+        };
+
+        xhr.onload = () => {
+          setUploadStageText("3. Recalculating Job Cost, Remaining Budget & Profit...");
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (xhr.status >= 200 && xhr.status < 300 && data.success) {
+              resolve(data);
+            } else {
+              reject(new Error(data.error || "Failed to update supplier invoice."));
+            }
+          } catch {
+            reject(new Error("Invalid response format received from server."));
+          }
+        };
+
+        xhr.onerror = () => {
+          reject(new Error("Network connection error during invoice update."));
+        };
+
+        xhr.send(formData);
+      });
 
       // Trigger background jobs refresh to keep cost overview in sync
       if (refreshJobs) {
@@ -567,6 +621,8 @@ export function EditSupplierInvoiceModal({
       setSubmitError(err?.message || "An unexpected error occurred while saving the invoice.");
     } finally {
       setIsSubmitting(false);
+      setUploadProgress(0);
+      setUploadStageText("");
     }
   };
 
@@ -1123,6 +1179,24 @@ export function EditSupplierInvoiceModal({
             </div>
           )}
 
+          {isSubmitting && (
+            <div className="p-3 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2 animate-in fade-in">
+              <div className="flex items-center justify-between text-xs font-semibold text-blue-900">
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+                  <span>{uploadStageText || "Saving invoice changes..."}</span>
+                </span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-blue-200/60 overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 transition-all duration-300 rounded-full"
+                  style={{ width: `${Math.max(5, uploadProgress)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Modal Footer Controls */}
           <div className="flex items-center justify-between pt-4 border-t border-slate-200">
             <div className="text-[11px] text-slate-500">
@@ -1149,7 +1223,7 @@ export function EditSupplierInvoiceModal({
                 {isSubmitting ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Saving & Recalculating...</span>
+                    <span>{uploadStageText ? uploadStageText.split(" (")[0] : "Saving & Recalculating..."}</span>
                   </>
                 ) : (
                   <>
