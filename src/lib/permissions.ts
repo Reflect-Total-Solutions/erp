@@ -4,79 +4,505 @@ export type ERPModule =
   | "dashboard"
   | "jobs"
   | "suppliers"
-  | "invoices"
   | "approvals"
-  | "auditController"
+  | "supplierInvoices"
+  | "invoices"
+  | "profitLoss"
   | "accessControl"
-  | "excelUploads";
+  | "auditController";
 
-export type Action = "view" | "create" | "edit" | "delete" | "approve";
+export type ERPAction =
+  | "view"
+  | "viewOwn"
+  | "viewTeam"
+  | "viewAll"
+  | "create"
+  | "edit"
+  | "delete"
+  | "restore"
+  | "permanentDelete"
+  | "download"
+  | "bulkDownload"
+  | "export"
+  | "print"
+  | "approve"
+  | "reject"
+  | "moveToPending"
+  | "cancel"
+  | "manageAttachments"
+  | "viewFinancials"
+  | "managePermissions"
+  | "viewHistory";
 
-export interface ModuleActions {
-  view: boolean;
-  create: boolean;
-  edit: boolean;
-  delete: boolean;
-  approve: boolean;
+// Backwards-compatible action alias
+export type Action = ERPAction;
+
+export interface ModuleActionDef {
+  key: ERPAction;
+  label: string;
+  description: string;
+  isDangerous?: boolean;
 }
 
-export type PermissionsPolicy = Record<ERPModule, ModuleActions>;
+export interface ModuleDef {
+  key: ERPModule;
+  name: string;
+  category: string;
+  description: string;
+  actions: ModuleActionDef[];
+}
+
+export const PERMISSION_MODULES: ModuleDef[] = [
+  {
+    key: "dashboard",
+    name: "Dashboard",
+    category: "Overview",
+    description: "Main executive dashboard, overall company stats, and performance indicators.",
+    actions: [
+      { key: "view", label: "View Dashboard", description: "Access the overview dashboard and main KPIs" },
+      { key: "viewOwn", label: "View Own Statistics", description: "View dashboard statistics for records created by the logged-in user" },
+      { key: "viewTeam", label: "View Team Statistics", description: "View team-wide and employee-wise performance statistics" },
+      { key: "viewAll", label: "View All Statistics", description: "View organization-wide complete dashboard KPIs and metrics" },
+      { key: "viewFinancials", label: "View Financial Metrics", description: "View approved job value, actual costs, and recorded profit overview", isDangerous: true },
+      { key: "export", label: "Export Dashboard Summary", description: "Export dashboard summary metrics" },
+    ],
+  },
+  {
+    key: "jobs",
+    name: "Job Management",
+    category: "Operations",
+    description: "Project management, quotation parsing, cost breakdowns, and Excel bulk uploads.",
+    actions: [
+      { key: "view", label: "View Jobs", description: "Access the Job Management module" },
+      { key: "viewOwn", label: "View Own Jobs", description: "View only jobs created by the logged-in user" },
+      { key: "viewTeam", label: "View Team Jobs", description: "View jobs created by team members and subordinates" },
+      { key: "viewAll", label: "View All Jobs", description: "View all jobs across the entire organization" },
+      { key: "create", label: "Create Jobs", description: "Create new jobs and bulk upload quotation Excel files" },
+      { key: "edit", label: "Edit Jobs", description: "Modify job metadata, descriptions, and line items" },
+      { key: "delete", label: "Delete Jobs (Move to Trash)", description: "Move jobs to Trash (soft delete)", isDangerous: true },
+      { key: "restore", label: "Restore Jobs", description: "Restore soft-deleted jobs from Trash" },
+      { key: "permanentDelete", label: "Permanently Delete Jobs", description: "Permanently purge eligible jobs and release Excel file hashes", isDangerous: true },
+      { key: "download", label: "Download Original Excel", description: "Download individual job quotation Excel files" },
+      { key: "bulkDownload", label: "Bulk Download Documents", description: "Download all job quotation documents as a ZIP archive" },
+      { key: "export", label: "Export Jobs", description: "Export job lists and detailed cost reports to CSV/Excel" },
+      { key: "viewFinancials", label: "View Job Costs", description: "Inspect detailed production cost breakdown, rates, and supplier totals", isDangerous: true },
+    ],
+  },
+  {
+    key: "suppliers",
+    name: "Supplier Management",
+    category: "Procurement",
+    description: "Supplier profiles, contact details, assigned jobs, and vendor management.",
+    actions: [
+      { key: "view", label: "View Suppliers", description: "Browse supplier list and view company/contact details" },
+      { key: "viewOwn", label: "View Own Suppliers", description: "View suppliers created by the logged-in user" },
+      { key: "viewTeam", label: "View Team Suppliers", description: "View suppliers created by team members" },
+      { key: "viewAll", label: "View All Suppliers", description: "View master supplier directory across all teams" },
+      { key: "create", label: "Create Suppliers", description: "Register new vendor and supplier profiles" },
+      { key: "edit", label: "Edit Suppliers", description: "Update supplier details, phone, email, and address" },
+      { key: "delete", label: "Delete Suppliers (Move to Trash)", description: "Move supplier profiles to Trash", isDangerous: true },
+      { key: "restore", label: "Restore Suppliers", description: "Restore deleted supplier profiles from Trash" },
+      { key: "permanentDelete", label: "Permanently Delete Suppliers", description: "Permanently purge supplier records from the system", isDangerous: true },
+      { key: "download", label: "Download Supplier Information", description: "Download individual supplier records" },
+      { key: "export", label: "Export Suppliers", description: "Export supplier lists to CSV" },
+    ],
+  },
+  {
+    key: "approvals",
+    name: "Approval Management",
+    category: "Operations",
+    description: "Management approval workflow for quotation budgets and project sign-offs.",
+    actions: [
+      { key: "view", label: "View Pending Jobs", description: "Review quotation jobs waiting for executive approval" },
+      { key: "viewOwn", label: "View Own Job Approval Status", description: "Review approval status and decision history for own submitted jobs" },
+      { key: "viewTeam", label: "View Team Pending Jobs", description: "Review approval requests submitted by team members / subordinates" },
+      { key: "viewAll", label: "View All Pending Jobs", description: "Review all pending quotation jobs company-wide" },
+      { key: "approve", label: "Approve Jobs", description: "Sign off and officially approve quotation jobs for production", isDangerous: true },
+      { key: "reject", label: "Reject Jobs", description: "Reject quotation jobs and require corrections", isDangerous: true },
+      { key: "moveToPending", label: "Move to Pending", description: "Reset eligible jobs back to pending approval (if unlocked)", isDangerous: true },
+      { key: "viewHistory", label: "View Approval History", description: "Inspect historical audit log of approval and rejection decisions" },
+    ],
+  },
+  {
+    key: "supplierInvoices",
+    name: "Supplier Invoice Management",
+    category: "Financials",
+    description: "Supplier invoices, multiple file attachments (PDF/Word/Images), and job cost synchronization.",
+    actions: [
+      { key: "view", label: "View Invoices", description: "Browse supplier invoices and view line item breakdowns" },
+      { key: "viewOwn", label: "View Own Invoices", description: "View only supplier invoices created by the logged-in user" },
+      { key: "viewTeam", label: "View Team Invoices", description: "View supplier invoices created by team members / subordinates" },
+      { key: "viewAll", label: "View All Invoices", description: "View all supplier invoices across the entire organization" },
+      { key: "create", label: "Create Invoices", description: "Upload new supplier invoices and update Job actual costs" },
+      { key: "edit", label: "Edit Invoices", description: "Modify invoice rows, amounts, descriptions, and attachments" },
+      { key: "cancel", label: "Cancel Invoices", description: "Cancel recorded invoices with mandatory audit reason", isDangerous: true },
+      { key: "delete", label: "Delete Invoices", description: "Move supplier invoices to Trash", isDangerous: true },
+      { key: "download", label: "Download Attachments", description: "View and download individual invoice PDF/Word/Image attachments" },
+      { key: "bulkDownload", label: "Bulk Download Attachments", description: "Bulk download all invoice attachments for a Job as a ZIP archive" },
+      { key: "export", label: "Export Invoice Reports", description: "Export supplier invoice breakdown reports to CSV/Excel" },
+    ],
+  },
+  {
+    key: "profitLoss",
+    name: "Profit & Loss",
+    category: "Financials",
+    description: "Comprehensive financial reporting, approved value vs actual cost, and net margins.",
+    actions: [
+      { key: "view", label: "View Profit & Loss", description: "Access the company P&L dashboard and performance charts" },
+      { key: "viewOwn", label: "View Own Job Financial Data", description: "View financial reports for own created jobs" },
+      { key: "viewTeam", label: "View Team Financial Data", description: "View financial reports for team members' jobs" },
+      { key: "viewAll", label: "View All Financial Data", description: "View company-wide financial reports and margins" },
+      { key: "viewFinancials", label: "View Job Financial Details", description: "Examine detailed job profit margins, cost variance, and remaining budget", isDangerous: true },
+      { key: "download", label: "Download Financial Reports", description: "Download formatted financial statements" },
+      { key: "export", label: "Export Financial Reports", description: "Export profit and loss line items to CSV/Excel" },
+    ],
+  },
+  {
+    key: "accessControl",
+    name: "Access Controller",
+    category: "Administration",
+    description: "System administration, user account management, RBAC, and granular permissions.",
+    actions: [
+      { key: "view", label: "View Users", description: "Browse registered user accounts, roles, and status" },
+      { key: "create", label: "Create Users", description: "Create and provision new employee and supervisor accounts" },
+      { key: "edit", label: "Edit Users", description: "Modify user profile information, job title, and role" },
+      { key: "delete", label: "Disable / Delete Users", description: "Suspend user accounts or move to Trash", isDangerous: true },
+      { key: "managePermissions", label: "Manage Permissions", description: "Assign, customize, and revoke granular module permissions", isDangerous: true },
+    ],
+  },
+  {
+    key: "invoices",
+    name: "Customer Billing",
+    category: "Financials",
+    description: "Client billing invoices, revisions, PDF generations, and customer receivables.",
+    actions: [
+      { key: "view", label: "View Client Invoices", description: "View generated customer invoices and revision history" },
+      { key: "viewOwn", label: "View Own Client Invoices", description: "View client invoices generated for own jobs" },
+      { key: "viewTeam", label: "View Team Client Invoices", description: "View client invoices generated for team jobs" },
+      { key: "viewAll", label: "View All Client Invoices", description: "View all client invoices across the organization" },
+      { key: "create", label: "Generate Client Invoices", description: "Generate formal customer billing invoices for approved jobs" },
+      { key: "edit", label: "Regenerate Invoices", description: "Regenerate client invoices with version increment and audit snapshot" },
+      { key: "delete", label: "Delete Invoices", description: "Cancel or move client invoices to Trash", isDangerous: true },
+      { key: "download", label: "Download Invoice PDF", description: "Download official PDF copies of customer invoices" },
+      { key: "export", label: "Export Billing Data", description: "Export client billing summaries to CSV" },
+    ],
+  },
+];
+
+export type ModulePermissions = Partial<Record<ERPAction, boolean>>;
+export type PermissionsPolicy = Partial<Record<ERPModule, ModulePermissions>>;
+
+// ─── Default Role Policies ───────────────────────────────────────────────────
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
   admin: {
-    dashboard: { view: true, create: true, edit: true, delete: true, approve: true },
-    jobs: { view: true, create: true, edit: true, delete: true, approve: true },
-    suppliers: { view: true, create: true, edit: true, delete: true, approve: true },
-    invoices: { view: true, create: true, edit: true, delete: true, approve: true },
-    approvals: { view: true, create: true, edit: true, delete: true, approve: true },
-    auditController: { view: true, create: true, edit: true, delete: true, approve: true },
-    accessControl: { view: true, create: true, edit: true, delete: true, approve: true },
-    excelUploads: { view: true, create: true, edit: true, delete: true, approve: true },
+    dashboard: { view: true, viewOwn: true, viewTeam: true, viewAll: true, viewFinancials: true, export: true },
+    jobs: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      create: true,
+      edit: true,
+      delete: true,
+      restore: true,
+      permanentDelete: true,
+      download: true,
+      bulkDownload: true,
+      export: true,
+      viewFinancials: true,
+    },
+    suppliers: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      create: true,
+      edit: true,
+      delete: true,
+      restore: true,
+      permanentDelete: true,
+      download: true,
+      export: true,
+    },
+    approvals: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      approve: true,
+      reject: true,
+      moveToPending: true,
+      viewHistory: true,
+    },
+    supplierInvoices: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      create: true,
+      edit: true,
+      cancel: true,
+      delete: true,
+      download: true,
+      bulkDownload: true,
+      export: true,
+    },
+    invoices: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      create: true,
+      edit: true,
+      delete: true,
+      download: true,
+      export: true,
+    },
+    profitLoss: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      viewFinancials: true,
+      download: true,
+      export: true,
+    },
+    accessControl: {
+      view: true,
+      create: true,
+      edit: true,
+      delete: true,
+      managePermissions: true,
+    },
+    auditController: {
+      view: true,
+      export: true,
+    },
   },
   supervisor: {
-    dashboard: { view: true, create: false, edit: false, delete: false, approve: true },
-    jobs: { view: true, create: true, edit: true, delete: false, approve: true },
-    suppliers: { view: true, create: true, edit: true, delete: false, approve: false },
-    invoices: { view: true, create: true, edit: true, delete: false, approve: true },
-    approvals: { view: true, create: false, edit: false, delete: false, approve: true },
-    auditController: { view: false, create: false, edit: false, delete: false, approve: false },
-    accessControl: { view: false, create: false, edit: false, delete: false, approve: false },
-    excelUploads: { view: true, create: true, edit: true, delete: false, approve: true },
+    dashboard: { view: true, viewOwn: true, viewTeam: true, viewAll: false, viewFinancials: true, export: true },
+    jobs: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: false,
+      create: true,
+      edit: true,
+      delete: true,
+      restore: true,
+      permanentDelete: false,
+      download: true,
+      bulkDownload: true,
+      export: true,
+      viewFinancials: true,
+    },
+    suppliers: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      create: true,
+      edit: true,
+      delete: false,
+      restore: false,
+      permanentDelete: false,
+      download: true,
+      export: true,
+    },
+    approvals: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: false,
+      approve: true,
+      reject: true,
+      moveToPending: false,
+      viewHistory: true,
+    },
+    supplierInvoices: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: false,
+      create: true,
+      edit: true,
+      cancel: false,
+      delete: false,
+      download: true,
+      bulkDownload: true,
+      export: true,
+    },
+    invoices: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: false,
+      create: true,
+      edit: true,
+      delete: false,
+      download: true,
+      export: true,
+    },
+    profitLoss: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: false,
+      viewFinancials: true,
+      download: true,
+      export: true,
+    },
+    accessControl: {
+      view: true,
+      create: false,
+      edit: false,
+      delete: false,
+      managePermissions: false,
+    },
+    auditController: {
+      view: true,
+      export: false,
+    },
   },
   employee: {
-    dashboard: { view: true, create: false, edit: false, delete: false, approve: false },
-    jobs: { view: true, create: false, edit: false, delete: false, approve: false },
-    suppliers: { view: false, create: false, edit: false, delete: false, approve: false },
-    invoices: { view: true, create: true, edit: false, delete: false, approve: false },
-    approvals: { view: false, create: false, edit: false, delete: false, approve: false },
-    auditController: { view: false, create: false, edit: false, delete: false, approve: false },
-    accessControl: { view: false, create: false, edit: false, delete: false, approve: false },
-    excelUploads: { view: true, create: true, edit: false, delete: false, approve: false },
+    dashboard: { view: true, viewOwn: true, viewTeam: false, viewAll: false, viewFinancials: false, export: false },
+    jobs: {
+      view: true,
+      viewOwn: true,
+      viewTeam: false,
+      viewAll: false,
+      create: true,
+      edit: false,
+      delete: false,
+      restore: false,
+      permanentDelete: false,
+      download: true,
+      bulkDownload: false,
+      export: false,
+      viewFinancials: false,
+    },
+    suppliers: {
+      view: true,
+      viewOwn: true,
+      viewTeam: false,
+      viewAll: true,
+      create: false,
+      edit: false,
+      delete: false,
+      restore: false,
+      permanentDelete: false,
+      download: false,
+      export: false,
+    },
+    approvals: {
+      view: true,
+      viewOwn: true,
+      viewTeam: false,
+      viewAll: false,
+      approve: false,
+      reject: false,
+      moveToPending: false,
+      viewHistory: false,
+    },
+    supplierInvoices: {
+      view: true,
+      viewOwn: true,
+      viewTeam: false,
+      viewAll: false,
+      create: true,
+      edit: false,
+      cancel: false,
+      delete: false,
+      download: true,
+      bulkDownload: false,
+      export: false,
+    },
+    invoices: {
+      view: true,
+      viewOwn: true,
+      viewTeam: false,
+      viewAll: false,
+      create: false,
+      edit: false,
+      delete: false,
+      download: true,
+      export: false,
+    },
+    profitLoss: {
+      view: false,
+      viewOwn: false,
+      viewTeam: false,
+      viewAll: false,
+      viewFinancials: false,
+      download: false,
+      export: false,
+    },
+    accessControl: {
+      view: false,
+      create: false,
+      edit: false,
+      delete: false,
+      managePermissions: false,
+    },
+    auditController: {
+      view: false,
+      export: false,
+    },
   },
 };
 
 export const ROLE_PERMISSIONS = DEFAULT_ROLE_PERMISSIONS;
 
 /**
- * Synchronously checks permissions against the default policy (fast fallback).
+ * Builds an empty policy with all actions explicitly initialized to false.
+ */
+export function createEmptyPermissionsPolicy(): PermissionsPolicy {
+  const policy: PermissionsPolicy = {};
+  for (const mod of PERMISSION_MODULES) {
+    policy[mod.key] = {};
+    for (const act of mod.actions) {
+      policy[mod.key]![act.key] = false;
+    }
+  }
+  return policy;
+}
+
+/**
+ * Clones and deeply copies a permissions policy.
+ */
+export function clonePermissionsPolicy(policy?: PermissionsPolicy | null): PermissionsPolicy {
+  if (!policy) return {};
+  const copy: PermissionsPolicy = {};
+  for (const [modKey, actions] of Object.entries(policy)) {
+    copy[modKey as ERPModule] = { ...(actions as ModulePermissions) };
+  }
+  return copy;
+}
+
+/**
+ * Fast synchronous fallback check against standard role defaults.
  */
 export function hasPermission(
   roles: string[] | string | undefined | null,
   module: ERPModule,
-  action: Action
+  action: ERPAction
 ): boolean {
   if (!roles) return false;
   const roleList = Array.isArray(roles) ? roles : [roles];
 
   return roleList.some((r) => {
     const roleKey = r.toLowerCase().trim();
-    return DEFAULT_ROLE_PERMISSIONS[roleKey]?.[module]?.[action] ?? false;
+    const policy = DEFAULT_ROLE_PERMISSIONS[roleKey];
+    return policy?.[module]?.[action] ?? false;
   });
 }
 
 /**
- * Retrieves the effective module permissions for a user from PostgreSQL.
- * Checks per-user custom overrides first, then database role policies, then default policies.
+ * Resolves the final effective permissions for a user using database priority rules:
+ * 1. User-level explicit override (from user_permissions relational table or user.permissions JSON)
+ * 2. Role-level permission (from role_permissions table or role.permissionsData JSON or default role policy)
+ * 3. Default deny (false)
  */
 export async function getUserEffectivePermissions(
   userId: string
@@ -87,8 +513,17 @@ export async function getUserEffectivePermissions(
       include: {
         roles: {
           include: {
-            role: true,
+            role: {
+              include: {
+                permissions: {
+                  include: { permission: true },
+                },
+              },
+            },
           },
+        },
+        userPermissions: {
+          include: { permission: true },
         },
       },
     });
@@ -97,36 +532,85 @@ export async function getUserEffectivePermissions(
       return DEFAULT_ROLE_PERMISSIONS.employee;
     }
 
-    const primaryRole = (user.roles?.[0]?.role?.name || "employee").toLowerCase();
-    const basePolicy =
-      DEFAULT_ROLE_PERMISSIONS[primaryRole] || DEFAULT_ROLE_PERMISSIONS.employee;
-
-    // 1. Check if user's role has custom database permissions
+    const primaryRoleName = (user.roles?.[0]?.role?.name || "employee").toLowerCase();
     const roleRecord = user.roles?.[0]?.role;
-    let rolePolicy = basePolicy;
+
+    // ── STEP 1: Compute Base Role Policy ─────────────────────────────────────
+    const baseRoleDefault =
+      DEFAULT_ROLE_PERMISSIONS[primaryRoleName] || DEFAULT_ROLE_PERMISSIONS.employee;
+    let computedRolePolicy: PermissionsPolicy = clonePermissionsPolicy(baseRoleDefault);
+
+    // If role has custom permissionsData JSON
     if (roleRecord && (roleRecord as any).permissionsData) {
       try {
         const parsed = (roleRecord as any).permissionsData as PermissionsPolicy;
-        rolePolicy = { ...basePolicy, ...parsed };
-      } catch {
-        // fallback
+        for (const [modKey, acts] of Object.entries(parsed)) {
+          computedRolePolicy[modKey as ERPModule] = {
+            ...computedRolePolicy[modKey as ERPModule],
+            ...acts,
+          };
+        }
+      } catch {}
+    }
+
+    // If role has relational role_permissions rows
+    if (roleRecord?.permissions && roleRecord.permissions.length > 0) {
+      for (const rp of roleRecord.permissions) {
+        const mod = rp.permission.resource as ERPModule;
+        const act = rp.permission.action as ERPAction;
+        if (!computedRolePolicy[mod]) computedRolePolicy[mod] = {};
+        computedRolePolicy[mod]![act] = rp.isAllowed;
       }
     }
 
-    // 2. Check if user has direct custom permissions assigned
-    if ((user as any).permissions) {
-      try {
-        const userCustom = (user as any).permissions as Partial<PermissionsPolicy>;
-        return {
-          ...rolePolicy,
-          ...userCustom,
-        };
-      } catch {
-        // fallback
+    // ── STEP 2: Apply User-Level Overrides (Highest Priority) ────────────────
+    const finalPolicy: PermissionsPolicy = clonePermissionsPolicy(computedRolePolicy);
+
+    // A. Check user.permissions JSON field (cached override)
+    if (user.permissions && typeof user.permissions === "object") {
+      const userJson = user.permissions as PermissionsPolicy;
+      for (const [modKey, acts] of Object.entries(userJson)) {
+        if (!finalPolicy[modKey as ERPModule]) finalPolicy[modKey as ERPModule] = {};
+        for (const [actKey, val] of Object.entries(acts || {})) {
+          if (typeof val === "boolean") {
+            finalPolicy[modKey as ERPModule]![actKey as ERPAction] = val;
+          }
+        }
       }
     }
 
-    return rolePolicy;
+    // B. Check user_permissions relational table
+    if (user.userPermissions && user.userPermissions.length > 0) {
+      for (const up of user.userPermissions) {
+        const mod = up.permission.resource as ERPModule;
+        const act = up.permission.action as ERPAction;
+        if (!finalPolicy[mod]) finalPolicy[mod] = {};
+        finalPolicy[mod]![act] = up.isAllowed;
+      }
+    }
+
+    // ── STEP 3: Dependency Enforcement ───────────────────────────────────────
+    // If a module's 'view' is false, disable dependent child actions
+    for (const mod of PERMISSION_MODULES) {
+      const modPolicy = finalPolicy[mod.key];
+      if (modPolicy && modPolicy.view === false) {
+        for (const act of mod.actions) {
+          if (act.key !== "view") {
+            modPolicy[act.key] = false;
+          }
+        }
+      }
+    }
+
+    // Anti-Lockout Guard: Super Admin must retain Access Control View & Manage
+    const isAdmin = user.roles.some((r) => r.role.name.toLowerCase() === "admin");
+    if (isAdmin && user.email === (process.env.ADMIN_EMAIL || "admin@reflecterp.com")) {
+      if (!finalPolicy.accessControl) finalPolicy.accessControl = {};
+      finalPolicy.accessControl.view = true;
+      finalPolicy.accessControl.managePermissions = true;
+    }
+
+    return finalPolicy;
   } catch (err) {
     console.error("getUserEffectivePermissions DB error:", err);
     return DEFAULT_ROLE_PERMISSIONS.admin;
@@ -138,11 +622,16 @@ export async function getUserEffectivePermissions(
  * in PostgreSQL for the specified module and action.
  */
 export async function checkSessionPermission(
-  session: { userId?: string; roles?: string[] } | null | undefined,
+  session: { userId?: string; roles?: string[]; email?: string } | null | undefined,
   module: ERPModule,
-  action: Action
+  action: ERPAction
 ): Promise<boolean> {
   if (!session || !session.userId) return false;
+
+  // Super Admin fast-path guard
+  if (session.roles?.includes("admin") && session.email === (process.env.ADMIN_EMAIL || "admin@reflecterp.com")) {
+    return true;
+  }
 
   try {
     const permissions = await getUserEffectivePermissions(session.userId);
@@ -150,4 +639,30 @@ export async function checkSessionPermission(
   } catch {
     return hasPermission(session.roles, module, action);
   }
+}
+
+/**
+ * Clean 1-line authorization helper for API routes.
+ */
+export async function authorizeRequest(
+  session: { userId?: string; roles?: string[]; email?: string } | null | undefined,
+  module: ERPModule,
+  action: ERPAction,
+  customErrorMessage?: string
+): Promise<{ authorized: boolean; error?: string }> {
+  if (!session || !session.userId) {
+    return { authorized: false, error: "Unauthorized access. Please log in." };
+  }
+
+  const allowed = await checkSessionPermission(session, module, action);
+  if (!allowed) {
+    return {
+      authorized: false,
+      error:
+        customErrorMessage ||
+        `Forbidden: You do not have permission to perform "${action}" on module "${module}".`,
+    };
+  }
+
+  return { authorized: true };
 }

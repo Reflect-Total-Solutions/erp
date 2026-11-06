@@ -79,6 +79,7 @@ export async function POST(req: NextRequest) {
           success: true,
           fileHash,
           isDuplicate: true,
+          duplicateStatus: "BATCH",
           duplicateReason: `Duplicate file detected in current upload batch (identical to "${firstFileName}").`,
           duplicateDetails: {
             originalFileName: firstFileName,
@@ -87,6 +88,7 @@ export async function POST(req: NextRequest) {
             existingJobTitle: `Same content as ${firstFileName}`,
             existingClientName: "N/A",
             uploadedDate: new Date().toISOString().split("T")[0],
+            isTrash: false,
             duplicateReason: "This Excel file is a duplicate of another file in this same upload session.",
           },
           data: null,
@@ -95,8 +97,21 @@ export async function POST(req: NextRequest) {
       }
       seenHashesInBatch.set(fileHash, file.name);
 
-      // Check for duplicate file hash in existing database records
-      const [existingJobByHash, existingDocByHash] = await Promise.all([
+      let parsedData;
+      try {
+        parsedData = parseExcelQuotation(buffer, file.name, currentJobCount + i);
+      } catch (parseErr: any) {
+        results.push({
+          fileName: file.name,
+          fileHash,
+          success: false,
+          error: parseErr?.message || "Failed to parse Excel spreadsheet content.",
+        });
+        continue;
+      }
+
+      // ── 1. Check for Active Jobs with the same Excel file hash ─────────────────
+      const [activeJobByHash, activeDocByHash] = await Promise.all([
         prisma.job.findFirst({
           where: { fileHash, deletedAt: null },
           select: {
@@ -106,11 +121,15 @@ export async function POST(req: NextRequest) {
             clientName: true,
             createdAt: true,
             date: true,
-            documents: { select: { fileName: true } },
+            documents: { where: { deletedAt: null }, select: { fileName: true } },
           },
         }),
         prisma.jobDocument.findFirst({
-          where: { fileHash, deletedAt: null },
+          where: {
+            fileHash,
+            deletedAt: null,
+            job: { deletedAt: null },
+          },
           include: {
             job: {
               select: {
@@ -126,75 +145,161 @@ export async function POST(req: NextRequest) {
         }),
       ]);
 
-      let parsedData;
-      try {
-        parsedData = parseExcelQuotation(buffer, file.name, currentJobCount + i);
-      } catch (parseErr: any) {
+      const matchedActive = activeJobByHash || activeDocByHash?.job;
+      if (matchedActive) {
+        const originalFileName =
+          activeJobByHash?.documents?.[0]?.fileName || activeDocByHash?.fileName || file.name;
+        const duplicateReason =
+          "This Excel file has already been uploaded. Duplicate Job creation is not allowed.";
+
         results.push({
           fileName: file.name,
+          success: true,
           fileHash,
-          success: false,
-          error: parseErr?.message || "Failed to parse Excel spreadsheet content.",
+          isDuplicate: true,
+          duplicateStatus: "ACTIVE",
+          duplicateReason,
+          duplicateDetails: {
+            originalFileName,
+            existingJobId: matchedActive.id,
+            existingJobNumber: matchedActive.jobCode,
+            existingJobTitle: matchedActive.name,
+            existingClientName: matchedActive.clientName || "N/A",
+            uploadedDate: matchedActive.createdAt.toISOString().split("T")[0],
+            isTrash: false,
+            duplicateReason,
+          },
+          duplicateJob: matchedActive,
+          data: parsedData,
         });
         continue;
       }
 
-      // Check for duplicate jobCode in database if not already a hash duplicate
-      let existingJobByCode = null;
-      if (!existingJobByHash && !existingDocByHash) {
-        existingJobByCode = await prisma.job.findUnique({
-          where: { jobCode: parsedData.jobCode },
-          select: { id: true, jobCode: true, name: true, clientName: true, createdAt: true },
+      // ── 2. Check for Trashed Jobs with the same Excel file hash ───────────────
+      const [trashedJobByHash, trashedDocByHash] = await Promise.all([
+        prisma.job.findFirst({
+          where: { fileHash, deletedAt: { not: null } },
+          select: {
+            id: true,
+            jobCode: true,
+            name: true,
+            clientName: true,
+            createdAt: true,
+            date: true,
+            deletedAt: true,
+            documents: { select: { fileName: true } },
+          },
+        }),
+        prisma.jobDocument.findFirst({
+          where: {
+            fileHash,
+            OR: [{ deletedAt: { not: null } }, { job: { deletedAt: { not: null } } }],
+          },
+          include: {
+            job: {
+              select: {
+                id: true,
+                jobCode: true,
+                name: true,
+                clientName: true,
+                createdAt: true,
+                date: true,
+                deletedAt: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const matchedTrash = trashedJobByHash || trashedDocByHash?.job;
+      if (matchedTrash) {
+        const originalFileName =
+          trashedJobByHash?.documents?.[0]?.fileName || trashedDocByHash?.fileName || file.name;
+        const duplicateReason =
+          "This Excel file belongs to a Job that is currently in Trash. Permanently delete the Job before uploading it again.";
+
+        results.push({
+          fileName: file.name,
+          success: true,
+          fileHash,
+          isDuplicate: true,
+          duplicateStatus: "TRASH",
+          duplicateReason,
+          duplicateDetails: {
+            originalFileName,
+            existingJobId: matchedTrash.id,
+            existingJobNumber: matchedTrash.jobCode,
+            existingJobTitle: matchedTrash.name,
+            existingClientName: matchedTrash.clientName || "N/A",
+            uploadedDate: matchedTrash.createdAt.toISOString().split("T")[0],
+            isTrash: true,
+            duplicateReason,
+          },
+          duplicateJob: matchedTrash,
+          data: parsedData,
         });
+        continue;
       }
 
-      const isDuplicate = Boolean(existingJobByHash || existingDocByHash || existingJobByCode);
-      let duplicateReason = "";
-      let duplicateDetails = null;
+      // ── 3. Check explicit Job Code collision (only if explicitly in Excel) ────
+      if (parsedData.hasExplicitJobCode && parsedData.jobCode) {
+        const existingJobByCode = await prisma.job.findUnique({
+          where: { jobCode: parsedData.jobCode },
+          select: { id: true, jobCode: true, name: true, clientName: true, createdAt: true, deletedAt: true },
+        });
 
-      if (existingJobByHash) {
-        duplicateReason = "This Excel file has already been uploaded. Duplicate Job creation is not allowed.";
-        duplicateDetails = {
-          originalFileName: existingJobByHash.documents?.[0]?.fileName || file.name,
-          existingJobId: existingJobByHash.id,
-          existingJobNumber: existingJobByHash.jobCode,
-          existingJobTitle: existingJobByHash.name,
-          existingClientName: existingJobByHash.clientName || "N/A",
-          uploadedDate: existingJobByHash.createdAt.toISOString().split("T")[0],
-          duplicateReason,
-        };
-      } else if (existingDocByHash && existingDocByHash.job) {
-        duplicateReason = "This Excel file has already been uploaded. Duplicate Job creation is not allowed.";
-        duplicateDetails = {
-          originalFileName: existingDocByHash.fileName,
-          existingJobId: existingDocByHash.job.id,
-          existingJobNumber: existingDocByHash.job.jobCode,
-          existingJobTitle: existingDocByHash.job.name,
-          existingClientName: existingDocByHash.job.clientName || "N/A",
-          uploadedDate: existingDocByHash.job.createdAt.toISOString().split("T")[0],
-          duplicateReason,
-        };
-      } else if (existingJobByCode) {
-        duplicateReason = `Job Code "${parsedData.jobCode}" is already in use by "${existingJobByCode.name}".`;
-        duplicateDetails = {
-          originalFileName: file.name,
-          existingJobId: existingJobByCode.id,
-          existingJobNumber: existingJobByCode.jobCode,
-          existingJobTitle: existingJobByCode.name,
-          existingClientName: existingJobByCode.clientName || "N/A",
-          uploadedDate: existingJobByCode.createdAt.toISOString().split("T")[0],
-          duplicateReason,
-        };
+        if (existingJobByCode) {
+          const isTrash = Boolean(existingJobByCode.deletedAt);
+          const duplicateReason = isTrash
+            ? `Job Code "${parsedData.jobCode}" belongs to a Job that is currently in Trash. Permanently delete the Job before uploading it again.`
+            : `This Excel file has already been uploaded. Duplicate Job creation is not allowed. (Job Code "${parsedData.jobCode}" is already in use by "${existingJobByCode.name}").`;
+
+          results.push({
+            fileName: file.name,
+            success: true,
+            fileHash,
+            isDuplicate: true,
+            duplicateStatus: isTrash ? "TRASH" : "ACTIVE",
+            duplicateReason,
+            duplicateDetails: {
+              originalFileName: file.name,
+              existingJobId: existingJobByCode.id,
+              existingJobNumber: existingJobByCode.jobCode,
+              existingJobTitle: existingJobByCode.name,
+              existingClientName: existingJobByCode.clientName || "N/A",
+              uploadedDate: existingJobByCode.createdAt.toISOString().split("T")[0],
+              isTrash,
+              duplicateReason,
+            },
+            duplicateJob: existingJobByCode,
+            data: parsedData,
+          });
+          continue;
+        }
+      } else if (!parsedData.hasExplicitJobCode) {
+        // Fallback auto-generated code collision resolution (to prevent false duplicate warnings)
+        let candidate = parsedData.jobCode;
+        let exists = await prisma.job.findUnique({ where: { jobCode: candidate } });
+        let offset = 2;
+        const currentYear = new Date().getFullYear();
+        while (exists) {
+          candidate = `JOB-${currentYear}-${String(currentJobCount + offset).padStart(3, "0")}`;
+          exists = await prisma.job.findUnique({ where: { jobCode: candidate } });
+          offset++;
+        }
+        parsedData.jobCode = candidate;
       }
 
+      // ── 4. No duplicate found (permanently deleted or brand new file) ─────────
       results.push({
         fileName: file.name,
         success: true,
         fileHash,
-        isDuplicate,
-        duplicateReason,
-        duplicateDetails,
-        duplicateJob: existingJobByHash || existingDocByHash?.job || existingJobByCode,
+        isDuplicate: false,
+        duplicateStatus: null,
+        duplicateReason: "",
+        duplicateDetails: null,
+        duplicateJob: null,
         data: parsedData,
       });
     }

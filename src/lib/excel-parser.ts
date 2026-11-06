@@ -51,6 +51,7 @@ export interface ParsedJobData {
   fileName: string;
   fileSize: string;
   jobCode: string;
+  hasExplicitJobCode?: boolean;
   name: string;
   date: string;
   commencingDate: string;
@@ -320,6 +321,7 @@ export function parseExcelQuotation(
   }
 
   const currentYear = new Date().getFullYear();
+  const hasExplicitJobCode = Boolean(jobNumber);
   if (!jobNumber) {
     const nextCodeNum = existingJobCount + 1;
     jobNumber = `JOB-${currentYear}-${String(nextCodeNum).padStart(3, "0")}`;
@@ -653,6 +655,7 @@ export function parseExcelQuotation(
     fileName,
     fileSize,
     jobCode: jobNumber,
+    hasExplicitJobCode,
     name: jobTitle,
     date: jobDate,
     commencingDate,

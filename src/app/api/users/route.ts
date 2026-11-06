@@ -54,6 +54,13 @@ export async function GET(req: NextRequest) {
             role: true,
           },
         },
+        supervisor: {
+          select: { id: true, name: true, email: true },
+        },
+        subordinates: {
+          where: { deletedAt: null },
+          select: { id: true, name: true, email: true },
+        },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -81,7 +88,10 @@ export async function GET(req: NextRequest) {
           email: u.email,
           phone: u.phone || "",
           jobTitle: u.jobTitle || undefined,
-          department: rawRole.toUpperCase(),
+          department: u.department || rawRole.toUpperCase(),
+          supervisorId: u.supervisorId || null,
+          supervisorName: u.supervisor?.name || null,
+          subordinatesCount: u.subordinates?.length || 0,
           roleId,
           role: rawRole,
           status: u.deletedAt ? "Suspended" : u.isActive ? "Active" : "Suspended",

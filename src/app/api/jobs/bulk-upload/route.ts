@@ -106,7 +106,8 @@ export async function POST(req: NextRequest) {
 
         // 3. Server-side Database Duplicate Detection (BEFORE storage and DB creation)
         if (fileHash) {
-          const [existingJobByHash, existingDocByHash] = await Promise.all([
+          // 3a. Check for Active Jobs matching this Excel file hash
+          const [activeJobByHash, activeDocByHash] = await Promise.all([
             prisma.job.findFirst({
               where: { fileHash, deletedAt: null },
               select: {
@@ -115,11 +116,15 @@ export async function POST(req: NextRequest) {
                 name: true,
                 clientName: true,
                 createdAt: true,
-                documents: { select: { fileName: true } },
+                documents: { where: { deletedAt: null }, select: { fileName: true } },
               },
             }),
             prisma.jobDocument.findFirst({
-              where: { fileHash, deletedAt: null },
+              where: {
+                fileHash,
+                deletedAt: null,
+                job: { deletedAt: null },
+              },
               include: {
                 job: {
                   select: {
@@ -134,28 +139,30 @@ export async function POST(req: NextRequest) {
             }),
           ]);
 
-          const duplicateRecord = existingJobByHash || existingDocByHash?.job;
-          if (duplicateRecord) {
+          const activeRecord = activeJobByHash || activeDocByHash?.job;
+          if (activeRecord) {
             const originalFileName =
-              existingJobByHash?.documents?.[0]?.fileName || existingDocByHash?.fileName || fileName;
+              activeJobByHash?.documents?.[0]?.fileName || activeDocByHash?.fileName || fileName;
+            const duplicateReason =
+              "This Excel file has already been uploaded. Duplicate Job creation is not allowed.";
 
-            // Log rejected duplicate attempt in JobUploadLog
             try {
               await prisma.jobUploadLog.create({
                 data: {
                   userId: session.userId,
-                  jobId: duplicateRecord.id,
+                  jobId: activeRecord.id,
                   fileName,
                   fileSize,
                   fileHash,
                   status: "DUPLICATE_REJECTED",
-                  errorMessage: "Duplicate File Detected! This Excel file has already been uploaded. Duplicate Job creation is not allowed.",
+                  errorMessage: duplicateReason,
                   extractedDetails: {
                     originalFileName,
-                    existingJobNumber: duplicateRecord.jobCode,
-                    existingJobTitle: duplicateRecord.name,
-                    existingClientName: duplicateRecord.clientName,
-                    previouslyUploadedDate: duplicateRecord.createdAt.toISOString().split("T")[0],
+                    existingJobNumber: activeRecord.jobCode,
+                    existingJobTitle: activeRecord.name,
+                    existingClientName: activeRecord.clientName,
+                    previouslyUploadedDate: activeRecord.createdAt.toISOString().split("T")[0],
+                    isTrash: false,
                   },
                 },
               });
@@ -163,19 +170,102 @@ export async function POST(req: NextRequest) {
               console.warn("Failed to write duplicate upload log:", logErr);
             }
 
-            // Reject: Do NOT upload to Supabase, do NOT create Job
             failedFiles.push({
               fileName,
               isDuplicate: true,
-              error: "Duplicate File Detected! This Excel file has already been uploaded. Duplicate Job creation is not allowed.",
+              error: duplicateReason,
               duplicateDetails: {
                 originalFileName,
-                existingJobId: duplicateRecord.id,
-                existingJobNumber: duplicateRecord.jobCode,
-                existingJobTitle: duplicateRecord.name,
-                existingClientName: duplicateRecord.clientName || "N/A",
-                uploadedDate: duplicateRecord.createdAt.toISOString().split("T")[0],
-                duplicateReason: "This Excel file has already been uploaded. Duplicate Job creation is not allowed.",
+                existingJobId: activeRecord.id,
+                existingJobNumber: activeRecord.jobCode,
+                existingJobTitle: activeRecord.name,
+                existingClientName: activeRecord.clientName || "N/A",
+                uploadedDate: activeRecord.createdAt.toISOString().split("T")[0],
+                isTrash: false,
+                duplicateReason,
+              },
+            });
+            continue;
+          }
+
+          // 3b. Check for Trashed Jobs matching this Excel file hash
+          const [trashedJobByHash, trashedDocByHash] = await Promise.all([
+            prisma.job.findFirst({
+              where: { fileHash, deletedAt: { not: null } },
+              select: {
+                id: true,
+                jobCode: true,
+                name: true,
+                clientName: true,
+                createdAt: true,
+                deletedAt: true,
+                documents: { select: { fileName: true } },
+              },
+            }),
+            prisma.jobDocument.findFirst({
+              where: {
+                fileHash,
+                OR: [{ deletedAt: { not: null } }, { job: { deletedAt: { not: null } } }],
+              },
+              include: {
+                job: {
+                  select: {
+                    id: true,
+                    jobCode: true,
+                    name: true,
+                    clientName: true,
+                    createdAt: true,
+                    deletedAt: true,
+                  },
+                },
+              },
+            }),
+          ]);
+
+          const trashedRecord = trashedJobByHash || trashedDocByHash?.job;
+          if (trashedRecord) {
+            const originalFileName =
+              trashedJobByHash?.documents?.[0]?.fileName || trashedDocByHash?.fileName || fileName;
+            const duplicateReason =
+              "This Excel file belongs to a Job that is currently in Trash. Permanently delete the Job before uploading it again.";
+
+            try {
+              await prisma.jobUploadLog.create({
+                data: {
+                  userId: session.userId,
+                  jobId: trashedRecord.id,
+                  fileName,
+                  fileSize,
+                  fileHash,
+                  status: "DUPLICATE_REJECTED",
+                  errorMessage: duplicateReason,
+                  extractedDetails: {
+                    originalFileName,
+                    existingJobNumber: trashedRecord.jobCode,
+                    existingJobTitle: trashedRecord.name,
+                    existingClientName: trashedRecord.clientName,
+                    previouslyUploadedDate: trashedRecord.createdAt.toISOString().split("T")[0],
+                    isTrash: true,
+                  },
+                },
+              });
+            } catch (logErr) {
+              console.warn("Failed to write trashed duplicate upload log:", logErr);
+            }
+
+            failedFiles.push({
+              fileName,
+              isDuplicate: true,
+              error: duplicateReason,
+              duplicateDetails: {
+                originalFileName,
+                existingJobId: trashedRecord.id,
+                existingJobNumber: trashedRecord.jobCode,
+                existingJobTitle: trashedRecord.name,
+                existingClientName: trashedRecord.clientName || "N/A",
+                uploadedDate: trashedRecord.createdAt.toISOString().split("T")[0],
+                isTrash: true,
+                duplicateReason,
               },
             });
             continue;
@@ -210,9 +300,29 @@ export async function POST(req: NextRequest) {
 
         const existingJob = await prisma.job.findUnique({ where: { jobCode } });
         if (existingJob) {
-          const year = new Date().getFullYear();
-          const count = await prisma.job.count();
-          jobCode = `${jobCode}-${count + 1}`;
+          if (existingJob.deletedAt) {
+            const trashCodeMsg = `Job Code "${jobCode}" belongs to a Job that is currently in Trash. Permanently delete the Job before uploading it again.`;
+            failedFiles.push({
+              fileName,
+              isDuplicate: true,
+              error: trashCodeMsg,
+              duplicateDetails: {
+                originalFileName: fileName,
+                existingJobId: existingJob.id,
+                existingJobNumber: existingJob.jobCode,
+                existingJobTitle: existingJob.name,
+                existingClientName: existingJob.clientName || "N/A",
+                uploadedDate: existingJob.createdAt.toISOString().split("T")[0],
+                isTrash: true,
+                duplicateReason: trashCodeMsg,
+              },
+            });
+            continue;
+          } else {
+            const year = new Date().getFullYear();
+            const count = await prisma.job.count();
+            jobCode = `${jobCode}-${count + 1}`;
+          }
         }
 
         const date = config.date || new Date().toISOString().split("T")[0];
@@ -391,17 +501,23 @@ export async function POST(req: NextRequest) {
           let isHashCollision = Array.isArray(target) ? target.includes("file_hash") : target === "file_hash";
           
           let existing = null;
+          let isTrash = false;
           if (config.fileHash) {
             existing = await prisma.job.findFirst({
-              where: { fileHash: config.fileHash, deletedAt: null },
-              select: { id: true, jobCode: true, name: true, clientName: true, createdAt: true },
+              where: { fileHash: config.fileHash },
+              select: { id: true, jobCode: true, name: true, clientName: true, createdAt: true, deletedAt: true },
             });
+            isTrash = Boolean(existing?.deletedAt);
           }
+
+          const errorMessage = isTrash
+            ? "Duplicate File Detected! This Excel file belongs to a Job that is currently in Trash. Permanently delete the Job before uploading it again."
+            : "Duplicate File Detected! This Excel file has already been uploaded. Duplicate Job creation is not allowed.";
 
           failedFiles.push({
             fileName,
             isDuplicate: true,
-            error: "Duplicate File Detected! This Excel file has already been uploaded. Duplicate Job creation is not allowed.",
+            error: errorMessage,
             duplicateDetails: {
               originalFileName: fileName,
               existingJobId: existing?.id || "",
@@ -409,7 +525,8 @@ export async function POST(req: NextRequest) {
               existingJobTitle: existing?.name || "Existing Job",
               existingClientName: existing?.clientName || "N/A",
               uploadedDate: existing?.createdAt ? existing.createdAt.toISOString().split("T")[0] : new Date().toISOString().split("T")[0],
-              duplicateReason: "Unique constraint violation: This file has already been recorded in the database.",
+              isTrash,
+              duplicateReason: errorMessage,
             },
           });
         } else {

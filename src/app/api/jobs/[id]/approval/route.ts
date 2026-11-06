@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
+import { canUserAccessRecord } from "@/lib/data-visibility";
 
 // POST /api/jobs/[id]/approval
 // Body: { action: "APPROVE" | "REJECT" | "MOVE_TO_PENDING" | "RESET", reason?: string, notes?: string }
@@ -19,22 +20,7 @@ export async function POST(
   }
 
   const { id } = await params;
-
-  // Check roles
   const isAdmin = session.roles.some((r) => r.toLowerCase() === "admin");
-  const isSupervisor = session.roles.some((r) => r.toLowerCase() === "supervisor");
-  const hasApprovePerm = await checkSessionPermission(session, "approvals", "approve");
-  const isAuthorizedApprover = isAdmin || isSupervisor || hasApprovePerm;
-
-  if (!isAuthorizedApprover) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Forbidden: You do not have permission to authorize or reject jobs.",
-      },
-      { status: 403 }
-    );
-  }
 
   let body: any;
   try {
@@ -59,12 +45,31 @@ export async function POST(
     );
   }
 
-  // 1. Enforce admin-only for moving back to Pending Approval
-  if (action === "MOVE_TO_PENDING" && !isAdmin) {
-    return NextResponse.json(
-      { success: false, error: "Forbidden: Only system administrators can move an approved or rejected Job back to Pending Approval." },
-      { status: 403 }
-    );
+  // Enforce granular database-driven permission per action
+  if (action === "APPROVE") {
+    const canApprove = await checkSessionPermission(session, "approvals", "approve");
+    if (!canApprove) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to approve jobs." },
+        { status: 403 }
+      );
+    }
+  } else if (action === "REJECT") {
+    const canReject = await checkSessionPermission(session, "approvals", "reject");
+    if (!canReject) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to reject jobs." },
+        { status: 403 }
+      );
+    }
+  } else if (action === "MOVE_TO_PENDING") {
+    const canMove = await checkSessionPermission(session, "approvals", "moveToPending");
+    if (!canMove) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to move jobs back to Pending Approval." },
+        { status: 403 }
+      );
+    }
   }
 
   // 2. Enforce mandatory reasons
@@ -95,6 +100,15 @@ export async function POST(
       return NextResponse.json(
         { success: false, error: `Job with ID "${id}" was not found.` },
         { status: 404 }
+      );
+    }
+
+    // Verify approver scope
+    const scopeCheck = await canUserAccessRecord(session, "approvals", job.submittedById, "view");
+    if (!scopeCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: This job is outside your authorized approval scope." },
+        { status: 403 }
       );
     }
 
@@ -291,6 +305,7 @@ export async function GET(
   }
 
   const { id } = await params;
+  const isAdmin = session.roles.some((r) => r.toLowerCase() === "admin");
 
   try {
     const history = await prisma.jobApproval.findMany({

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { checkSessionPermission } from "@/lib/permissions";
+import { canUserAccessRecord } from "@/lib/data-visibility";
 import { prisma } from "@/lib/prisma";
 import * as XLSX from "xlsx";
 import { generateProcessedQuotationWorkbook } from "@/lib/excel-generator";
@@ -46,6 +47,14 @@ export async function GET(
       return NextResponse.json(
         { success: false, error: `Job with ID "${id}" was not found.` },
         { status: 404 }
+      );
+    }
+
+    const accessCheck = await canUserAccessRecord(session, "jobs", job.submittedById, "export");
+    if (!accessCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: accessCheck.reason || "Forbidden: You cannot export this job." },
+        { status: 403 }
       );
     }
 

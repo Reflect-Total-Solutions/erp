@@ -60,9 +60,9 @@ export function ApprovalsView() {
   const [modalAction, setModalAction] = useState<"APPROVE" | "REJECT" | "RESET" | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const isAdmin = currentRole.toLowerCase() === "admin";
-  const isSupervisor = currentRole.toLowerCase() === "supervisor";
-  const canApprove = isAdmin || isSupervisor || can("approvals", "approve");
+  const canApprove = can("approvals", "approve");
+  const canReject = can("approvals", "reject");
+  const canMoveToPending = can("approvals", "moveToPending");
 
   // Filtered Jobs
   const filteredJobs = useMemo(() => {
@@ -550,7 +550,7 @@ export function ApprovalsView() {
                           )}
 
                           {/* Reject Button */}
-                          {canApprove && (isJobPending || isJobApproved) && !hasInvoice && (
+                          {canReject && (isJobPending || isJobApproved) && !hasInvoice && (
                             <button
                               type="button"
                               onClick={() => openJobReview(job, "REJECT")}
@@ -562,8 +562,8 @@ export function ApprovalsView() {
                             </button>
                           )}
 
-                          {/* Move Back to Pending Button (Admin Only) with Approval Lock */}
-                          {isAdmin && isJobApproved && isApprovalLocked && (
+                          {/* Move Back to Pending Button with Approval Lock */}
+                          {canMoveToPending && isJobApproved && isApprovalLocked && (
                             <div className="relative group inline-block">
                               <button
                                 type="button"
@@ -589,7 +589,7 @@ export function ApprovalsView() {
                             </div>
                           )}
 
-                          {isAdmin && (isJobApproved || isJobRejected) && !isApprovalLocked && (
+                          {canMoveToPending && (isJobApproved || isJobRejected) && !isApprovalLocked && (
                             <button
                               type="button"
                               onClick={() => openJobReview(job, "RESET")}

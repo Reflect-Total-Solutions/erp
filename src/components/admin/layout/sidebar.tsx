@@ -58,7 +58,7 @@ const NAV_ITEMS: NavItem[] = [
     href: "/admin/invoices",
     icon: FileText,
     exact: false,
-    module: "invoices",
+    module: "supplierInvoices",
     action: "view",
   },
   {
@@ -74,7 +74,7 @@ const NAV_ITEMS: NavItem[] = [
     href: "/admin/profit-loss",
     icon: TrendingUp,
     exact: false,
-    module: "dashboard",
+    module: "profitLoss",
     action: "view",
   },
   {

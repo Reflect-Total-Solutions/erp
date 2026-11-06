@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
+import { canUserAccessRecord } from "@/lib/data-visibility";
 
 // POST /api/jobs/[id]/restore
 export async function POST(
@@ -17,10 +18,10 @@ export async function POST(
     );
   }
 
-  const isAuthorized = await checkSessionPermission(session, "jobs", "edit");
+  const isAuthorized = await checkSessionPermission(session, "jobs", "restore");
   if (!isAuthorized) {
     return NextResponse.json(
-      { success: false, error: "Forbidden: You do not have permission to restore jobs." },
+      { success: false, error: "Forbidden: You do not have permission to restore jobs from trash." },
       { status: 403 }
     );
   }
@@ -36,9 +37,27 @@ export async function POST(
       );
     }
 
-    const restoredJob = await prisma.job.update({
-      where: { id },
-      data: { deletedAt: null },
+    const restoreCheck = await canUserAccessRecord(session, "jobs", existing.submittedById, "restore");
+    if (!restoreCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: restoreCheck.reason || "Forbidden: You cannot restore jobs created by another user." },
+        { status: 403 }
+      );
+    }
+
+    const restoredJob = await prisma.$transaction(async (tx) => {
+      await tx.jobDocument.updateMany({
+        where: { jobId: id },
+        data: { deletedAt: null },
+      });
+
+      return tx.job.update({
+        where: { id },
+        data: {
+          deletedAt: null,
+          updatedById: session.userId,
+        },
+      });
     });
 
     await logAuditEvent({

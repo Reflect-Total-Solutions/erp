@@ -375,9 +375,14 @@ export function SuppliersView() {
                           <span className="font-semibold text-slate-900 block">
                             {s.name}
                           </span>
-                          <span className="text-[10px] text-slate-400 truncate block max-w-xs">
-                            {s.address}
-                          </span>
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                            {s.address && <span className="truncate max-w-xs">{s.address}</span>}
+                            {s.createdByName && (
+                              <span className="font-medium text-slate-500">
+                                • By {s.createdByName}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3.5 text-slate-700 font-medium">
                           {s.contactPerson}
@@ -429,31 +434,31 @@ export function SuppliersView() {
                               </>
                             ) : (
                               <>
-                                {can("suppliers", "delete") && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      disabled={restoringId === s.id}
-                                      onClick={() => handleRestore(s.id)}
-                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer disabled:opacity-50"
-                                      title="Restore to Active"
-                                    >
-                                      {restoringId === s.id ? (
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                      ) : (
-                                        <RotateCcw className="h-3 w-3" />
-                                      )}
-                                      <span>{restoringId === s.id ? "Restoring..." : "Restore"}</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setPermanentDeletingSupplier(s)}
-                                      className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                                      title="Permanently Delete"
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </button>
-                                  </>
+                                {can("suppliers", "restore") && (
+                                  <button
+                                    type="button"
+                                    disabled={restoringId === s.id}
+                                    onClick={() => handleRestore(s.id)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer disabled:opacity-50"
+                                    title="Restore to Active"
+                                  >
+                                    {restoringId === s.id ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <RotateCcw className="h-3 w-3" />
+                                    )}
+                                    <span>{restoringId === s.id ? "Restoring..." : "Restore"}</span>
+                                  </button>
+                                )}
+                                {can("suppliers", "permanentDelete") && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setPermanentDeletingSupplier(s)}
+                                    className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                    title="Permanently Delete"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
                                 )}
                               </>
                             )}

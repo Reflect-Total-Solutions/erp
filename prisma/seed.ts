@@ -2,100 +2,132 @@
  * Prisma seed script — idempotent.
  * Run: npx prisma db seed
  *
- * Creates:
- *  - Roles: admin, manager, viewer
- *  - Permissions for all ERP modules
+ * Seeds:
+ *  - Roles: admin, supervisor, employee
+ *  - Granular permissions for all 7 modules + customer billing
+ *  - Default role permission policies
  *  - Admin user (email + password from .env)
  */
 import { PrismaClient } from "@prisma/client";
 import argon2 from "argon2";
+import {
+  PERMISSION_MODULES,
+  DEFAULT_ROLE_PERMISSIONS,
+} from "../src/lib/permissions";
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log("🌱 Starting database seed...");
+  console.log("🌱 Starting idempotent database seed...");
 
-  // ── Roles ──────────────────────────────────────────────────────────────────
+  // 1. Core ERP Roles
   const adminRole = await prisma.role.upsert({
     where: { name: "admin" },
-    update: {},
-    create: { name: "admin", description: "Full system access" },
+    update: {
+      description: "Full system administration and user management",
+      permissionsData: DEFAULT_ROLE_PERMISSIONS.admin as any,
+    },
+    create: {
+      name: "admin",
+      description: "Full system administration and user management",
+      permissionsData: DEFAULT_ROLE_PERMISSIONS.admin as any,
+    },
   });
 
-  const managerRole = await prisma.role.upsert({
-    where: { name: "manager" },
-    update: {},
-    create: { name: "manager", description: "Manage ERP operations" },
+  const supervisorRole = await prisma.role.upsert({
+    where: { name: "supervisor" },
+    update: {
+      description: "Operations supervision, job review, and invoice processing",
+      permissionsData: DEFAULT_ROLE_PERMISSIONS.supervisor as any,
+    },
+    create: {
+      name: "supervisor",
+      description: "Operations supervision, job review, and invoice processing",
+      permissionsData: DEFAULT_ROLE_PERMISSIONS.supervisor as any,
+    },
   });
 
-  await prisma.role.upsert({
-    where: { name: "viewer" },
-    update: {},
-    create: { name: "viewer", description: "Read-only access" },
+  const employeeRole = await prisma.role.upsert({
+    where: { name: "employee" },
+    update: {
+      description: "Standard operational access for project quotations and records",
+      permissionsData: DEFAULT_ROLE_PERMISSIONS.employee as any,
+    },
+    create: {
+      name: "employee",
+      description: "Standard operational access for project quotations and records",
+      permissionsData: DEFAULT_ROLE_PERMISSIONS.employee as any,
+    },
   });
 
-  console.log("✅ Roles created");
+  console.log("✅ Roles created/updated (admin, supervisor, employee)");
 
-  // ── Permissions ────────────────────────────────────────────────────────────
-  const resources = [
-    "dashboard",
-    "jobs",
-    "suppliers",
-    "invoices",
-    "approvals",
-    "access-control",
-    "audit-controller",
-    "users",
-  ];
-  const actions = ["read", "write", "delete"];
-
-  for (const resource of resources) {
-    for (const action of actions) {
-      await prisma.permission.upsert({
-        where: { action_resource: { action, resource } },
-        update: {},
-        create: { action, resource, description: `${action} ${resource}` },
+  // 2. Granular Permissions across all modules
+  const permissionMap: Record<string, any> = {};
+  for (const mod of PERMISSION_MODULES) {
+    for (const act of mod.actions) {
+      const permKey = `${mod.key}:${act.key}`;
+      const permRecord = await prisma.permission.upsert({
+        where: {
+          action_resource: {
+            action: act.key,
+            resource: mod.key,
+          },
+        },
+        update: {
+          description: act.description,
+        },
+        create: {
+          resource: mod.key,
+          action: act.key,
+          description: act.description,
+        },
       });
+      permissionMap[permKey] = permRecord;
     }
   }
+  console.log("✅ Granular module permissions seeded");
 
-  console.log("✅ Permissions created");
+  // 3. Seed Role Permissions
+  const roleMap: Record<string, any> = {
+    admin: adminRole,
+    supervisor: supervisorRole,
+    employee: employeeRole,
+  };
 
-  // ── Assign all permissions to admin ────────────────────────────────────────
-  const allPermissions = await prisma.permission.findMany();
-  for (const perm of allPermissions) {
-    await prisma.rolePermission.upsert({
-      where: {
-        roleId_permissionId: { roleId: adminRole.id, permissionId: perm.id },
-      },
-      update: {},
-      create: { roleId: adminRole.id, permissionId: perm.id },
-    });
+  for (const [roleName, policy] of Object.entries(DEFAULT_ROLE_PERMISSIONS)) {
+    const roleRecord = roleMap[roleName];
+    if (!roleRecord) continue;
+
+    for (const [modKey, actions] of Object.entries(policy)) {
+      for (const [actKey, isAllowed] of Object.entries(actions || {})) {
+        const permRecord = permissionMap[`${modKey}:${actKey}`];
+        if (!permRecord) continue;
+
+        await prisma.rolePermission.upsert({
+          where: {
+            roleId_permissionId: {
+              roleId: roleRecord.id,
+              permissionId: permRecord.id,
+            },
+          },
+          update: {
+            isAllowed: Boolean(isAllowed),
+          },
+          create: {
+            roleId: roleRecord.id,
+            permissionId: permRecord.id,
+            isAllowed: Boolean(isAllowed),
+          },
+        });
+      }
+    }
   }
+  console.log("✅ Role permissions matrix populated");
 
-  // Assign read+write (not delete) to manager
-  const managerPerms = allPermissions.filter((p: { action: string }) => p.action !== "delete");
-  for (const perm of managerPerms) {
-    await prisma.rolePermission.upsert({
-      where: {
-        roleId_permissionId: { roleId: managerRole.id, permissionId: perm.id },
-      },
-      update: {},
-      create: { roleId: managerRole.id, permissionId: perm.id },
-    });
-  }
-
-  console.log("✅ Role permissions assigned");
-
-  // ── Admin user ─────────────────────────────────────────────────────────────
+  // 4. Default Admin User
   const adminEmail = process.env.ADMIN_EMAIL ?? "admin@reflecterp.com";
-  const adminPassword = process.env.ADMIN_INITIAL_PASSWORD;
-
-  if (!adminPassword) {
-    throw new Error(
-      "ADMIN_INITIAL_PASSWORD is not set in .env. Cannot seed admin user."
-    );
-  }
+  const adminPassword = process.env.ADMIN_INITIAL_PASSWORD ?? "Admin@12345!";
 
   const passwordHash = await argon2.hash(adminPassword, {
     type: argon2.argon2id,
@@ -107,8 +139,9 @@ async function main() {
   const adminUser = await prisma.user.upsert({
     where: { email: adminEmail },
     update: {
-      passwordHash,
+      name: "System Administrator",
       isActive: true,
+      deletedAt: null,
     },
     create: {
       email: adminEmail,
@@ -118,77 +151,17 @@ async function main() {
     },
   });
 
-  // Assign admin role
+  // Assign admin role to user
   await prisma.userRole.upsert({
-    where: { userId_roleId: { userId: adminUser.id, roleId: adminRole.id } },
+    where: {
+      userId_roleId: { userId: adminUser.id, roleId: adminRole.id },
+    },
     update: {},
     create: { userId: adminUser.id, roleId: adminRole.id },
   });
 
   console.log(`✅ Admin user seeded: ${adminEmail}`);
-
-  // ── Initial Suppliers ───────────────────────────────────────────────────────
-  const initialSuppliersData = [
-    {
-      code: "SUP-01",
-      name: "ABC Electricals",
-      contactPerson: "John Smith",
-      phone: "077 123 4567",
-      email: "john@abcelectricals.com",
-      address: "123 Main Street, Colombo 03",
-    },
-    {
-      code: "SUP-02",
-      name: "BuildTech Materials",
-      contactPerson: "Sarah Perera",
-      phone: "071 987 6543",
-      email: "sarah@buildtech.com",
-      address: "45 Industrial Zone, Kaduwela",
-    },
-    {
-      code: "SUP-03",
-      name: "City Transport & Cargo",
-      contactPerson: "Kamal Fernando",
-      phone: "076 555 4321",
-      email: "kamal@citycargo.com",
-      address: "88 Harbor Road, Colombo 13",
-    },
-    {
-      code: "SUP-04",
-      name: "Prime Hardware Ltd",
-      contactPerson: "David Silva",
-      phone: "072 333 8899",
-      email: "david@primehardware.lk",
-      address: "12 Station Road, Kelaniya",
-    },
-    {
-      code: "SUP-05",
-      name: "CoolAir HVAC Solutions",
-      contactPerson: "Nimal Jayasinghe",
-      phone: "075 222 1100",
-      email: "nimal@coolair.com",
-      address: "74 High Level Road, Nugegoda",
-    },
-  ];
-
-  for (const sup of initialSuppliersData) {
-    await prisma.supplier.upsert({
-      where: { code: sup.code },
-      update: {},
-      create: {
-        code: sup.code,
-        name: sup.name,
-        contactPerson: sup.contactPerson,
-        phone: sup.phone,
-        email: sup.email,
-        address: sup.address,
-        isActive: true,
-      },
-    });
-  }
-
-  console.log("✅ Initial suppliers seeded");
-  console.log("🎉 Seed complete!");
+  console.log("🎉 Seed finished successfully!");
 }
 
 main()

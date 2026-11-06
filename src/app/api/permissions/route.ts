@@ -5,12 +5,14 @@ import { logAuditEvent } from "@/lib/audit";
 import {
   checkSessionPermission,
   DEFAULT_ROLE_PERMISSIONS,
+  PERMISSION_MODULES,
   ERPModule,
+  ERPAction,
   PermissionsPolicy,
 } from "@/lib/permissions";
 
 // GET /api/permissions
-// Returns all role permission configurations directly from PostgreSQL database
+// Returns all role permission configurations directly from PostgreSQL database along with the module catalog
 export async function GET(_req: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -31,6 +33,11 @@ export async function GET(_req: NextRequest) {
   try {
     const dbRoles = await prisma.role.findMany({
       orderBy: { name: "asc" },
+      include: {
+        permissions: {
+          include: { permission: true },
+        },
+      },
     });
 
     const rolesData = dbRoles.map((r) => {
@@ -44,19 +51,37 @@ export async function GET(_req: NextRequest) {
       else if (roleName === "supervisor") mappedId = "role-supervisor";
       else if (roleName === "employee") mappedId = "role-employer";
 
+      const mergedPolicy: PermissionsPolicy = { ...baseDefault, ...(customData || {}) };
+
+      // Apply relational role_permissions if populated
+      if (r.permissions && r.permissions.length > 0) {
+        for (const rp of r.permissions) {
+          const mod = rp.permission.resource as ERPModule;
+          const act = rp.permission.action as ERPAction;
+          if (!mergedPolicy[mod]) mergedPolicy[mod] = {};
+          mergedPolicy[mod]![act] = rp.isAllowed;
+        }
+      }
+
       return {
         id: mappedId,
         dbId: r.id,
-        name: roleName === "admin" ? "Administrator" : roleName === "supervisor" ? "Supervisor" : "Employee",
+        name:
+          roleName === "admin"
+            ? "Administrator"
+            : roleName === "supervisor"
+            ? "Supervisor"
+            : "Employee",
         rawName: r.name,
         description: r.description || `${r.name.toUpperCase()} role policy`,
-        permissions: customData ? { ...baseDefault, ...customData } : baseDefault,
+        permissions: mergedPolicy,
       };
     });
 
     return NextResponse.json({
       success: true,
       roles: rolesData,
+      modules: PERMISSION_MODULES,
     });
   } catch (err) {
     console.error("GET /api/permissions error:", err);
@@ -78,7 +103,10 @@ export async function PUT(req: NextRequest) {
     );
   }
 
-  const isAuthorized = await checkSessionPermission(session, "accessControl", "edit");
+  const isAuthorized =
+    (await checkSessionPermission(session, "accessControl", "managePermissions")) ||
+    (await checkSessionPermission(session, "accessControl", "edit"));
+
   if (!isAuthorized) {
     return NextResponse.json(
       { error: "Forbidden: Administrator privilege required to modify access policies." },
@@ -134,20 +162,82 @@ export async function PUT(req: NextRequest) {
 
     // Safety guard: Admin role must always retain accessControl view to avoid permanent lockout
     if (targetRole.name.toLowerCase() === "admin") {
-      if (permissions?.accessControl?.view === false) {
+      if (
+        permissions?.accessControl?.view === false ||
+        permissions?.accessControl?.managePermissions === false
+      ) {
         return NextResponse.json(
-          { error: "Safety Guard: Administrator role must retain Access Control view permission." },
+          {
+            error:
+              "Safety Guard: Administrator role must retain Access Control View and Manage Permissions.",
+          },
           { status: 400 }
         );
       }
     }
 
+    // Update role.permissionsData JSON
     const updated = await prisma.role.update({
       where: { id: targetRole.id },
       data: {
         permissionsData: permissions,
       },
     });
+
+    // Synchronize relational role_permissions
+    try {
+      if (permissions && typeof permissions === "object") {
+        for (const [modKey, actions] of Object.entries(permissions)) {
+          for (const [actKey, isAllowed] of Object.entries(actions as Record<string, boolean>)) {
+            let perm = await prisma.permission.findFirst({
+              where: { resource: modKey, action: actKey },
+            });
+            if (!perm) {
+              const modDef = PERMISSION_MODULES.find((m) => m.key === modKey);
+              const actDef = modDef?.actions.find((a) => a.key === actKey);
+              perm = await prisma.permission.create({
+                data: {
+                  description: actDef?.description || `${actKey} in ${modKey}`,
+                  resource: modKey,
+                  action: actKey,
+                },
+              });
+            }
+
+            const existingRp = await prisma.rolePermission.findUnique({
+              where: {
+                roleId_permissionId: {
+                  roleId: targetRole.id,
+                  permissionId: perm.id,
+                },
+              },
+            });
+
+            if (existingRp) {
+              await prisma.rolePermission.update({
+                where: {
+                  roleId_permissionId: {
+                    roleId: targetRole.id,
+                    permissionId: perm.id,
+                  },
+                },
+                data: { isAllowed: Boolean(isAllowed) },
+              });
+            } else {
+              await prisma.rolePermission.create({
+                data: {
+                  roleId: targetRole.id,
+                  permissionId: perm.id,
+                  isAllowed: Boolean(isAllowed),
+                },
+              });
+            }
+          }
+        }
+      }
+    } catch (relErr) {
+      console.warn("Relational role_permissions update skipped or pending:", relErr);
+    }
 
     await logAuditEvent({
       userId: session.userId,

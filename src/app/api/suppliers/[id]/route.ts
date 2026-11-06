@@ -32,6 +32,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
   try {
     const supplier = await prisma.supplier.findUnique({
       where: { id },
+      include: {
+        createdBy: { select: { id: true, name: true, email: true } },
+        updatedBy: { select: { id: true, name: true, email: true } },
+      },
     });
 
     if (!supplier) {
@@ -56,6 +60,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         deletedAt: supplier.deletedAt ? supplier.deletedAt.toISOString() : undefined,
         createdAt: supplier.createdAt.toISOString().split("T")[0],
         updatedAt: supplier.updatedAt.toISOString(),
+        createdById: supplier.createdById || null,
+        createdByName: supplier.createdBy?.name || null,
+        updatedById: supplier.updatedById || null,
+        updatedByName: supplier.updatedBy?.name || null,
       },
     });
   } catch (err) {
@@ -178,6 +186,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
         ...(updates.email && { email: updates.email }),
         ...(updates.address && { address: updates.address }),
         ...(updates.isActive !== undefined && { isActive: updates.isActive }),
+        updatedById: session.userId,
       },
     });
 
@@ -265,6 +274,14 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
     }
 
     if (isPermanent) {
+      const canPermDelete = await checkSessionPermission(session, "suppliers", "permanentDelete");
+      if (!canPermDelete) {
+        return NextResponse.json(
+          { error: "Forbidden: You do not have permission to permanently delete suppliers." },
+          { status: 403 }
+        );
+      }
+
       // Permanent Purge
       await prisma.supplier.delete({
         where: { id },

@@ -10,6 +10,8 @@ import {
 import { logAuditEvent } from "@/lib/audit";
 import { validateAttachmentBuffer, MAX_ATTACHMENT_SIZE_BYTES } from "@/lib/file-validation";
 import { recalculateJobFinances } from "@/lib/financial-recalculation";
+import { checkSessionPermission } from "@/lib/permissions";
+import { buildRecordVisibilityFilter } from "@/lib/data-visibility";
 
 // GET /api/supplier-invoices
 export async function GET(req: NextRequest) {
@@ -22,14 +24,30 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const isAuthorized = await checkSessionPermission(session, "supplierInvoices", "view");
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to view supplier invoices." },
+        { status: 403 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search")?.trim() || "";
     const supplierId = searchParams.get("supplierId");
     const jobId = searchParams.get("jobId");
     const status = searchParams.get("status");
+    const createdByFilter = searchParams.get("createdBy")?.trim();
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const limit = Math.max(1, parseInt(searchParams.get("limit") || "10", 10));
     const skip = (page - 1) * limit;
+
+    // 1. Resolve record visibility scope from database-driven permissions
+    const { filter: visibilityFilter, scope, authorizedIds } = await buildRecordVisibilityFilter(
+      session,
+      "supplierInvoices",
+      "createdById"
+    );
 
     const where: any = {
       deletedAt: null,
@@ -47,8 +65,23 @@ export async function GET(req: NextRequest) {
       where.status = status.toUpperCase();
     }
 
+    // Apply explicit createdBy filter if within authorized scope
+    if (createdByFilter && createdByFilter !== "all") {
+      if (!authorizedIds || authorizedIds.includes(createdByFilter)) {
+        where.createdById = createdByFilter;
+      } else {
+        where.createdById = "__FORBIDDEN_SCOPE__";
+      }
+    } else {
+      if (visibilityFilter.createdById) {
+        where.createdById = visibilityFilter.createdById;
+      } else if (visibilityFilter.OR) {
+        where.OR = visibilityFilter.OR;
+      }
+    }
+
     if (search) {
-      where.OR = [
+      const searchConditions = [
         { invoiceNumber: { contains: search, mode: "insensitive" } },
         { supplier: { name: { contains: search, mode: "insensitive" } } },
         { supplier: { code: { contains: search, mode: "insensitive" } } },
@@ -56,6 +89,13 @@ export async function GET(req: NextRequest) {
         { job: { name: { contains: search, mode: "insensitive" } } },
         { job: { clientName: { contains: search, mode: "insensitive" } } },
       ];
+
+      if (where.OR) {
+        where.AND = [{ OR: where.OR }, { OR: searchConditions }];
+        delete where.OR;
+      } else {
+        where.OR = searchConditions;
+      }
     }
 
     const db = getPrisma();
@@ -100,6 +140,13 @@ export async function GET(req: NextRequest) {
               email: true,
             },
           },
+          updatedBy: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
           cancelledBy: {
             select: {
               id: true,
@@ -113,6 +160,11 @@ export async function GET(req: NextRequest) {
         where: {
           deletedAt: null,
           status: { not: "CANCELLED" },
+          ...(visibilityFilter.createdById
+            ? { createdById: visibilityFilter.createdById }
+            : visibilityFilter.OR
+            ? { OR: visibilityFilter.OR }
+            : {}),
         },
         select: {
           totalAmount: true,
@@ -168,6 +220,9 @@ export async function GET(req: NextRequest) {
       cancelledByName: inv.cancelledBy?.name || null,
       createdById: inv.createdById,
       createdByName: inv.createdBy?.name || "System Admin",
+      createdByEmail: inv.createdBy?.email || null,
+      updatedById: inv.updatedById || null,
+      updatedByName: inv.updatedBy?.name || null,
       items: (inv.items || []).map((item: any) => ({
         id: item.id,
         rowNumber: item.rowNumber,
@@ -178,6 +233,7 @@ export async function GET(req: NextRequest) {
       })),
       attachments: inv.attachments || [],
       createdAt: inv.createdAt ? new Date(inv.createdAt).toISOString().split("T")[0] : "",
+      createdDateTime: inv.createdAt ? new Date(inv.createdAt).toISOString() : "",
       updatedAt: inv.updatedAt ? new Date(inv.updatedAt).toISOString() : "",
     }));
 
@@ -196,6 +252,9 @@ export async function GET(req: NextRequest) {
         totalJobCost: totalApprovedJobValue.toNumber(),
         totalProfit: totalEstimatedProfit.toNumber(),
         pendingInvoicePayments: pendingPaymentsCount,
+      },
+      meta: {
+        visibilityScope: scope,
       },
     });
   } catch (err: any) {
@@ -229,6 +288,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { success: false, error: "Unauthorized access. Please log in." },
         { status: 401 }
+      );
+    }
+
+    const isAuthorized = await checkSessionPermission(session, "supplierInvoices", "create");
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to create supplier invoices." },
+        { status: 403 }
       );
     }
 

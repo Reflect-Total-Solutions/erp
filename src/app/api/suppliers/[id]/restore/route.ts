@@ -19,7 +19,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     );
   }
 
-  const isAuthorized = await checkSessionPermission(session, "suppliers", "delete");
+  const isAuthorized = await checkSessionPermission(session, "suppliers", "restore");
   if (!isAuthorized) {
     return NextResponse.json(
       { error: "Forbidden: You do not have permission to restore suppliers." },

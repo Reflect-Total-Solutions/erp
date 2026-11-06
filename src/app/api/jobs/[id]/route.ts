@@ -6,6 +6,7 @@ import { getSession } from "@/lib/auth";
 import { jobUpdateSchema } from "@/lib/validations/job";
 import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
+import { canUserAccessRecord } from "@/lib/data-visibility";
 import { cleanupOrphanedStorageFiles } from "@/lib/supabase";
 
 // GET /api/jobs/[id]
@@ -52,6 +53,7 @@ export async function GET(
         },
         costSummary: true,
         submittedBy: { select: { id: true, name: true, email: true } },
+        updatedBy: { select: { id: true, name: true, email: true } },
         approvals: {
           orderBy: { createdAt: "desc" },
           include: { user: { select: { id: true, name: true, email: true } } },
@@ -87,6 +89,15 @@ export async function GET(
       );
     }
 
+    // Verify user record visibility scope
+    const accessCheck = await canUserAccessRecord(session, "jobs", job.submittedById, "view");
+    if (!accessCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: accessCheck.reason || "Job not found." },
+        { status: 404 }
+      );
+    }
+
     // Fetch assigned suppliers
     const suppliers = await prisma.supplier.findMany({
       where: {
@@ -110,6 +121,13 @@ export async function GET(
       totalCost: job.totalCost || 0,
       grandTotal: job.grandTotal || 0,
       createdAt: job.createdAt.toISOString().split("T")[0],
+      createdDateTime: job.createdAt.toISOString(),
+      updatedAt: job.updatedAt ? job.updatedAt.toISOString() : null,
+      createdById: job.submittedById || null,
+      createdByName: job.submittedBy?.name || "System Admin",
+      createdByEmail: job.submittedBy?.email || null,
+      updatedById: (job as any).updatedById || null,
+      updatedByName: (job as any).updatedBy?.name || null,
       deletedAt: job.deletedAt ? job.deletedAt.toISOString() : null,
       isDeleted: job.deletedAt !== null,
       submittedBy: job.submittedBy,
@@ -347,6 +365,15 @@ export async function PUT(
       );
     }
 
+    // Verify ownership and edit permission
+    const editCheck = await canUserAccessRecord(session, "jobs", existing.submittedById, "edit");
+    if (!editCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: editCheck.reason || "Forbidden: You cannot edit jobs created by another user." },
+        { status: 403 }
+      );
+    }
+
     const {
       name,
       jobCode,
@@ -483,6 +510,7 @@ export async function PUT(
           ...(supplierIds !== undefined && { supplierIds }),
           ...(totalCost !== undefined && { totalCost: roundFinancial(totalCost, 2).toString() }),
           ...(grandTotal !== undefined && { grandTotal: roundFinancial(grandTotal, 2).toString() }),
+          updatedById: session.userId,
         },
       });
 
@@ -630,93 +658,131 @@ export async function DELETE(
       );
     }
 
+    // Verify ownership and delete permission
+    const delCheck = await canUserAccessRecord(
+      session,
+      "jobs",
+      existing.submittedById,
+      permanent ? "permanentDelete" : "delete"
+    );
+    if (!delCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: delCheck.reason || "Forbidden: You cannot delete jobs created by another user." },
+        { status: 403 }
+      );
+    }
+
     if (permanent) {
-      // Find storage paths for documents and attachments linked to this job before deletion
-      const [jobDocs, supplierAttachments] = await Promise.all([
-        prisma.jobDocument.findMany({
-          where: { jobId: id },
-          select: { storagePath: true },
-        }),
-        prisma.supplierInvoiceAttachment.findMany({
-          where: {
-            OR: [
-              { jobId: id },
-              { invoice: { jobId: id } },
-            ],
+      const isPermDeleteAuthorized = await checkSessionPermission(session, "jobs", "permanentDelete");
+      if (!isPermDeleteAuthorized) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Forbidden: You do not have permission to permanently delete jobs. Contact an administrator.",
           },
-          select: { storagePath: true },
+          { status: 403 }
+        );
+      }
+
+      // 1. Strict Financial Dependency Protection (Section 2 & 5)
+      // Block permanent deletion if Job has active supplier invoices or customer invoices
+      const [activeSupplierInvoices, customerInvoice] = await Promise.all([
+        prisma.supplierInvoice.findMany({
+          where: {
+            jobId: id,
+            deletedAt: null,
+            status: { not: "CANCELLED" },
+          },
+          select: { id: true, invoiceNumber: true, totalAmount: true },
+        }),
+        prisma.invoice.findFirst({
+          where: { jobId: id },
+          select: { id: true, invoiceNumber: true, grandTotal: true, status: true },
         }),
       ]);
 
-      const storagePathsToClean: string[] = [
-        ...jobDocs.map((d) => d.storagePath).filter((p): p is string => Boolean(p)),
-        ...supplierAttachments.map((a) => a.storagePath).filter((p): p is string => Boolean(p)),
-      ];
-
-      // Atomic cascade deletion in proper dependency order
-      await prisma.$transaction(async (tx) => {
-        // 1. Delete customer invoices & revisions
-        const customerInvoices = await tx.invoice.findMany({
-          where: { jobId: id },
-          select: { id: true },
-        });
-        const invoiceIds = customerInvoices.map((inv) => inv.id);
-        if (invoiceIds.length > 0) {
-          await tx.invoiceRevision.deleteMany({
-            where: { invoiceId: { in: invoiceIds } },
-          });
-          await tx.invoice.deleteMany({
-            where: { id: { in: invoiceIds } },
-          });
+      if (activeSupplierInvoices.length > 0 || customerInvoice) {
+        const reasons: string[] = [];
+        if (activeSupplierInvoices.length > 0) {
+          reasons.push(
+            `${activeSupplierInvoices.length} active Supplier Invoice(s) (${activeSupplierInvoices
+              .map((s) => s.invoiceNumber)
+              .slice(0, 3)
+              .join(", ")})`
+          );
+        }
+        if (customerInvoice) {
+          reasons.push(`Customer Invoice "${customerInvoice.invoiceNumber}" (${customerInvoice.status})`);
         }
 
-        // 2. Delete supplier invoices, items, attachments, and audit logs
-        const supplierInvoices = await tx.supplierInvoice.findMany({
-          where: { jobId: id },
-          select: { id: true },
-        });
-        const supplierInvoiceIds = supplierInvoices.map((s) => s.id);
+        return NextResponse.json(
+          {
+            success: false,
+            blocked: true,
+            error: `Cannot Permanently Delete Job: This Job has linked financial records (${reasons.join(
+              " and "
+            )}). Accounting and financial audit history must be preserved.`,
+            financialDependencies: {
+              supplierInvoicesCount: activeSupplierInvoices.length,
+              customerInvoiceNumber: customerInvoice?.invoiceNumber || null,
+            },
+          },
+          { status: 422 }
+        );
+      }
 
-        await tx.supplierInvoiceAttachment.deleteMany({
+      // 2. Identify storage paths for documents linked to this job before deletion
+      const jobDocs = await prisma.jobDocument.findMany({
+        where: { jobId: id },
+        select: { storagePath: true },
+      });
+
+      const storagePathsToClean: string[] = jobDocs
+        .map((d) => d.storagePath)
+        .filter((p): p is string => Boolean(p));
+
+      const targetFileHash = existing.fileHash;
+
+      // 3. Atomic cascade deletion in proper dependency order
+      await prisma.$transaction(async (tx) => {
+        // Delete job documents for this job AND any orphaned documents sharing targetFileHash
+        await tx.jobDocument.deleteMany({
           where: {
             OR: [
               { jobId: id },
-              ...(supplierInvoiceIds.length > 0 ? [{ invoiceId: { in: supplierInvoiceIds } }] : []),
+              ...(targetFileHash ? [{ fileHash: targetFileHash }] : []),
             ],
           },
         });
 
-        if (supplierInvoiceIds.length > 0) {
-          await tx.supplierInvoiceAuditLog.deleteMany({
-            where: { invoiceId: { in: supplierInvoiceIds } },
-          });
-          await tx.supplierInvoiceItem.deleteMany({
-            where: { invoiceId: { in: supplierInvoiceIds } },
-          });
-          await tx.supplierInvoice.deleteMany({
-            where: { id: { in: supplierInvoiceIds } },
-          });
-        }
+        // Delete upload logs for this job AND matching fileHash
+        await tx.jobUploadLog.deleteMany({
+          where: {
+            OR: [
+              { jobId: id },
+              ...(targetFileHash ? [{ fileHash: targetFileHash }] : []),
+            ],
+          },
+        });
 
-        // 3. Delete job documents & upload logs
-        await tx.jobDocument.deleteMany({ where: { jobId: id } });
-        await tx.jobUploadLog.deleteMany({ where: { jobId: id } });
-
-        // 4. Delete job approvals
+        // Delete job approvals
         await tx.jobApproval.deleteMany({ where: { jobId: id } });
 
-        // 5. Delete cost items, cost categories, and cost summary
+        // Delete cost items, cost categories, and cost summary
         await tx.jobCostItem.deleteMany({ where: { jobId: id } });
         await tx.jobCostCategory.deleteMany({ where: { jobId: id } });
         await tx.jobCostSummary.deleteMany({ where: { jobId: id } });
 
-        // 6. Finally delete the job itself
+        // Finally delete the job itself (releases unique constraint on fileHash)
         await tx.job.delete({ where: { id } });
       });
 
       // Asynchronously clean up files from Supabase Storage without blocking the response
       if (storagePathsToClean.length > 0) {
-        cleanupOrphanedStorageFiles(storagePathsToClean).catch((cleanupErr) => {
+        cleanupOrphanedStorageFiles(
+          storagePathsToClean,
+          process.env.SUPABASE_STORAGE_BUCKET || "erp-documents"
+        ).catch((cleanupErr) => {
           console.warn("Storage cleanup error after job deletion:", cleanupErr);
         });
       }
@@ -726,18 +792,29 @@ export async function DELETE(
         action: "PERMANENT_DELETE_JOB",
         resource: "jobs",
         resourceId: id,
-        details: { name: existing.name, jobCode: existing.jobCode },
+        details: { name: existing.name, jobCode: existing.jobCode, releasedHash: targetFileHash },
       });
 
       return NextResponse.json({
         success: true,
-        message: `Job "${existing.name}" permanently deleted.`,
+        message: `Job "${existing.name}" (${existing.jobCode}) and associated upload records permanently deleted. The Excel file can now be uploaded again.`,
       });
     } else {
-      // Soft delete
-      const deletedJob = await prisma.job.update({
-        where: { id },
-        data: { deletedAt: new Date() },
+      // Soft delete: update both Job and its JobDocuments atomically
+      const deletedAt = new Date();
+      const deletedJob = await prisma.$transaction(async (tx) => {
+        await tx.jobDocument.updateMany({
+          where: { jobId: id },
+          data: { deletedAt },
+        });
+
+        return tx.job.update({
+          where: { id },
+          data: {
+            deletedAt,
+            updatedById: session.userId,
+          },
+        });
       });
 
       await logAuditEvent({

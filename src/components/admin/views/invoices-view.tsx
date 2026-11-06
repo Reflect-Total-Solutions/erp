@@ -63,6 +63,7 @@ export function InvoicesView() {
   const [supplierFilterVal, setSupplierFilterVal] = useState("all");
   const [jobFilterVal, setJobFilterVal] = useState("all");
   const [supplierStatusFilter, setSupplierStatusFilter] = useState("all");
+  const [createdByFilter, setCreatedByFilter] = useState("all");
   const [supplierPage, setSupplierPage] = useState(1);
   const [supplierPageSize, setSupplierPageSize] = useState(10);
 
@@ -106,7 +107,7 @@ export function InvoicesView() {
 
   const isAdmin = currentRole.toLowerCase() === "admin";
   const isSupervisor = currentRole.toLowerCase() === "supervisor";
-  const canCreate = isAdmin || isSupervisor || can("invoices", "create");
+  const canCreate = can("supplierInvoices", "create");
 
   // =========================================================================
   // DATA FETCHING
@@ -285,6 +286,17 @@ export function InvoicesView() {
     );
   }, [jobs]);
 
+  // Unique creators for filtering
+  const uniqueCreators = useMemo(() => {
+    const map = new Map<string, string>();
+    supplierInvoices.forEach((inv) => {
+      if (inv.createdById && inv.createdByName) {
+        map.set(inv.createdById, inv.createdByName);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [supplierInvoices]);
+
   // Filtered & Paginated Supplier Invoices
   const filteredSupplierInvoices = useMemo(() => {
     return supplierInvoices.filter((inv) => {
@@ -296,7 +308,8 @@ export function InvoicesView() {
         (inv.supplierCode && inv.supplierCode.toLowerCase().includes(q)) ||
         (inv.jobCode && inv.jobCode.toLowerCase().includes(q)) ||
         (inv.jobName && inv.jobName.toLowerCase().includes(q)) ||
-        (inv.clientName && inv.clientName.toLowerCase().includes(q));
+        (inv.clientName && inv.clientName.toLowerCase().includes(q)) ||
+        (inv.createdByName && inv.createdByName.toLowerCase().includes(q));
 
       const matchSupplier = supplierFilterVal === "all" || inv.supplierId === supplierFilterVal;
       const matchJob = jobFilterVal === "all" || inv.jobId === jobFilterVal;
@@ -308,10 +321,11 @@ export function InvoicesView() {
           : supplierStatusFilter === "cancelled"
           ? inv.status === "CANCELLED"
           : true;
+      const matchCreatedBy = createdByFilter === "all" || inv.createdById === createdByFilter;
 
-      return matchSearch && matchSupplier && matchJob && matchStatus;
+      return matchSearch && matchSupplier && matchJob && matchStatus && matchCreatedBy;
     });
-  }, [supplierInvoices, supplierSearch, supplierFilterVal, jobFilterVal, supplierStatusFilter]);
+  }, [supplierInvoices, supplierSearch, supplierFilterVal, jobFilterVal, supplierStatusFilter, createdByFilter]);
 
   const totalSupplierPages = Math.max(1, Math.ceil(filteredSupplierInvoices.length / supplierPageSize));
   const paginatedSupplierInvoices = useMemo(() => {
@@ -319,7 +333,7 @@ export function InvoicesView() {
     return filteredSupplierInvoices.slice(start, start + supplierPageSize);
   }, [filteredSupplierInvoices, supplierPage, supplierPageSize]);
 
-  if (!can("invoices", "view")) {
+  if (!can("supplierInvoices", "view") && !can("invoices", "view")) {
     return (
       <div className="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border border-slate-200 text-center max-w-lg mx-auto mt-8 shadow-xs">
         <div className="h-14 w-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-4">
@@ -356,14 +370,6 @@ export function InvoicesView() {
               <span>+ Create Invoice</span>
             </button>
           )}
-
-          <Link
-            href="/admin/profit-loss"
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors shadow-2xs"
-          >
-            <TrendingUp className="h-4 w-4 text-emerald-600" />
-            <span>Profit & Loss Summary</span>
-          </Link>
         </div>
       </div>
 
@@ -491,6 +497,18 @@ export function InvoicesView() {
                   { label: "Cancelled", value: "cancelled" },
                 ]}
               />
+
+              {uniqueCreators.length > 1 && (
+                <FilterSelect
+                  label="Created By"
+                  value={createdByFilter}
+                  onChange={setCreatedByFilter}
+                  options={[
+                    { label: "All Creators", value: "all" },
+                    ...uniqueCreators.map((c) => ({ label: c.name, value: c.id })),
+                  ]}
+                />
+              )}
             </div>
 
             {/* Right: Search Field & Bulk Actions */}
@@ -558,7 +576,7 @@ export function InvoicesView() {
                   <th className="py-3 px-3.5">Invoice Date</th>
                   <th className="py-3 px-3.5 text-center">Attachments</th>
                   <th className="py-3 px-3.5 text-right">Invoice Amount (Rs.)</th>
-                  <th className="py-3 px-3.5">Recorded By</th>
+                  <th className="py-3 px-3.5">Created By</th>
                   <th className="py-3 px-3.5 text-center">Status</th>
                   <th className="py-3 px-3.5 text-right">Actions</th>
                 </tr>
@@ -684,7 +702,7 @@ export function InvoicesView() {
                             >
                               <Eye className="h-4 w-4" />
                             </button>
-                            {!isCancelled && (
+                            {!isCancelled && can("supplierInvoices", "edit") && (
                               <button
                                 type="button"
                                 onClick={() => handleOpenEditSupplierInvoice(inv)}
@@ -694,15 +712,17 @@ export function InvoicesView() {
                                 <Edit className="h-4 w-4" />
                               </button>
                             )}
-                            <button
-                              type="button"
-                              onClick={() => downloadInvoicesAsZip([inv])}
-                              className="p-1 rounded text-slate-400 hover:text-emerald-600 hover:bg-slate-100 transition-colors"
-                              title="Download Attachments (.zip)"
-                            >
-                              <Download className="h-4 w-4" />
-                            </button>
-                            {isAdmin && !isCancelled && (
+                            {can("supplierInvoices", "download") && (
+                              <button
+                                type="button"
+                                onClick={() => downloadInvoicesAsZip([inv])}
+                                className="p-1 rounded text-slate-400 hover:text-emerald-600 hover:bg-slate-100 transition-colors"
+                                title="Download Attachments (.zip)"
+                              >
+                                <Download className="h-4 w-4" />
+                              </button>
+                            )}
+                            {!isCancelled && can("supplierInvoices", "cancel") && (
                               <button
                                 type="button"
                                 onClick={() => {

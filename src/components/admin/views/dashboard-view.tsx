@@ -192,17 +192,32 @@ export function DashboardView() {
       {/* Professional Page Heading & Welcome Banner */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 p-5 rounded-2xl bg-white border border-slate-200">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-              Welcome back, Administrator
+              Dashboard Overview
             </h1>
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 border border-emerald-200">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
               Online
             </span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-700 border border-blue-200 capitalize">
+              Role: {currentRole}
+            </span>
+            {dashboardStats?.visibilityScope && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-medium text-slate-600 border border-slate-200">
+                Scope:{" "}
+                <strong className="text-slate-800">
+                  {dashboardStats.visibilityScope === "own"
+                    ? "Own Records Only"
+                    : dashboardStats.visibilityScope === "team"
+                    ? "Team & Subordinates"
+                    : "All Company Records"}
+                </strong>
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Reflect Total Solutions ERP • Overview of business operations, project schedules, and financial authorizations.
+            Reflect Total Solutions ERP • Real-time project schedules, supplier invoices, and authorized metrics.
           </p>
         </div>
 
@@ -702,6 +717,60 @@ export function DashboardView() {
                     </tr>
                   ))
                 )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Employee Breakdown Table (Supervisor & Admin) */}
+      {dashboardStats?.employeeStats && dashboardStats.employeeStats.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-50/50">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Team & Employee Ownership Breakdown</h2>
+              <p className="text-[11px] text-slate-500">
+                Summary of jobs and supplier invoices created by employees within your authorized scope
+              </p>
+            </div>
+            <span className="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+              {dashboardStats.employeeStats.length} user(s)
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
+                <tr>
+                  <th className="px-5 py-3">Employee</th>
+                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3 text-center">Jobs Created</th>
+                  <th className="px-4 py-3 text-center">Invoices Recorded</th>
+                  <th className="px-5 py-3 text-right">Invoiced Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {dashboardStats.employeeStats.map((emp) => (
+                  <tr key={emp.userId} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-5 py-3 font-semibold text-slate-900">
+                      {emp.name}
+                    </td>
+                    <td className="px-4 py-3 text-slate-500 font-mono">
+                      {emp.email}
+                    </td>
+                    <td className="px-4 py-3 text-center font-semibold text-blue-600">
+                      {emp.jobCount}
+                    </td>
+                    <td className="px-4 py-3 text-center font-semibold text-slate-700">
+                      {emp.invoiceCount}
+                    </td>
+                    <td className="px-5 py-3 text-right font-mono font-semibold text-slate-900">
+                      {dashboardStats.canViewFinancials !== false
+                        ? formatCurrency(emp.totalInvoiceAmount, { showCurrencyPrefix: true })
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

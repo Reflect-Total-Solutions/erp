@@ -11,6 +11,8 @@ import {
   SUPPLIER_INVOICES_BUCKET,
 } from "@/lib/supabase";
 import { recalculateJobFinances } from "@/lib/financial-recalculation";
+import { checkSessionPermission } from "@/lib/permissions";
+import { canUserAccessRecord } from "@/lib/data-visibility";
 
 // GET /api/supplier-invoices/[id]
 export async function GET(
@@ -23,6 +25,14 @@ export async function GET(
       return NextResponse.json(
         { success: false, error: "Unauthorized access. Please log in." },
         { status: 401 }
+      );
+    }
+
+    const isAuthorized = await checkSessionPermission(session, "supplierInvoices", "view");
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to view this supplier invoice." },
+        { status: 403 }
       );
     }
 
@@ -56,6 +66,9 @@ export async function GET(
         createdBy: {
           select: { id: true, name: true, email: true },
         },
+        updatedBy: {
+          select: { id: true, name: true, email: true },
+        },
         cancelledBy: {
           select: { id: true, name: true, email: true },
         },
@@ -71,6 +84,15 @@ export async function GET(
     if (!invoice) {
       return NextResponse.json(
         { success: false, error: "Supplier invoice not found." },
+        { status: 404 }
+      );
+    }
+
+    // Verify record visibility scope
+    const accessCheck = await canUserAccessRecord(session, "supplierInvoices", invoice.createdById, "view");
+    if (!accessCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: accessCheck.reason || "Supplier invoice not found." },
         { status: 404 }
       );
     }
@@ -112,6 +134,11 @@ export async function GET(
         cancelledAt: invoice.cancelledAt ? new Date(invoice.cancelledAt).toISOString() : null,
         cancelledBy: invoice.cancelledBy,
         createdBy: invoice.createdBy,
+        createdById: invoice.createdById,
+        createdByName: invoice.createdBy?.name || "System Admin",
+        createdByEmail: invoice.createdBy?.email || null,
+        updatedById: invoice.updatedById || null,
+        updatedByName: invoice.updatedBy?.name || null,
         items: (invoice.items || []).map((item: any) => ({
           id: item.id,
           rowNumber: item.rowNumber,
@@ -195,6 +222,14 @@ export async function PUT(
       );
     }
 
+    const isAuthorized = await checkSessionPermission(session, "supplierInvoices", "edit");
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to edit supplier invoices." },
+        { status: 403 }
+      );
+    }
+
     const { id } = await params;
     const db = getPrisma();
 
@@ -217,6 +252,15 @@ export async function PUT(
       return NextResponse.json(
         { success: false, error: "Supplier invoice not found." },
         { status: 404 }
+      );
+    }
+
+    // Verify ownership and edit permission
+    const editAccess = await canUserAccessRecord(session, "supplierInvoices", existingInvoice.createdById, "edit");
+    if (!editAccess.allowed) {
+      return NextResponse.json(
+        { success: false, error: editAccess.reason || "Forbidden: You cannot edit invoices created by another user." },
+        { status: 403 }
       );
     }
 
@@ -626,6 +670,7 @@ export async function PUT(
           invoiceDate: new Date(invoiceDate),
           totalAmount: totalInvoiceAmount.toFixed(2),
           notes,
+          updatedById: session.userId,
           updatedAt: new Date(),
         },
       });
@@ -741,6 +786,24 @@ export async function PATCH(
     const reason = body.reason?.trim();
     const db = getPrisma();
 
+    if (action === "CANCEL") {
+      const canCancel = await checkSessionPermission(session, "supplierInvoices", "cancel");
+      if (!canCancel) {
+        return NextResponse.json(
+          { success: false, error: "Forbidden: You do not have permission to cancel supplier invoices." },
+          { status: 403 }
+        );
+      }
+    } else {
+      const canEdit = await checkSessionPermission(session, "supplierInvoices", "edit");
+      if (!canEdit) {
+        return NextResponse.json(
+          { success: false, error: "Forbidden: You do not have permission to modify supplier invoices." },
+          { status: 403 }
+        );
+      }
+    }
+
     if (!reason && action !== "REMOVE_ATTACHMENT") {
       return NextResponse.json(
         { success: false, error: "A mandatory audit reason is required to cancel or restore a supplier invoice." },
@@ -760,6 +823,20 @@ export async function PATCH(
       return NextResponse.json(
         { success: false, error: "Supplier invoice not found." },
         { status: 404 }
+      );
+    }
+
+    // Verify ownership and action permission
+    const patchAccess = await canUserAccessRecord(
+      session,
+      "supplierInvoices",
+      invoice.createdById,
+      action === "CANCEL" ? "cancel" : "edit"
+    );
+    if (!patchAccess.allowed) {
+      return NextResponse.json(
+        { success: false, error: patchAccess.reason || "Forbidden: You cannot modify invoices created by another user." },
+        { status: 403 }
       );
     }
 
@@ -926,6 +1003,14 @@ export async function DELETE(
       );
     }
 
+    const isAuthorized = await checkSessionPermission(session, "supplierInvoices", "delete");
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to delete supplier invoices." },
+        { status: 403 }
+      );
+    }
+
     const { id } = await params;
     const { searchParams } = new URL(req.url);
     const reason = searchParams.get("reason")?.trim() || "Admin deletion";
@@ -942,6 +1027,20 @@ export async function DELETE(
       );
     }
 
+    // Verify ownership and delete permission
+    const delAccess = await canUserAccessRecord(
+      session,
+      "supplierInvoices",
+      invoice.createdById,
+      "delete"
+    );
+    if (!delAccess.allowed) {
+      return NextResponse.json(
+        { success: false, error: delAccess.reason || "Forbidden: You cannot delete invoices created by another user." },
+        { status: 403 }
+      );
+    }
+
     const financialSnapshot = await db.$transaction(async (tx) => {
       await (tx.supplierInvoice as any).update({
         where: { id },
@@ -951,6 +1050,7 @@ export async function DELETE(
           cancellationReason: reason,
           cancelledAt: new Date(),
           cancelledById: session.userId,
+          updatedById: session.userId,
         },
       });
 

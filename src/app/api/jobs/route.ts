@@ -5,6 +5,7 @@ import { getSession } from "@/lib/auth";
 import { jobCreateSchema } from "@/lib/validations/job";
 import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
+import { buildRecordVisibilityFilter } from "@/lib/data-visibility";
 
 // GET /api/jobs
 // Query params: ?status=active|trash|all&search=term&page=1&limit=50
@@ -32,7 +33,16 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") ?? "100", 10)));
   const skip = (page - 1) * limit;
 
-  const where: Record<string, unknown> = {};
+  const createdByFilter = searchParams.get("createdBy")?.trim();
+
+  // 1. Resolve record visibility scope from database-driven permissions
+  const { filter: visibilityFilter, scope, authorizedIds } = await buildRecordVisibilityFilter(
+    session,
+    "jobs",
+    "submittedById"
+  );
+
+  const where: any = {};
 
   if (statusParam === "active") {
     where.deletedAt = null;
@@ -57,13 +67,37 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Apply explicit createdBy filter if within authorized scope
+  if (createdByFilter && createdByFilter !== "all") {
+    if (!authorizedIds || authorizedIds.includes(createdByFilter)) {
+      where.submittedById = createdByFilter;
+    } else {
+      // Forbidden attempt to filter outside scope -> yield empty
+      where.submittedById = "__FORBIDDEN_SCOPE__";
+    }
+  } else {
+    // Merge database record visibility filter
+    if (visibilityFilter.submittedById) {
+      where.submittedById = visibilityFilter.submittedById;
+    } else if (visibilityFilter.OR) {
+      where.OR = visibilityFilter.OR;
+    }
+  }
+
   if (search) {
-    where.OR = [
+    const searchConditions = [
       { name: { contains: search, mode: "insensitive" } },
       { jobCode: { contains: search, mode: "insensitive" } },
       { description: { contains: search, mode: "insensitive" } },
       { remarks: { contains: search, mode: "insensitive" } },
     ];
+
+    if (where.OR) {
+      where.AND = [{ OR: where.OR }, { OR: searchConditions }];
+      delete where.OR;
+    } else {
+      where.OR = searchConditions;
+    }
   }
 
   try {
@@ -88,6 +122,7 @@ export async function GET(req: NextRequest) {
           },
           costSummary: true,
           submittedBy: { select: { id: true, name: true, email: true } },
+          updatedBy: { select: { id: true, name: true, email: true } },
           approvals: {
             orderBy: { createdAt: "desc" },
             include: { user: { select: { id: true, name: true, email: true } } },
@@ -160,6 +195,13 @@ export async function GET(req: NextRequest) {
         totalCost: j.totalCost || 0,
         grandTotal: j.grandTotal || 0,
         createdAt: j.createdAt.toISOString().split("T")[0],
+        createdDateTime: j.createdAt.toISOString(),
+        updatedAt: j.updatedAt ? j.updatedAt.toISOString() : null,
+        createdById: j.submittedById || null,
+        createdByName: j.submittedBy?.name || "System Admin",
+        createdByEmail: j.submittedBy?.email || null,
+        updatedById: (j as any).updatedById || null,
+        updatedByName: (j as any).updatedBy?.name || null,
         deletedAt: j.deletedAt ? j.deletedAt.toISOString() : null,
         isDeleted: j.deletedAt !== null,
         supplierInvoiceCount,
@@ -281,6 +323,9 @@ export async function GET(req: NextRequest) {
         limit,
         total,
         totalPages: Math.ceil(total / limit),
+      },
+      meta: {
+        visibilityScope: scope,
       },
     });
   } catch (err: any) {

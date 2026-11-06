@@ -25,6 +25,7 @@ import {
   Printer,
   Building,
   User,
+  Clock,
   ShieldAlert,
   TrendingUp,
   TrendingDown,
@@ -542,6 +543,34 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                 <span className="flex items-center gap-1.5">
                   <User className="h-3.5 w-3.5 text-slate-400" />
                   Handled By: <strong className="text-slate-700">{currentJob.handledBy}</strong>
+                </span>
+              )}
+
+              <span className="flex items-center gap-1.5">
+                <User className="h-3.5 w-3.5 text-slate-400" />
+                Created By:{" "}
+                <strong className="text-slate-700">
+                  {currentJob.createdByName || currentJob.submittedBy?.name || "System Admin"}
+                </strong>
+                {currentJob.createdAt && (
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    ({new Date(currentJob.createdAt).toLocaleDateString()})
+                  </span>
+                )}
+              </span>
+
+              {(currentJob.updatedByName || currentJob.updatedAt) && (
+                <span className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-slate-400" />
+                  Last Updated:{" "}
+                  <strong className="text-slate-700">
+                    {currentJob.updatedByName || "System"}
+                  </strong>
+                  {currentJob.updatedAt && (
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      ({new Date(currentJob.updatedAt).toLocaleDateString()})
+                    </span>
+                  )}
                 </span>
               )}
             </div>

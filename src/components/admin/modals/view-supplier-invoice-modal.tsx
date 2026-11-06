@@ -286,8 +286,27 @@ export function ViewSupplierInvoiceModal({
               </span>
             </div>
 
-            <div className="text-left md:text-right text-[11px] text-slate-400 mt-2">
-              <p>Created: {invoice.createdAt} by {invoice.createdByName || "System Admin"}</p>
+            <div className="text-left md:text-right text-[11px] text-slate-500 mt-2 space-y-0.5">
+              <p>
+                <span className="text-slate-400">Created:</span>{" "}
+                <span className="font-medium text-slate-700">{invoice.createdByName || "System Admin"}</span>
+                {invoice.createdAt && (
+                  <span className="text-slate-400 text-[10px] ml-1 font-mono">
+                    ({new Date(invoice.createdAt).toLocaleString()})
+                  </span>
+                )}
+              </p>
+              {(invoice.updatedByName || invoice.updatedAt) && (
+                <p>
+                  <span className="text-slate-400">Last Modified:</span>{" "}
+                  <span className="font-medium text-slate-700">{invoice.updatedByName || "System"}</span>
+                  {invoice.updatedAt && (
+                    <span className="text-slate-400 text-[10px] ml-1 font-mono">
+                      ({new Date(invoice.updatedAt).toLocaleString()})
+                    </span>
+                  )}
+                </p>
+              )}
               {invoice.notes && (
                 <p className="text-slate-500 italic mt-0.5">Remarks: {invoice.notes}</p>
               )}

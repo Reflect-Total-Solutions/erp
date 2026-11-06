@@ -28,12 +28,13 @@ model Role {
 
 model Permission {
   id          String           @id @default(cuid())
-  action      String           // e.g. "read", "write", "delete"
-  resource    String           // e.g. "jobs", "invoices", "users"
+  action      String           // e.g. "view", "create", "edit", "delete", "approve"
+  resource    String           // module key e.g. "dashboard", "jobs", "suppliers", "approvals", "accessControl", "profitLoss", "supplierInvoices"
   description String?
   createdAt   DateTime         @default(now()) @map("created_at")
 
-  roles       RolePermission[]
+  roles           RolePermission[]
+  userPermissions UserPermission[]
 
   @@unique([action, resource])
   @@map("permissions")
@@ -52,14 +53,53 @@ model UserRole {
 }
 
 model RolePermission {
-  roleId       String @map("role_id")
-  permissionId String @map("permission_id")
+  roleId       String  @map("role_id")
+  permissionId String  @map("permission_id")
+  isAllowed    Boolean @default(true) @map("is_allowed")
 
   role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
   @@id([roleId, permissionId])
   @@map("role_permissions")
+}
+
+model UserPermission {
+  id           String     @id @default(cuid())
+  userId       String     @map("user_id")
+  permissionId String     @map("permission_id")
+  isAllowed    Boolean    @default(true) @map("is_allowed")
+  updatedById  String?    @map("updated_by_id")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  user       User       @relation("UserPermissions", fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  updatedBy  User?      @relation("UserPermissionUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@unique([userId, permissionId])
+  @@index([userId])
+  @@index([permissionId])
+  @@map("user_permissions")
+}
+
+model PermissionAuditLog {
+  id            String   @id @default(cuid())
+  targetUserId  String   @map("target_user_id")
+  permissionId  String?  @map("permission_id")
+  moduleKey     String   @map("module_key")
+  actionKey     String   @map("action_key")
+  previousValue Boolean? @map("previous_value")
+  newValue      Boolean  @map("new_value")
+  changedById   String?  @map("changed_by_id")
+  reason        String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  targetUser User  @relation("PermissionAuditTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  changedBy  User? @relation("PermissionAuditChangedBy", fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([targetUserId, createdAt])
+  @@map("permission_audit_logs")
 }
 
 // ─── Users ───────────────────────────────────────────────────────────────────
@@ -79,19 +119,33 @@ model User {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  roles         UserRole[]
-  loginAttempts LoginAttempt[]
+  supervisorId           String?                 @map("supervisor_id")
+  department             String?                 @map("department")
+  supervisor             User?                   @relation("UserSupervisor", fields: [supervisorId], references: [id], onDelete: SetNull)
+  subordinates           User[]                  @relation("UserSupervisor")
+
+  roles                  UserRole[]
+  userPermissions        UserPermission[]        @relation("UserPermissions")
+  updatedUserPermissions UserPermission[]        @relation("UserPermissionUpdatedBy")
+  permissionAuditTargets PermissionAuditLog[]    @relation("PermissionAuditTarget")
+  permissionAuditChanges PermissionAuditLog[]    @relation("PermissionAuditChangedBy")
+  loginAttempts          LoginAttempt[]
   auditLogs     AuditLog[]
   revokedTokens RevokedToken[]
   uploadLogs    JobUploadLog[]
   jobApprovals  JobApproval[]
   submittedJobs Job[]             @relation("JobSubmittedBy")
+  updatedJobs   Job[]             @relation("JobUpdatedBy")
   createdInvoices Invoice[]       @relation("InvoiceCreatedBy")
   regeneratedRevisions InvoiceRevision[] @relation("InvoiceRevisionRegeneratedBy")
+  createdSuppliers          Supplier[]                @relation("SupplierCreatedBy")
+  updatedSuppliers          Supplier[]                @relation("SupplierUpdatedBy")
   createdSupplierInvoices   SupplierInvoice[]         @relation("SupplierInvoiceCreatedBy")
+  updatedSupplierInvoices   SupplierInvoice[]         @relation("SupplierInvoiceUpdatedBy")
   cancelledSupplierInvoices SupplierInvoice[]         @relation("SupplierInvoiceCancelledBy")
   supplierInvoiceAuditLogs  SupplierInvoiceAuditLog[]
   uploadedSupplierInvoiceAttachments SupplierInvoiceAttachment[] @relation("SupplierInvoiceAttachmentUploadedBy")
+  uploadedJobDocuments   JobDocument[]           @relation("JobDocumentUploadedBy")
 
   @@index([email, deletedAt])
   @@index([isActive, deletedAt])
@@ -109,10 +163,14 @@ model Supplier {
   email         String
   address       String
   isActive      Boolean   @default(true) @map("is_active")
+  createdById   String?   @map("created_by_id")
+  updatedById   String?   @map("updated_by_id")
   deletedAt     DateTime? @map("deleted_at")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
+  createdBy     User?     @relation("SupplierCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy     User?     @relation("SupplierUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   supplierInvoices SupplierInvoice[]
 
   // Composite indexes for fast lookups
@@ -193,11 +251,13 @@ model Job {
   totalCost      Decimal?          @default(0) @map("total_cost") @db.Decimal(18, 2)
   grandTotal     Decimal?          @default(0) @map("grand_total") @db.Decimal(18, 2)
   submittedById  String?           @map("submitted_by_id")
+  updatedById    String?           @map("updated_by_id")
   deletedAt      DateTime?         @map("deleted_at")
   createdAt      DateTime          @default(now()) @map("created_at")
   updatedAt      DateTime          @updatedAt @map("updated_at")
 
   submittedBy    User?             @relation("JobSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
+  updatedBy      User?             @relation("JobUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   documents      JobDocument[]
   costCategories JobCostCategory[]
   costItems      JobCostItem[]
@@ -293,11 +353,13 @@ model JobDocument {
   storagePath String?   @map("storage_path")
   fileHash    String?   @map("file_hash")
   status      String    @default("Processed")
+  uploadedById String?  @map("uploaded_by_id")
   deletedAt   DateTime? @map("deleted_at")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  job        Job   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  uploadedBy User? @relation("JobDocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
 
   @@index([jobId, deletedAt])
   @@index([fileHash])
@@ -418,6 +480,7 @@ model SupplierInvoice {
   cancelledAt         DateTime?                   @map("cancelled_at")
   cancelledById       String?                     @map("cancelled_by_id")
   createdById         String?                     @map("created_by_id")
+  updatedById         String?                     @map("updated_by_id")
   deletedAt           DateTime?                   @map("deleted_at")
   createdAt           DateTime                    @default(now()) @map("created_at")
   updatedAt           DateTime                    @updatedAt @map("updated_at")
@@ -425,6 +488,7 @@ model SupplierInvoice {
   supplier            Supplier                    @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   job                 Job                         @relation(fields: [jobId], references: [id], onDelete: Restrict)
   createdBy           User?                       @relation("SupplierInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy           User?                       @relation("SupplierInvoiceUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   cancelledBy         User?                       @relation("SupplierInvoiceCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
   items               SupplierInvoiceItem[]
   attachments         SupplierInvoiceAttachment[]

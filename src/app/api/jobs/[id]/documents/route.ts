@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { uploadToSupabaseStorage, deleteFromSupabaseStorage } from "@/lib/supabase";
 import { checkSessionPermission } from "@/lib/permissions";
+import { canUserAccessRecord } from "@/lib/data-visibility";
 
 // GET /api/jobs/[id]/documents
 export async function GET(
@@ -20,6 +21,26 @@ export async function GET(
   const { id } = await params;
 
   try {
+    const job = await prisma.job.findUnique({
+      where: { id },
+      select: { id: true, submittedById: true },
+    });
+
+    if (!job) {
+      return NextResponse.json(
+        { success: false, error: "Job not found." },
+        { status: 404 }
+      );
+    }
+
+    const accessCheck = await canUserAccessRecord(session, "jobs", job.submittedById, "view");
+    if (!accessCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: accessCheck.reason || "Forbidden: You cannot access documents for this job." },
+        { status: 403 }
+      );
+    }
+
     const documents = await prisma.jobDocument.findMany({
       where: {
         jobId: id,
@@ -85,6 +106,14 @@ export async function POST(
       );
     }
 
+    const editCheck = await canUserAccessRecord(session, "jobs", job.submittedById, "edit");
+    if (!editCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: editCheck.reason || "Forbidden: You cannot upload documents for this job." },
+        { status: 403 }
+      );
+    }
+
     const contentType = req.headers.get("content-type") || "";
 
     // Multipart upload
@@ -133,6 +162,7 @@ export async function POST(
             fileUrl: uploadRes.fileUrl,
             storagePath: uploadRes.storagePath,
             status: "Processed",
+            uploadedById: session.userId,
           },
         });
 

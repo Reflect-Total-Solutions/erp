@@ -86,8 +86,8 @@ interface AdminDataContextType {
   // Access Control / User Management Actions (CRUD with Soft Delete)
   updateRolePermission: (
     roleId: string,
-    moduleKey: keyof Role["permissions"],
-    permKey: "view" | "create" | "edit" | "delete" | "approve",
+    moduleKey: string,
+    permKey: string,
     value: boolean
   ) => void;
   addRole: (role: Omit<Role, "id">) => Role;
@@ -258,6 +258,22 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       const targetUser = isPreviewing
         ? usersAccess.find((u) => u.id === activeUserId || u.email === activeUserId)
         : usersAccess.find((u) => u.id === currentUserId || u.email === currentUserId);
+
+      // Super Admin safety guard: Super Admin always retains Access Control view & managePermissions
+      if (
+        (targetUser?.email?.toLowerCase() === "admin@reflecterp.com" ||
+          (!targetUser && currentRole === "admin")) &&
+        module === "accessControl" &&
+        (action === "view" || action === "managePermissions")
+      ) {
+        return true;
+      }
+
+      // Check Parent Dependency: If action is not 'view', module MUST have 'view' permission allowed
+      if (action !== "view") {
+        const canViewModule = can(module, "view");
+        if (!canViewModule) return false;
+      }
 
       // 1. Direct custom user permissions (highest precedence)
       // A. If previewing another user
@@ -1007,15 +1023,20 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   const updateRolePermission = useCallback(
     (
       roleId: string,
-      moduleKey: keyof Role["permissions"],
-      permKey: "view" | "create" | "edit" | "delete" | "approve",
+      moduleKey: keyof Role["permissions"] | ERPModule,
+      permKey: string,
       value: boolean
     ) => {
-      // Prevent lockout: Admin role must keep accessControl view permission
-      if (roleId === "role-admin" && moduleKey === "accessControl" && permKey === "view" && value === false) {
+      // Prevent lockout: Admin role must keep accessControl view and managePermissions
+      if (
+        roleId === "role-admin" &&
+        moduleKey === "accessControl" &&
+        (permKey === "view" || permKey === "managePermissions") &&
+        value === false
+      ) {
         showToast(
           "Safety Protection",
-          "Administrator role must retain view access to Access Control to prevent lockout.",
+          "Administrator role must retain Access Control View and Manage Permissions to prevent lockout.",
           "error"
         );
         return;

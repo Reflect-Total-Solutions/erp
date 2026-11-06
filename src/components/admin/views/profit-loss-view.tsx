@@ -153,7 +153,7 @@ export function ProfitLossView() {
     }
   };
 
-  if (!can("dashboard", "view")) {
+  if (!can("profitLoss", "view")) {
     return (
       <div className="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border border-slate-200 text-center max-w-lg mx-auto mt-8 shadow-xs">
         <div className="h-14 w-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-4">
@@ -178,24 +178,26 @@ export function ProfitLossView() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleExportCsv}
-          disabled={jobs.length === 0 || isExporting}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs self-start sm:self-auto disabled:opacity-50"
-        >
-          {isExporting ? (
-            <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
-              <span>Preparing CSV...</span>
-            </>
-          ) : (
-            <>
-              <Download className="h-3.5 w-3.5 text-slate-500" />
-              <span>Export P&L Report</span>
-            </>
-          )}
-        </button>
+        {can("profitLoss", "export") && (
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            disabled={jobs.length === 0 || isExporting}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs self-start sm:self-auto disabled:opacity-50"
+          >
+            {isExporting ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+                <span>Preparing CSV...</span>
+              </>
+            ) : (
+              <>
+                <Download className="h-3.5 w-3.5 text-slate-500" />
+                <span>Export P&L Report</span>
+              </>
+            )}
+          </button>
+        )}
       </div>
 
       {/* Accounting Scope Disclosure Alert */}
@@ -413,6 +415,11 @@ export function ProfitLossView() {
                         <Calendar className="h-3 w-3 text-slate-400 shrink-0" />
                         <span>{j.jobDate}</span>
                       </div>
+                      {j.createdByName && (
+                        <div className="text-[10px] text-slate-500 font-medium mt-0.5">
+                          By: {j.createdByName}
+                        </div>
+                      )}
                     </td>
 
                     {/* Approved Value */}

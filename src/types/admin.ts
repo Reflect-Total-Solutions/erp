@@ -168,6 +168,12 @@ export interface Job {
   customerInvoice?: CustomerInvoice | null;
   invoice?: CustomerInvoice | null;
   submittedBy?: { id: string; name: string; email: string } | null;
+  createdById?: string | null;
+  createdByName?: string | null;
+  createdByEmail?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
+  updatedAt?: string | null;
   supplierInvoices?: SupplierInvoice[];
   supplierInvoiceCount?: number;
   supplierInvoiceTotal?: number;
@@ -195,6 +201,11 @@ export interface Supplier {
   email: string;
   address: string;
   createdAt: string;
+  updatedAt?: string;
+  createdById?: string | null;
+  createdByName?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
   isDeleted?: boolean;
   deletedAt?: string;
 }
@@ -247,28 +258,36 @@ export interface ToastNotification {
 
 export interface ModulePermission {
   view: boolean;
-  create: boolean;
-  edit: boolean;
-  delete: boolean;
-  approve: boolean;
+  viewOwn?: boolean;
+  viewTeam?: boolean;
+  viewAll?: boolean;
+  create?: boolean;
+  edit?: boolean;
+  delete?: boolean;
+  restore?: boolean;
+  permanentDelete?: boolean;
+  download?: boolean;
+  bulkDownload?: boolean;
+  export?: boolean;
+  print?: boolean;
+  approve?: boolean;
+  reject?: boolean;
+  moveToPending?: boolean;
+  cancel?: boolean;
+  manageAttachments?: boolean;
+  viewFinancials?: boolean;
+  managePermissions?: boolean;
+  viewHistory?: boolean;
+  [key: string]: boolean | undefined;
 }
 
 export interface Role {
   id: string;
   name: string;
   description: string;
-  color: string;
+  color?: string;
   isSystem?: boolean;
-  permissions: {
-    dashboard: ModulePermission;
-    jobs: ModulePermission;
-    excelUploads: ModulePermission;
-    invoices: ModulePermission;
-    suppliers: ModulePermission;
-    approvals: ModulePermission;
-    auditController: ModulePermission;
-    accessControl: ModulePermission;
-  };
+  permissions: Record<string, ModulePermission>;
 }
 
 export type UserStatus = "Active" | "Suspended" | "Pending";
@@ -280,6 +299,9 @@ export interface UserAccess {
   phone?: string;
   jobTitle?: string;
   department: string;
+  supervisorId?: string | null;
+  supervisorName?: string | null;
+  subordinatesCount?: number;
   roleId: string; // "role-admin" | "role-supervisor" | "role-employer"
   role?: string;
   status: UserStatus;
@@ -288,6 +310,7 @@ export interface UserAccess {
   deletedAt?: string;
   createdAt?: string;
   permissions?: Record<string, ModulePermission>;
+  effectivePermissions?: Record<string, ModulePermission>;
   hasCustomPermissions?: boolean;
 }
 
@@ -365,6 +388,9 @@ export interface SupplierInvoice {
   cancelledByName?: string | null;
   createdById?: string | null;
   createdByName?: string | null;
+  createdByEmail?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
   items?: SupplierInvoiceItem[];
   attachments?: SupplierInvoiceAttachment[];
   auditLogs?: SupplierInvoiceAuditLog[];
@@ -387,6 +413,8 @@ export interface JobProfitLossSummary {
   profitMargin: number;
   financialStatus: "High Margin" | "Healthy" | "Low Margin" | "Over Budget";
   supplierInvoicesCount: number;
+  createdByName?: string;
+  createdById?: string;
 }
 
 export interface DashboardStats {
@@ -403,4 +431,14 @@ export interface DashboardStats {
   totalApprovedJobValue: number;
   totalRecordedGrossProfit: number;
   pendingApprovalsCount: number;
+  visibilityScope?: string;
+  canViewFinancials?: boolean;
+  employeeStats?: Array<{
+    userId: string;
+    name: string;
+    email: string;
+    jobCount: number;
+    invoiceCount: number;
+    totalInvoiceAmount: number;
+  }>;
 }

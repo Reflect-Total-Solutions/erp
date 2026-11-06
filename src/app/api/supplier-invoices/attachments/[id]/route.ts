@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
+import { canUserAccessRecord } from "@/lib/data-visibility";
 import {
   createAttachmentSignedUrl,
   downloadAttachmentFromStorage,
@@ -37,6 +38,7 @@ export async function GET(
             id: true,
             invoiceNumber: true,
             jobId: true,
+            createdById: true,
             deletedAt: true,
           },
         },
@@ -47,6 +49,20 @@ export async function GET(
       return NextResponse.json(
         { success: false, error: "Attachment not found or invoice has been deleted." },
         { status: 404 }
+      );
+    }
+
+    // Enforce data visibility and parent invoice ownership
+    const accessCheck = await canUserAccessRecord(
+      session,
+      "supplierInvoices",
+      attachment.invoice?.createdById,
+      "download"
+    );
+    if (!accessCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to access attachments for this invoice." },
+        { status: 403 }
       );
     }
 

@@ -66,6 +66,8 @@ export interface StagedQuotationFile {
     existingClientName?: string | null;
     uploadedDate: string;
     duplicateReason: string;
+    isTrash?: boolean;
+    duplicateStatus?: string;
   } | null;
   // Editable extracted data
   parsedData?: ParsedJobData;
@@ -1019,15 +1021,28 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
                       <ShieldAlert className="h-5 w-5" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-amber-950">Duplicate File Detected!</h4>
+                      <h4 className="text-sm font-bold text-amber-950">
+                        {currentActiveFile.duplicateDetails?.isTrash
+                          ? "Excel File Belongs to a Trashed Job"
+                          : "Duplicate File Detected!"}
+                      </h4>
                       <p className="text-xs text-amber-800 mt-0.5">
-                        This Excel file has already been uploaded. Duplicate Job creation is not allowed.
+                        {currentActiveFile.duplicateReason ||
+                          (currentActiveFile.duplicateDetails?.isTrash
+                            ? "This Excel file belongs to a Job that is currently in Trash. Permanently delete the Job before uploading it again."
+                            : "This Excel file has already been uploaded. Duplicate Job creation is not allowed.")}
                       </p>
                     </div>
                   </div>
 
-                  <span className="rounded-md bg-amber-200/80 px-2.5 py-1 text-[11px] font-bold text-amber-900">
-                    Upload Blocked
+                  <span
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${
+                      currentActiveFile.duplicateDetails?.isTrash
+                        ? "bg-rose-200 text-rose-900 border border-rose-300"
+                        : "bg-amber-200/80 text-amber-900"
+                    }`}
+                  >
+                    {currentActiveFile.duplicateDetails?.isTrash ? "Job in Trash" : "Upload Blocked"}
                   </span>
                 </div>
 
@@ -1062,10 +1077,18 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
 
                   <div className="rounded-lg bg-white/90 p-2.5 border border-amber-200">
                     <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
-                      Previously Uploaded Date
+                      {currentActiveFile.duplicateDetails?.isTrash ? "Job Lifecycle Status" : "Previously Uploaded Date"}
                     </span>
-                    <strong className="text-xs text-slate-900 block truncate mt-0.5">
-                      {currentActiveFile.duplicateDetails?.uploadedDate || "N/A"}
+                    <strong
+                      className={`text-xs block truncate mt-0.5 ${
+                        currentActiveFile.duplicateDetails?.isTrash
+                          ? "text-rose-700 font-semibold"
+                          : "text-slate-900"
+                      }`}
+                    >
+                      {currentActiveFile.duplicateDetails?.isTrash
+                        ? "Currently in Trash (Delete to reuse Excel)"
+                        : currentActiveFile.duplicateDetails?.uploadedDate || "N/A"}
                     </strong>
                   </div>
                 </div>
@@ -1083,7 +1106,17 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
                     >
                       Dismiss Duplicate
                     </button>
-                    {currentActiveFile.duplicateDetails?.existingJobId && (
+                    {currentActiveFile.duplicateDetails?.isTrash ? (
+                      <a
+                        href="/admin/jobs?tab=trash"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-rose-700 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-rose-800 transition-colors shadow-2xs"
+                      >
+                        <span>View Job in Trash</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    ) : currentActiveFile.duplicateDetails?.existingJobId ? (
                       <a
                         href={`/admin/jobs/${currentActiveFile.duplicateDetails.existingJobId}`}
                         target="_blank"
@@ -1093,7 +1126,7 @@ export function CreateJobModal({ isOpen, onClose, onJobCreated }: CreateJobModal
                         <span>Open Existing Job</span>
                         <ExternalLink className="h-3 w-3" />
                       </a>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>

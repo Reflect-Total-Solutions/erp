@@ -46,7 +46,13 @@ import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
 import { Role, UserAccess, UserStatus } from "@/types/admin";
 import { userCreateSchema } from "@/lib/validations/user";
-import { DEFAULT_ROLE_PERMISSIONS } from "@/lib/permissions";
+import {
+  DEFAULT_ROLE_PERMISSIONS,
+  PERMISSION_MODULES,
+  ERPModule,
+  ERPAction,
+  PermissionsPolicy,
+} from "@/lib/permissions";
 import { generateSecurePassword } from "@/lib/password-generator";
 
 export function AccessControlView() {
@@ -65,6 +71,7 @@ export function AccessControlView() {
     showToast,
     can,
     currentRole,
+    currentUserId,
     activeUserId,
     switchToUser,
     resetToAdminUser,
@@ -159,51 +166,51 @@ export function AccessControlView() {
     () => [
       {
         key: "dashboard",
-        title: "Executive Dashboard",
+        title: "Dashboard",
         description: "KPI summary cards, expenditure metrics, and operational overviews",
         icon: LayoutDashboard,
       },
       {
         key: "jobs",
-        title: "Jobs & Work Orders",
-        description: "Project scheduling, vendor assignment, and job descriptions",
+        title: "Job Management",
+        description: "Project management, quotation parsing, and Excel bulk uploads",
         icon: Briefcase,
       },
       {
         key: "suppliers",
-        title: "Supplier Registry",
-        description: "Subcontractor contact information, trade vendor verification",
+        title: "Supplier Management",
+        description: "Supplier profiles, contact details, assigned jobs, and vendor management",
         icon: Building2,
       },
       {
-        key: "invoices",
-        title: "Vendor Invoices",
-        description: "Billing documents, invoice validation, PDF slips, and vouchers",
-        icon: FileText,
-      },
-      {
         key: "approvals",
-        title: "Approvals & Sign-offs",
-        description: "Financial clearances, invoice approvals, and job sign-offs",
+        title: "Approval Management",
+        description: "Quotation budgets, sign-offs, and approval workflows",
         icon: CheckCircle2,
       },
       {
-        key: "auditController",
-        title: "Audit Controller & Compliance",
-        description: "Security audit logs, system event history, and compliance tracking",
-        icon: ClipboardCheck,
+        key: "supplierInvoices",
+        title: "Supplier Invoice Management",
+        description: "Supplier invoices, multi-attachment uploads (PDF/Word/Images), and job cost sync",
+        icon: FileText,
+      },
+      {
+        key: "profitLoss",
+        title: "Profit & Loss",
+        description: "Comprehensive financial reporting, cost variance, and net profit margins",
+        icon: FileSpreadsheet,
       },
       {
         key: "accessControl",
-        title: "User Accounts & Security",
-        description: "Staff credentials, role assignment, and compliance logs",
+        title: "Access Controller",
+        description: "User account management, RBAC, and granular permissions",
         icon: ShieldCheck,
       },
       {
-        key: "excelUploads",
-        title: "Excel Data Sheets",
-        description: "BOQ uploads, cable schedules, material requirements, and parse tools",
-        icon: FileSpreadsheet,
+        key: "invoices",
+        title: "Customer Billing",
+        description: "Client billing invoices, PDF slips, and receivables",
+        icon: FileText,
       },
     ],
     []
@@ -211,18 +218,7 @@ export function AccessControlView() {
 
   // User Permissions Modal State
   const [managingPermsUser, setManagingPermsUser] = useState<UserAccess | null>(null);
-  const [userPermsDraft, setUserPermsDraft] = useState<
-    Record<
-      string,
-      {
-        view: boolean;
-        create: boolean;
-        edit: boolean;
-        delete: boolean;
-        approve: boolean;
-      }
-    >
-  >({});
+  const [userPermsDraft, setUserPermsDraft] = useState<PermissionsPolicy>({});
   const [isSavingUserPerms, setIsSavingUserPerms] = useState(false);
 
   // Open User Permissions Modal
@@ -239,48 +235,117 @@ export function AccessControlView() {
       DEFAULT_ROLE_PERMISSIONS[roleKey] ||
       DEFAULT_ROLE_PERMISSIONS.employee;
 
-    const initialPerms: Record<string, any> = {};
-    modulesList.forEach((m) => {
-      const existing = (user.permissions as any)?.[m.key];
-      const fromRole = (rolePolicy as any)?.[m.key];
-      initialPerms[m.key] = {
-        view: existing?.view ?? fromRole?.view ?? false,
-        create: existing?.create ?? fromRole?.create ?? false,
-        edit: existing?.edit ?? fromRole?.edit ?? false,
-        delete: existing?.delete ?? fromRole?.delete ?? false,
-        approve: existing?.approve ?? fromRole?.approve ?? false,
-      };
-    });
+    const initialPerms: PermissionsPolicy = {};
+    for (const mod of PERMISSION_MODULES) {
+      initialPerms[mod.key] = {};
+      const userMod = (user.permissions as any)?.[mod.key];
+      const roleMod = (rolePolicy as any)?.[mod.key];
+      for (const act of mod.actions) {
+        initialPerms[mod.key]![act.key] =
+          userMod?.[act.key] ?? roleMod?.[act.key] ?? false;
+      }
+    }
 
     setUserPermsDraft(initialPerms);
   };
 
   const handleGrantAllUserPerms = () => {
-    const allGranted: Record<string, any> = {};
-    modulesList.forEach((m) => {
-      allGranted[m.key] = {
-        view: true,
-        create: true,
-        edit: true,
-        delete: true,
-        approve: true,
-      };
-    });
+    const allGranted: PermissionsPolicy = {};
+    for (const mod of PERMISSION_MODULES) {
+      allGranted[mod.key] = {};
+      for (const act of mod.actions) {
+        allGranted[mod.key]![act.key] = true;
+      }
+    }
     setUserPermsDraft(allGranted);
   };
 
   const handleRevokeAllUserPerms = () => {
-    const allRevoked: Record<string, any> = {};
-    modulesList.forEach((m) => {
-      allRevoked[m.key] = {
-        view: false,
-        create: false,
-        edit: false,
-        delete: false,
-        approve: false,
+    const allRevoked: PermissionsPolicy = {};
+    const isTargetSuperAdmin =
+      managingPermsUser?.email?.toLowerCase() === "admin@reflecterp.com";
+
+    for (const mod of PERMISSION_MODULES) {
+      allRevoked[mod.key] = {};
+      for (const act of mod.actions) {
+        if (
+          isTargetSuperAdmin &&
+          mod.key === "accessControl" &&
+          (act.key === "view" || act.key === "managePermissions")
+        ) {
+          allRevoked[mod.key]![act.key] = true;
+        } else {
+          allRevoked[mod.key]![act.key] = false;
+        }
+      }
+    }
+    setUserPermsDraft(allRevoked);
+  };
+
+  const handleToggleModuleAll = (modKey: ERPModule, allow: boolean) => {
+    setUserPermsDraft((prev) => {
+      const copy = { ...prev };
+      const modDef = PERMISSION_MODULES.find((m) => m.key === modKey);
+      if (!modDef) return prev;
+
+      copy[modKey] = {};
+      for (const act of modDef.actions) {
+        if (
+          !allow &&
+          managingPermsUser?.email?.toLowerCase() === "admin@reflecterp.com" &&
+          modKey === "accessControl" &&
+          (act.key === "view" || act.key === "managePermissions")
+        ) {
+          copy[modKey]![act.key] = true;
+        } else {
+          copy[modKey]![act.key] = allow;
+        }
+      }
+      return copy;
+    });
+  };
+
+  const handleUserActionToggle = (modKey: ERPModule, actKey: ERPAction) => {
+    if (
+      managingPermsUser?.email?.toLowerCase() === "admin@reflecterp.com" &&
+      modKey === "accessControl" &&
+      (actKey === "view" || actKey === "managePermissions")
+    ) {
+      showToast(
+        "Anti-Lockout Protection",
+        "Super Administrator must retain Access Control View and Manage Permissions.",
+        "info"
+      );
+      return;
+    }
+
+    setUserPermsDraft((prev) => {
+      const modPolicy = { ...(prev[modKey] || {}) };
+      const nextVal = !modPolicy[actKey];
+      modPolicy[actKey] = nextVal;
+
+      // Logical dependency: If view is revoked, uncheck all child actions
+      if (actKey === "view" && !nextVal) {
+        const modDef = PERMISSION_MODULES.find((m) => m.key === modKey);
+        if (modDef) {
+          for (const a of modDef.actions) {
+            if (a.key !== "view") {
+              modPolicy[a.key] = false;
+            }
+          }
+        }
+      }
+
+      // If a child action is granted, automatically ensure view is granted
+      if (actKey !== "view" && nextVal) {
+        modPolicy.view = true;
+      }
+
+      return {
+        ...prev,
+        [modKey]: modPolicy,
       };
     });
-    setUserPermsDraft(allRevoked);
   };
 
   const handleResetToRoleDefault = async () => {
@@ -1720,215 +1785,319 @@ export function AccessControlView() {
 
       
       {/* ================= MODAL: MANAGE USER PERMISSIONS ================= */}
-      {managingPermsUser && (
-        <Modal
-          isOpen={true}
-          onClose={() => setManagingPermsUser(null)}
-          title={`User Access & Permissions: ${managingPermsUser.name}`}
-          maxWidth="2xl"
-        >
-          <div className="space-y-4">
-            {/* User Header Summary */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 rounded-lg bg-slate-50 border border-slate-200">
-              <div>
-                <p className="text-xs font-bold text-slate-900">{managingPermsUser.name}</p>
-                <p className="text-[11px] text-slate-500">{managingPermsUser.email}</p>
+      {managingPermsUser && (() => {
+        const isSelfAccount = Boolean(
+          managingPermsUser && currentUserId && managingPermsUser.id === currentUserId
+        );
+        const isTargetSuperAdmin =
+          managingPermsUser?.email?.toLowerCase() === "admin@reflecterp.com";
+
+        // Count granted vs total permissions
+        let activePermsCount = 0;
+        let totalPermsCount = 0;
+        PERMISSION_MODULES.forEach((m) => {
+          totalPermsCount += m.actions.length;
+          m.actions.forEach((a) => {
+            if (userPermsDraft[m.key]?.[a.key]) {
+              activePermsCount++;
+            }
+          });
+        });
+
+        const MODULE_ICONS: Record<string, React.ElementType> = {
+          dashboard: LayoutDashboard,
+          jobs: Briefcase,
+          suppliers: Building2,
+          approvals: CheckCircle2,
+          supplierInvoices: FileText,
+          profitLoss: FileSpreadsheet,
+          accessControl: ShieldCheck,
+          invoices: FileText,
+        };
+
+        return (
+          <Modal
+            isOpen={true}
+            onClose={() => setManagingPermsUser(null)}
+            title={`Granular Access Controller: ${managingPermsUser.name}`}
+            maxWidth="3xl"
+          >
+            <div className="space-y-4">
+              {/* User Header Summary */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-bold text-slate-900">{managingPermsUser.name}</p>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-100 text-blue-800">
+                      {managingPermsUser.roleId.replace("role-", "")}
+                    </span>
+                    {managingPermsUser.hasCustomPermissions && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        Custom Overrides
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">{managingPermsUser.email}</p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="text-right">
+                    <span className="text-[10px] font-semibold text-slate-500 block">Granted Access</span>
+                    <span className="text-xs font-bold text-slate-800">
+                      {activePermsCount} / {totalPermsCount} actions
+                    </span>
+                  </div>
+                  <div className="h-8 w-8 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 flex items-center justify-center font-bold text-xs">
+                    {Math.round((activePermsCount / (totalPermsCount || 1)) * 100)}%
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-semibold text-slate-500">Base Role:</span>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-100 text-blue-800">
-                  {managingPermsUser.roleId.replace("role-", "")}
-                </span>
-                {managingPermsUser.hasCustomPermissions && (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
-                    Custom Overrides
+
+              {/* Anti-Self-Escalation Banner */}
+              {isSelfAccount && (
+                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Self-Permission Protection:</span> You cannot modify your own permissions or escalate your own privileges. Ask another administrator to update your access policies.
+                  </div>
+                </div>
+              )}
+
+              {/* Super Admin Notice */}
+              {isTargetSuperAdmin && (
+                <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs">
+                  <ShieldCheck className="h-4 w-4 text-blue-600 shrink-0" />
+                  <span>
+                    <strong>Anti-Lockout Protected:</strong> Super Administrator must retain Access Control View & Manage Permissions.
                   </span>
-                )}
+                </div>
+              )}
+
+              {/* Quick Action Presets */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                <span className="text-xs font-semibold text-slate-600">Quick Configuration:</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={isSelfAccount || isSavingUserPerms}
+                    onClick={handleGrantAllUserPerms}
+                    className="px-2.5 py-1 rounded-lg text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSelfAccount || isSavingUserPerms}
+                    onClick={handleRevokeAllUserPerms}
+                    className="px-2.5 py-1 rounded-lg text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Clear All
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSelfAccount || isSavingUserPerms}
+                    onClick={handleResetToRoleDefault}
+                    className="px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Reset to Role Defaults
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {/* Quick Action Presets */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
-              <span className="text-[11px] font-semibold text-slate-600">Quick Configuration:</span>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <button
-                  type="button"
-                  onClick={handleGrantAllUserPerms}
-                  className="px-2.5 py-1 rounded text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer"
-                >
-                  Grant Full Access
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRevokeAllUserPerms}
-                  className="px-2.5 py-1 rounded text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors cursor-pointer"
-                >
-                  Revoke All (No Access)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleResetToRoleDefault}
-                  className="px-2.5 py-1 rounded text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors cursor-pointer"
-                >
-                  Reset to Role Default
-                </button>
-              </div>
-            </div>
+              {/* Granular Module Cards Container */}
+              <div className="max-h-[460px] overflow-y-auto space-y-3.5 pr-1">
+                {PERMISSION_MODULES.map((mod) => {
+                  const Icon = MODULE_ICONS[mod.key] || Shield;
+                  const modPolicy = userPermsDraft[mod.key] || {};
+                  const isViewAllowed = Boolean(modPolicy.view);
 
-            {/* Granular Permissions Table for each ERP Module */}
-            <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[380px] overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-4 py-2.5">Module Resource</th>
-                    <th className="px-3 py-2.5 text-center">View / Access</th>
-                    <th className="px-3 py-2.5 text-center">Create</th>
-                    <th className="px-3 py-2.5 text-center">Edit</th>
-                    <th className="px-3 py-2.5 text-center">Delete</th>
-                    <th className="px-3 py-2.5 text-center">Approve</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {modulesList.map((mod) => {
-                    const Icon = mod.icon;
-                    const modPerms = userPermsDraft[mod.key] || {
-                      view: false,
-                      create: false,
-                      edit: false,
-                      delete: false,
-                      approve: false,
-                    };
-
-                    const handleUserActionToggle = (
-                      actionKey: "view" | "create" | "edit" | "delete" | "approve"
-                    ) => {
-                      setUserPermsDraft((prev) => {
-                        const current = prev[mod.key] || {
-                          view: false,
-                          create: false,
-                          edit: false,
-                          delete: false,
-                          approve: false,
-                        };
-                        const nextVal = !current[actionKey];
-                        const updatedMod = { ...current, [actionKey]: nextVal };
-
-                        // If view is revoked, turn off create, edit, delete, approve
-                        if (actionKey === "view" && !nextVal) {
-                          updatedMod.create = false;
-                          updatedMod.edit = false;
-                          updatedMod.delete = false;
-                          updatedMod.approve = false;
-                        }
-                        // If any action is granted, automatically ensure view is granted
-                        if (actionKey !== "view" && nextVal) {
-                          updatedMod.view = true;
-                        }
-
-                        return {
-                          ...prev,
-                          [mod.key]: updatedMod,
-                        };
-                      });
-                    };
-
-                    return (
-                      <tr key={mod.key} className="hover:bg-slate-50">
-                        <td className="px-4 py-2.5">
-                          <div className="flex items-center gap-2">
-                            <Icon className="h-4 w-4 text-slate-500 shrink-0" />
-                            <div>
-                              <p className="font-semibold text-slate-900 text-xs">{mod.title}</p>
-                              <p className="text-[10px] text-slate-400 line-clamp-1">
-                                {mod.description}
-                              </p>
-                            </div>
+                  return (
+                    <div
+                      key={mod.key}
+                      className={`border rounded-xl transition-all duration-200 overflow-hidden ${
+                        isViewAllowed
+                          ? "border-slate-200 bg-white shadow-2xs"
+                          : "border-slate-200/70 bg-slate-50/70 opacity-80"
+                      }`}
+                    >
+                      {/* Module Header */}
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 bg-slate-50/90 border-b border-slate-200">
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${
+                              isViewAllowed ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-500"
+                            }`}
+                          >
+                            <Icon className="h-4 w-4" />
                           </div>
-                        </td>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-xs font-bold text-slate-900">{mod.name}</h4>
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-slate-200 text-slate-700">
+                                {mod.category}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 line-clamp-1">{mod.description}</p>
+                          </div>
+                        </div>
 
-                        {(["view", "create", "edit", "delete", "approve"] as const).map(
-                          (action) => (
-                            <td key={action} className="px-3 py-2.5 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleUserActionToggle(action)}
-                                className={`h-6 w-6 rounded-md inline-flex items-center justify-center transition-colors cursor-pointer ${
-                                  modPerms[action]
-                                    ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
-                                    : "bg-slate-100 text-slate-400 hover:bg-slate-200"
-                                }`}
-                                title={`${
-                                  modPerms[action] ? "Revoke" : "Grant"
-                                } ${action} on ${mod.title}`}
-                              >
-                                {modPerms[action] ? (
-                                  <Check className="h-3.5 w-3.5 stroke-3" />
-                                ) : (
-                                  <X className="h-3.5 w-3.5" />
-                                )}
-                              </button>
-                            </td>
-                          )
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                        {/* Module Quick Toggles */}
+                        <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                          <button
+                            type="button"
+                            disabled={isSelfAccount || isSavingUserPerms}
+                            onClick={() => handleToggleModuleAll(mod.key, true)}
+                            className="px-2 py-0.5 rounded text-[10px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 cursor-pointer disabled:opacity-50"
+                          >
+                            Allow All
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isSelfAccount || isSavingUserPerms}
+                            onClick={() => handleToggleModuleAll(mod.key, false)}
+                            className="px-2 py-0.5 rounded text-[10px] font-semibold text-slate-600 bg-white hover:bg-slate-100 border border-slate-200 cursor-pointer disabled:opacity-50"
+                          >
+                            Deny All
+                          </button>
+                        </div>
+                      </div>
 
-            {/* Modal Actions */}
-            <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-              <span className="text-[11px] text-slate-400">
-                Changes will be saved directly into PostgreSQL and immediately enforced.
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setManagingPermsUser(null)}
-                  disabled={isSavingUserPerms}
-                  className="h-8 px-3 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSaveUserPerms(false)}
-                  disabled={isSavingUserPerms}
-                  className="h-8 px-3.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  title="Save permissions to PostgreSQL without switching preview persona"
-                >
-                  {isSavingUserPerms ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Check className="h-3.5 w-3.5 text-slate-500" />
-                  )}
-                  <span>Save</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSaveUserPerms(true)}
-                  disabled={isSavingUserPerms}
-                  className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
-                  title="Save permissions to PostgreSQL and immediately preview the sidebar and UI as this user"
-                >
-                  {isSavingUserPerms ? (
-                    <>
+                      {/* Module Granular Actions Grid */}
+                      <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {mod.actions.map((act) => {
+                          const isAllowed = Boolean(modPolicy[act.key]);
+                          const isChildAction = act.key !== "view";
+                          const isChildDisabled = isChildAction && !isViewAllowed;
+                          const isLockedSuperAdmin =
+                            isTargetSuperAdmin &&
+                            mod.key === "accessControl" &&
+                            (act.key === "view" || act.key === "managePermissions");
+
+                          return (
+                            <label
+                              key={act.key}
+                              className={`flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors ${
+                                isChildDisabled
+                                  ? "border-slate-100 bg-slate-50 text-slate-400 cursor-not-allowed opacity-60"
+                                  : isAllowed
+                                  ? "border-blue-200 bg-blue-50/40 text-slate-900 cursor-pointer"
+                                  : "border-slate-200/80 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer"
+                              } ${isSelfAccount ? "cursor-not-allowed" : ""}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isAllowed}
+                                disabled={isSelfAccount || isChildDisabled || isLockedSuperAdmin || isSavingUserPerms}
+                                onChange={() => handleUserActionToggle(mod.key, act.key)}
+                                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                              />
+
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span
+                                    className={`text-xs font-semibold ${
+                                      isAllowed ? "text-blue-950" : "text-slate-800"
+                                    }`}
+                                  >
+                                    {act.label}
+                                  </span>
+                                  {act.isDangerous && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-rose-100 text-rose-700 border border-rose-200">
+                                      Dangerous
+                                    </span>
+                                  )}
+                                  {act.key === "viewOwn" && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-sky-100 text-sky-700 border border-sky-200">
+                                      Scope: Own
+                                    </span>
+                                  )}
+                                  {act.key === "viewTeam" && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 border border-amber-200">
+                                      Scope: Team
+                                    </span>
+                                  )}
+                                  {act.key === "viewAll" && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-purple-100 text-purple-700 border border-purple-200">
+                                      Scope: All Records
+                                    </span>
+                                  )}
+                                  {isChildDisabled && (
+                                    <span className="text-[10px] text-slate-400 font-medium">
+                                      (Requires View)
+                                    </span>
+                                  )}
+                                  {isLockedSuperAdmin && (
+                                    <span className="text-[10px] text-blue-600 font-semibold">
+                                      (Locked)
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">
+                                  {act.description}
+                                </p>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Modal Actions Footer */}
+              <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+                <span className="text-[11px] text-slate-400">
+                  Permissions are stored in PostgreSQL and take effect immediately.
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setManagingPermsUser(null)}
+                    disabled={isSavingUserPerms}
+                    className="h-8 px-3 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveUserPerms(false)}
+                    disabled={isSavingUserPerms || isSelfAccount}
+                    className="h-8 px-3.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Save custom permissions to PostgreSQL without switching preview persona"
+                  >
+                    {isSavingUserPerms ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span>Saving...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Eye className="h-3.5 w-3.5" />
-                      <span>Save & Preview User View</span>
-                    </>
-                  )}
-                </button>
+                    ) : (
+                      <Check className="h-3.5 w-3.5 text-slate-500" />
+                    )}
+                    <span>Save Changes</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveUserPerms(true)}
+                    disabled={isSavingUserPerms || isSelfAccount}
+                    className="h-8 px-4 rounded-lg bg-[#2563EB] text-xs font-semibold text-white hover:bg-[#1d4ed8] active:bg-[#1e40af] transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Save custom permissions and immediately test the sidebar and UI as this user"
+                  >
+                    {isSavingUserPerms ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="h-3.5 w-3.5" />
+                        <span>Save & Preview User</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        </Modal>
-      )}
+          </Modal>
+        );
+      })()}
 
       {/* ================= MODAL: USER ACCOUNT PROVISIONED & CREDENTIALS ================= */}
       {createdCredentials && (

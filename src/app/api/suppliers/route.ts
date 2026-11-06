@@ -56,6 +56,10 @@ export async function GET(req: NextRequest) {
     const [suppliers, total] = await Promise.all([
       prisma.supplier.findMany({
         where,
+        include: {
+          createdBy: { select: { id: true, name: true, email: true } },
+          updatedBy: { select: { id: true, name: true, email: true } },
+        },
         orderBy: { createdAt: "desc" },
         skip,
         take: limit,
@@ -185,6 +189,7 @@ export async function POST(req: NextRequest) {
         email,
         address,
         isActive: isActive ?? true,
+        createdById: session.userId,
       },
     });
 

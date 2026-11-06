@@ -70,6 +70,7 @@ export function JobsView() {
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [createdByFilter, setCreatedByFilter] = useState("all");
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -157,6 +158,19 @@ export function JobsView() {
 
   const trashCount = useMemo(() => jobs.filter((j) => j.isDeleted).length, [jobs]);
 
+  // Unique creators for filtering
+  const uniqueJobCreators = useMemo(() => {
+    const map = new Map<string, string>();
+    jobs.forEach((j) => {
+      const creatorId = j.createdById || j.submittedBy?.id;
+      const creatorName = j.createdByName || j.submittedBy?.name;
+      if (creatorId && creatorName) {
+        map.set(creatorId, creatorName);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [jobs]);
+
   // Tab-filtered jobs
   const tabJobs = useMemo(() => {
     if (activeTab === "active") {
@@ -174,7 +188,9 @@ export function JobsView() {
         (job.clientName && job.clientName.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (job.handledBy && job.handledBy.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (job.remarks && job.remarks.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (job.description && job.description.toLowerCase().includes(searchTerm.toLowerCase()));
+        (job.description && job.description.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (job.createdByName && job.createdByName.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (job.submittedBy?.name && job.submittedBy.name.toLowerCase().includes(searchTerm.toLowerCase()));
 
       const matchDate = !dateFilter || job.date === dateFilter;
       const matchStatus =
@@ -188,9 +204,12 @@ export function JobsView() {
           ? (job.status || "").toUpperCase() === "REJECTED" || (job.status || "").toLowerCase().includes("reject")
           : (job.status || "").toUpperCase() === statusFilter.toUpperCase();
 
-      return matchSearch && matchDate && matchStatus;
+      const creatorId = job.createdById || job.submittedBy?.id;
+      const matchCreator = createdByFilter === "all" || creatorId === createdByFilter;
+
+      return matchSearch && matchDate && matchStatus && matchCreator;
     });
-  }, [tabJobs, searchTerm, dateFilter, statusFilter]);
+  }, [tabJobs, searchTerm, dateFilter, statusFilter, createdByFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
   const paginatedJobs = useMemo(() => {
@@ -233,15 +252,17 @@ export function JobsView() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => exportJobsToCsv(filteredJobs, invoices, excelFiles, "jobs_cost_report")}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shrink-0"
-            title="Export all filtered jobs with cost breakdown to CSV"
-          >
-            <Download className="h-4 w-4 text-slate-500" />
-            <span>Download Cost Report ({filteredJobs.length})</span>
-          </button>
+          {can("jobs", "export") && (
+            <button
+              type="button"
+              onClick={() => exportJobsToCsv(filteredJobs, invoices, excelFiles, "jobs_cost_report")}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shrink-0"
+              title="Export all filtered jobs with cost breakdown to CSV"
+            >
+              <Download className="h-4 w-4 text-slate-500" />
+              <span>Download Cost Report ({filteredJobs.length})</span>
+            </button>
+          )}
 
           {can("jobs", "create") && (
             <button
@@ -337,15 +358,31 @@ export function JobsView() {
             ]}
           />
 
+          {/* Created By Filter (Supervisor & Admin) */}
+          {uniqueJobCreators.length > 1 && (
+            <FilterSelect
+              value={createdByFilter}
+              onChange={(val) => {
+                setCreatedByFilter(val);
+                setCurrentPage(1);
+              }}
+              options={[
+                { value: "all", label: "All Creators" },
+                ...uniqueJobCreators.map((c) => ({ value: c.id, label: c.name })),
+              ]}
+            />
+          )}
+
           {/* Reset Filters */}
           <div className="flex items-center justify-between">
-            {searchTerm || dateFilter || statusFilter !== "all" ? (
+            {searchTerm || dateFilter || statusFilter !== "all" || createdByFilter !== "all" ? (
               <button
                 type="button"
                 onClick={() => {
                   setSearchTerm("");
                   setDateFilter("");
                   setStatusFilter("all");
+                  setCreatedByFilter("all");
                   setCurrentPage(1);
                 }}
                 className="text-xs text-blue-600 hover:underline font-medium"
@@ -480,6 +517,7 @@ export function JobsView() {
                   </th>
                   <th className="px-5 py-3">Job Name</th>
                   <th className="px-4 py-3">Job Date</th>
+                  <th className="px-4 py-3">Created By</th>
                   <th className="px-4 py-3 text-center">Suppliers</th>
                   <th className="px-4 py-3 text-center">Invoices</th>
                   <th className="px-4 py-3 text-right">Quotation / Invoices</th>
@@ -491,7 +529,7 @@ export function JobsView() {
                 {isLoadingJobs ? (
                   Array.from({ length: 6 }).map((_, rIdx) => (
                     <tr key={rIdx} className="hover:bg-slate-50/50">
-                      {Array.from({ length: 8 }).map((_, cIdx) => (
+                      {Array.from({ length: 9 }).map((_, cIdx) => (
                         <td key={cIdx} className="py-3.5 px-3.5">
                           <div
                             className="h-3.5 bg-slate-100 rounded animate-pulse"
@@ -510,7 +548,7 @@ export function JobsView() {
                   ))
                 ) : paginatedJobs.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-400">
+                    <td colSpan={9} className="py-12 text-center text-slate-400">
                       <Briefcase className="h-10 w-10 text-slate-300 stroke-[1.5] mx-auto mb-2" />
                       <p className="text-sm font-semibold text-slate-600">No Projects Found</p>
                       <p className="text-xs text-slate-400 mt-1">
@@ -624,6 +662,14 @@ export function JobsView() {
                       <td className="px-4 py-3.5 text-slate-600 whitespace-nowrap">
                         {job.date}
                       </td>
+                      <td className="px-4 py-3.5 text-slate-700 whitespace-nowrap">
+                        <span className="block font-medium text-slate-800 text-xs">
+                          {job.createdByName || job.submittedBy?.name || "System Admin"}
+                        </span>
+                        <span className="block text-[10px] text-slate-400 font-mono">
+                          {job.createdAt ? new Date(job.createdAt).toLocaleDateString() : job.date}
+                        </span>
+                      </td>
                       <td className="px-4 py-3.5 text-center font-medium text-slate-700">
                         {job.supplierIds.length}
                       </td>
@@ -693,19 +739,21 @@ export function JobsView() {
                               >
                                 <Receipt className="h-4 w-4" />
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const jInvs = getJobInvoices(job.id);
-                                  const jSups = getJobSuppliers(job.id);
-                                  const jExcels = getJobExcelFiles(job.id);
-                                  exportJobDetailedReportToCsv(job, jInvs, jSups, jExcels);
-                                }}
-                                className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
-                                title="Download Job Cost & Invoices Dossier"
-                              >
-                                <Download className="h-4 w-4" />
-                              </button>
+                              {can("jobs", "download") && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const jInvs = getJobInvoices(job.id);
+                                    const jSups = getJobSuppliers(job.id);
+                                    const jExcels = getJobExcelFiles(job.id);
+                                    exportJobDetailedReportToCsv(job, jInvs, jSups, jExcels);
+                                  }}
+                                  className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+                                  title="Download Job Cost & Invoices Dossier"
+                                >
+                                  <Download className="h-4 w-4" />
+                                </button>
+                              )}
                               <Link
                                 href={`/admin/jobs/${job.id}`}
                                 className="p-1 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100 transition-colors"
@@ -736,7 +784,7 @@ export function JobsView() {
                             </>
                           ) : (
                             <>
-                              {can("jobs", "edit") && (
+                              {can("jobs", "restore") && (
                                 <button
                                   type="button"
                                   onClick={() => handleRestoreJob(job.id)}
@@ -752,7 +800,7 @@ export function JobsView() {
                                   <span>{restoringJobId === job.id ? "Restoring..." : "Restore"}</span>
                                 </button>
                               )}
-                              {can("jobs", "delete") && (
+                              {can("jobs", "permanentDelete") && (
                                 <button
                                   type="button"
                                   onClick={() => setPermanentDeleteTarget(job)}
@@ -952,47 +1000,73 @@ export function JobsView() {
       )}
 
       {/* Permanent Delete Modal */}
-      {permanentDeleteTarget && (
-        <Modal
-          isOpen={true}
-          onClose={() => !isDeleting && setPermanentDeleteTarget(null)}
-          title="Permanently Delete Job"
-          maxWidth="sm"
-        >
-          <div className="space-y-3">
-            <div className="flex items-start gap-3 p-3 bg-rose-50 rounded-lg border border-rose-200">
-              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
-              <div className="text-xs text-rose-900 space-y-1">
-                <p className="font-semibold">Permanent Destruction Warning</p>
-                <p className="text-[11px] text-rose-800 leading-relaxed">
-                  Are you sure you want to permanently delete <strong>{permanentDeleteTarget.name}</strong> ({permanentDeleteTarget.jobCode})? This action <strong>cannot</strong> be undone.
-                </p>
+      {permanentDeleteTarget && (() => {
+        const hasFinancialDependencies =
+          Boolean(permanentDeleteTarget.supplierInvoiceCount && permanentDeleteTarget.supplierInvoiceCount > 0) ||
+          Boolean(permanentDeleteTarget.invoice);
+
+        return (
+          <Modal
+            isOpen={true}
+            onClose={() => !isDeleting && setPermanentDeleteTarget(null)}
+            title="Permanently Delete Job"
+            maxWidth="sm"
+          >
+            <div className="space-y-3">
+              {hasFinancialDependencies ? (
+                <div className="flex items-start gap-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                  <ShieldAlert className="h-5 w-5 text-amber-700 shrink-0 mt-0.5" />
+                  <div className="text-xs text-amber-900 space-y-1">
+                    <p className="font-semibold text-amber-950">Financial Records Protection</p>
+                    <p className="text-[11px] text-amber-800 leading-relaxed">
+                      Cannot permanently delete <strong>{permanentDeleteTarget.name}</strong> ({permanentDeleteTarget.jobCode}) because it has active financial records
+                      {permanentDeleteTarget.supplierInvoiceCount ? ` (${permanentDeleteTarget.supplierInvoiceCount} Supplier Invoice(s))` : ""}
+                      {permanentDeleteTarget.invoice ? ` (Customer Invoice "${permanentDeleteTarget.invoice.invoiceNumber}")` : ""}.
+                    </p>
+                    <p className="text-[11px] text-amber-700 font-medium pt-1">
+                      Accounting and audit records must be preserved for compliance.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start gap-3 p-3 bg-rose-50 rounded-lg border border-rose-200">
+                  <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="text-xs text-rose-900 space-y-1">
+                    <p className="font-semibold">Permanent Destruction Warning</p>
+                    <p className="text-[11px] text-rose-800 leading-relaxed">
+                      Are you sure you want to permanently delete <strong>{permanentDeleteTarget.name}</strong> ({permanentDeleteTarget.jobCode})? This action <strong>cannot</strong> be undone.
+                    </p>
+                    <p className="text-[11px] text-slate-600 pt-1">
+                      All associated quotations, cost items, and storage references will be removed, releasing the Excel file hash so the file can be uploaded again.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={() => setPermanentDeleteTarget(null)}
+                  className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeleting || hasFinancialDependencies}
+                  onClick={handleConfirmPermanentDelete}
+                  className="h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <ButtonLoader isLoading={isDeleting} loadingText="Deleting...">
+                    Permanently Delete
+                  </ButtonLoader>
+                </button>
               </div>
             </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={() => setPermanentDeleteTarget(null)}
-                className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={handleConfirmPermanentDelete}
-                className="h-8 px-3.5 rounded-lg bg-rose-600 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-60 cursor-pointer inline-flex items-center gap-1.5"
-              >
-                <ButtonLoader isLoading={isDeleting} loadingText="Deleting...">
-                  Permanently Delete
-                </ButtonLoader>
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+          </Modal>
+        );
+      })()}
 
       {/* Job Supplier Invoices Modal */}
       {viewingJobInvoices && (

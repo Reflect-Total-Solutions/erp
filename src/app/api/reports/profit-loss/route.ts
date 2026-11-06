@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { Decimal } from "decimal.js";
+import { checkSessionPermission } from "@/lib/permissions";
+import { buildRecordVisibilityFilter } from "@/lib/data-visibility";
 
 // GET /api/reports/profit-loss
 // Generates job financial summary, supplier expenses, and recorded gross profit calculations
@@ -15,20 +17,65 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const isAuthorized = await checkSessionPermission(session, "profitLoss", "view");
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to view Profit & Loss reports." },
+        { status: 403 }
+      );
+    }
+
+    const canViewFinancials = await checkSessionPermission(session, "profitLoss", "viewFinancials");
+    if (!canViewFinancials) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: You do not have permission to view job financial metrics and profit margins." },
+        { status: 403 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search")?.trim() || "";
     const statusFilter = searchParams.get("status") || "all";
+    const createdByFilter = searchParams.get("createdBy")?.trim();
+
+    // 1. Resolve record visibility scope from database-driven permissions
+    const { filter: visibilityFilter, scope, authorizedIds } = await buildRecordVisibilityFilter(
+      session,
+      "profitLoss",
+      "submittedById"
+    );
 
     const where: any = {
       deletedAt: null,
     };
 
+    if (createdByFilter && createdByFilter !== "all") {
+      if (!authorizedIds || authorizedIds.includes(createdByFilter)) {
+        where.submittedById = createdByFilter;
+      } else {
+        where.submittedById = "__FORBIDDEN_SCOPE__";
+      }
+    } else {
+      if (visibilityFilter.submittedById) {
+        where.submittedById = visibilityFilter.submittedById;
+      } else if (visibilityFilter.OR) {
+        where.OR = visibilityFilter.OR;
+      }
+    }
+
     if (search) {
-      where.OR = [
+      const searchConditions = [
         { jobCode: { contains: search, mode: "insensitive" } },
         { name: { contains: search, mode: "insensitive" } },
         { clientName: { contains: search, mode: "insensitive" } },
       ];
+
+      if (where.OR) {
+        where.AND = [{ OR: where.OR }, { OR: searchConditions }];
+        delete where.OR;
+      } else {
+        where.OR = searchConditions;
+      }
     }
 
     const jobs = await (prisma.job as any).findMany({
@@ -45,6 +92,8 @@ export async function GET(req: NextRequest) {
         grandTotal: true,
         totalCost: true,
         createdAt: true,
+        submittedById: true,
+        submittedBy: { select: { id: true, name: true, email: true } },
         supplierInvoices: {
           where: {
             deletedAt: null,
@@ -111,6 +160,8 @@ export async function GET(req: NextRequest) {
         profitMargin: Number(profitMargin.toFixed(2)),
         financialStatus,
         supplierInvoicesCount: job.supplierInvoices?.length || 0,
+        createdById: job.submittedById,
+        createdByName: job.submittedBy?.name || "System Admin",
         createdAt: job.createdAt ? new Date(job.createdAt).toISOString().split("T")[0] : "",
       };
     });
