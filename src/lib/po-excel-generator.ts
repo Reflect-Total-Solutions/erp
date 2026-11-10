@@ -312,7 +312,6 @@ export function generatePoReportCsv(orders: PurchaseOrder[], includeFinancials: 
         "Supplier",
         "Status",
         "Approval Status",
-        "Delivery Status",
         "Expected Delivery",
         "Sub-Total",
         "Discount",
@@ -330,7 +329,6 @@ export function generatePoReportCsv(orders: PurchaseOrder[], includeFinancials: 
         "Supplier",
         "Status",
         "Approval Status",
-        "Delivery Status",
         "Expected Delivery",
         "Created By",
       ];
@@ -353,7 +351,6 @@ export function generatePoReportCsv(orders: PurchaseOrder[], includeFinancials: 
       po.supplierName || "",
       po.status,
       po.approvalStatus,
-      po.deliveryStatus,
       formatIsoDate(po.expectedDeliveryDate),
     ];
     if (includeFinancials) {

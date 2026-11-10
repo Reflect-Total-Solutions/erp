@@ -33,7 +33,6 @@ export type ERPAction =
   | "issue"
   | "moveToPending"
   | "cancel"
-  | "trackDelivery"
   | "manageAttachments"
   | "viewFinancials"
   | "managePermissions"
@@ -119,7 +118,7 @@ export const PERMISSION_MODULES: ModuleDef[] = [
     key: "purchaseOrders",
     name: "Purchase Order Management",
     category: "Procurement",
-    description: "Purchase Orders linked to approved Jobs, budget controls, approvals, deliveries, and exports.",
+    description: "Purchase Orders linked to approved Jobs, budget controls, approvals, and exports.",
     actions: [
       { key: "view", label: "View Purchase Orders", description: "Access the Purchase Order module and view PO details" },
       { key: "viewOwn", label: "View Own Purchase Orders", description: "View only POs created by the logged-in user" },
@@ -135,11 +134,10 @@ export const PERMISSION_MODULES: ModuleDef[] = [
       { key: "delete", label: "Delete Purchase Orders (Trash)", description: "Move Purchase Orders to Trash", isDangerous: true },
       { key: "restore", label: "Restore Purchase Orders", description: "Restore soft-deleted Purchase Orders from Trash" },
       { key: "permanentDelete", label: "Permanently Delete PO", description: "Permanently purge eligible Draft/Rejected Purchase Orders", isDangerous: true },
-      { key: "download", label: "Download PO & Attachments", description: "Download PO supporting documents and delivery receipts" },
+      { key: "download", label: "Download PO & Attachments", description: "Download PO supporting documents" },
       { key: "downloadExcel", label: "Download PO Excel", description: "Download formatted multi-sheet Excel Purchase Order" },
       { key: "export", label: "Export PO Reports", description: "Export Purchase Order listings and reports to CSV" },
       { key: "print", label: "Print / Export PDF PO", description: "Print official Purchase Order or save as PDF" },
-      { key: "trackDelivery", label: "Track & Record Delivery", description: "Record partial/full deliveries and upload delivery notes" },
       { key: "viewFinancials", label: "View PO Financial Analytics", description: "Inspect executive PO KPIs, budget comparisons, and financial reports", isDangerous: true },
       { key: "manageDepartmentAllocation", label: "Manage Department Allocation", description: "Allocate PO quantities and costs across company departments" },
       { key: "overrideJobBudget", label: "Override Job Cost Budget", description: "Exceed remaining Job cost item budget or add unbudgeted items", isDangerous: true },
@@ -283,7 +281,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       downloadExcel: true,
       export: true,
       print: true,
-      trackDelivery: true,
       viewFinancials: true,
       manageDepartmentAllocation: true,
       overrideJobBudget: true,
@@ -393,7 +390,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       downloadExcel: true,
       export: true,
       print: true,
-      trackDelivery: true,
       viewFinancials: true,
       manageDepartmentAllocation: true,
       overrideJobBudget: false,
@@ -503,7 +499,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       downloadExcel: true,
       export: false,
       print: true,
-      trackDelivery: true,
       viewFinancials: false,
       manageDepartmentAllocation: true,
       overrideJobBudget: false,

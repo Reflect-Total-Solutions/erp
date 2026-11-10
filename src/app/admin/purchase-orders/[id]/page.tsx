@@ -5,7 +5,7 @@ import { PoDetailsView } from "@/components/admin/views/po-details-view";
 export const metadata: Metadata = {
   title: "Purchase Order Details — Reflect Total Solutions ERP",
   description:
-    "Inspect Purchase Order line items, printable two-sheet formal PO document, delivery GRNs, linked invoices, and audit logs.",
+    "Inspect Purchase Order line items, printable two-sheet formal PO document, linked invoices, and audit logs.",
 };
 
 interface PoDetailsPageProps {

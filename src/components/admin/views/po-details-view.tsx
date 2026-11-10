@@ -11,7 +11,6 @@ import {
   Calendar,
   Check,
   CheckCircle2,
-  Clock,
   Download,
   Edit,
   ExternalLink,
@@ -19,14 +18,12 @@ import {
   FileSpreadsheet,
   FileText,
   History,
-  Layers,
   Loader2,
   Paperclip,
   RotateCcw,
   Send,
   ShieldAlert,
   Trash2,
-  Truck,
   Upload,
   User,
   X,
@@ -35,7 +32,6 @@ import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
 import { StatusBadge } from "@/components/admin/ui/badge";
 import { PoDocumentPreview } from "@/components/admin/purchase-orders/po-document-preview";
-import { RecordDeliveryModal } from "@/components/admin/purchase-orders/record-delivery-modal";
 import {
   AttachmentPreviewModal,
   PreviewableAttachment,
@@ -60,7 +56,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
   const canReject = can("purchaseOrders", "reject");
   const canIssue = can("purchaseOrders", "issue");
   const canCancel = can("purchaseOrders", "cancel");
-  const canTrackDelivery = can("purchaseOrders", "trackDelivery");
   const canDownloadExcel = can("purchaseOrders", "downloadExcel") || can("purchaseOrders", "download");
   const canPrint = can("purchaseOrders", "print");
   const canViewHistory = can("purchaseOrders", "viewHistory") || can("purchaseOrders", "view");
@@ -70,11 +65,10 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<
-    "overview" | "document" | "deliveries" | "invoices" | "attachments" | "audit"
+    "overview" | "document" | "invoices" | "attachments" | "audit"
   >("overview");
 
   // Modals
-  const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState(false);
   const [reasonModalAction, setReasonModalAction] = useState<"REJECT" | "CANCEL" | null>(null);
   const [actionReason, setActionReason] = useState("");
   const [actionNotes, setActionNotes] = useState("");
@@ -247,7 +241,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
   const activeInvCount = (po.supplierInvoices || []).filter(
     (inv) => inv.status !== "CANCELLED"
   ).length;
-  const canDeliverState = ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED"].includes(po.status);
 
   return (
     <div className="space-y-5 text-xs">
@@ -265,7 +258,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-bold font-mono text-slate-900">{po.poNumber}</h2>
               <StatusBadge status={po.status} />
-              <StatusBadge status={po.deliveryStatus} />
               {po.isDeleted && (
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
                   In Trash
@@ -368,17 +360,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
             </button>
           )}
 
-          {!po.isDeleted && canTrackDelivery && canDeliverState && (
-            <button
-              type="button"
-              onClick={() => setIsDeliveryModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-sky-600 text-white font-semibold hover:bg-sky-700 cursor-pointer"
-            >
-              <Truck className="h-3.5 w-3.5" />
-              <span>Record Delivery</span>
-            </button>
-          )}
-
           {!po.isDeleted && canEdit && ["REJECTED", "PENDING"].includes(po.status) && (
             <button
               type="button"
@@ -439,7 +420,7 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
       )}
 
       {/* KPI Summary Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
           <span className="text-[11px] text-slate-500">Grand Total ({po.currency})</span>
           <p className="text-xl font-extrabold font-mono text-slate-900 mt-1">
@@ -449,24 +430,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
             Sub-Total: {formatCurrency(po.subTotal)} • Taxes:{" "}
             {formatCurrency(po.ssclAmount + po.vatAmount)}
           </p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
-          <span className="text-[11px] text-slate-500">Delivery Progress</span>
-          <div className="flex items-center justify-between mt-1">
-            <span className="text-xl font-bold font-mono text-indigo-700">
-              {po.deliveryProgressPercent ?? 0}%
-            </span>
-            <span className="text-[11px] font-mono text-slate-600">
-              {po.totalDeliveredQuantity ?? 0} / {po.totalOrderedQuantity ?? 0} units
-            </span>
-          </div>
-          <div className="h-2 w-full rounded-full bg-slate-100 mt-2 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-indigo-600 transition-all"
-              style={{ width: `${Math.min(100, po.deliveryProgressPercent || 0)}%` }}
-            />
-          </div>
         </div>
 
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
@@ -502,10 +465,9 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
         {[
           { key: "overview", label: `1. Overview & Items (${po.items?.length || 0})` },
           { key: "document", label: "2. Formal PO Document & Allocation" },
-          { key: "deliveries", label: `3. Deliveries (${po.deliveries?.length || 0})` },
-          { key: "invoices", label: `4. Linked Invoices (${po.supplierInvoices?.length || 0})` },
-          { key: "attachments", label: `5. Attachments (${po.attachments?.length || 0})` },
-          ...(canViewHistory ? [{ key: "audit", label: "6. Approval & Audit Trail" }] : []),
+          { key: "invoices", label: `3. Linked Invoices (${po.supplierInvoices?.length || 0})` },
+          { key: "attachments", label: `4. Attachments (${po.attachments?.length || 0})` },
+          ...(canViewHistory ? [{ key: "audit", label: "5. Approval & Audit Trail" }] : []),
         ].map((tab) => (
           <button
             key={tab.key}
@@ -567,7 +529,7 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
           {/* Line Items */}
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 font-bold text-slate-900">
-              Line Items & Fulfillment Status
+              Line Items & Invoicing Status
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
@@ -577,7 +539,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
                     <th className="py-2.5 px-3">Particular</th>
                     <th className="py-2.5 px-3">Brand / Specs</th>
                     <th className="py-2.5 px-3 text-right">Ordered</th>
-                    <th className="py-2.5 px-3 text-right">Delivered</th>
                     <th className="py-2.5 px-3 text-right">Invoiced</th>
                     <th className="py-2.5 px-3 text-right">Unit Cost</th>
                     <th className="py-2.5 px-3 text-right">Line Total</th>
@@ -607,9 +568,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono">
                         {roundFinancial(it.quantity, 2).toFixed(2)} {it.measure}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono text-indigo-700 font-semibold">
-                        {roundFinancial(it.deliveredQuantity, 2).toFixed(2)}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono text-emerald-700">
                         {formatCurrency(it.invoicedAmount)}
@@ -642,122 +600,7 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
         />
       )}
 
-      {/* TAB 3: DELIVERIES */}
-      {activeTab === "deliveries" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-bold text-slate-900">Goods Receipt & Delivery History</h4>
-            {canTrackDelivery && canDeliverState && !po.isDeleted && (
-              <button
-                type="button"
-                onClick={() => setIsDeliveryModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-sky-600 text-white font-semibold hover:bg-sky-700 cursor-pointer"
-              >
-                <Truck className="h-3.5 w-3.5" />
-                <span>Record New Delivery</span>
-              </button>
-            )}
-          </div>
-
-          {(po.deliveries || []).length === 0 ? (
-            <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-400">
-              <Truck className="h-10 w-10 text-slate-300 mx-auto mb-2" />
-              <p className="font-semibold text-slate-600 text-sm">No Deliveries Recorded Yet</p>
-              <p className="text-xs mt-1">
-                {canDeliverState
-                  ? "Click Record New Delivery when items arrive from the supplier."
-                  : "Deliveries can be recorded once this PO is Approved or Issued."}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {(po.deliveries || []).map((del) => (
-                <div
-                  key={del.id}
-                  className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-3"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-blue-700 text-sm">
-                          {del.deliveryReference}
-                        </span>
-                        {del.isOverride && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
-                            Over-Delivery Override
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">
-                        Date: <strong>{del.deliveryDate}</strong> • Received by:{" "}
-                        <strong>{del.receivedBy}</strong> • Logged by:{" "}
-                        {del.createdByName || "System"}
-                      </p>
-                    </div>
-                  </div>
-
-                  {del.overrideReason && (
-                    <p className="text-[11px] bg-amber-50 border border-amber-200 text-amber-900 px-3 py-1.5 rounded-lg">
-                      Override Reason: {del.overrideReason}
-                    </p>
-                  )}
-                  {del.notes && <p className="text-slate-600 italic">Notes: {del.notes}</p>}
-
-                  <div className="overflow-x-auto rounded-lg border border-slate-100">
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="bg-slate-50 text-[10px] uppercase text-slate-500">
-                          <th className="py-2 px-3">Item Particular</th>
-                          <th className="py-2 px-3 text-right">Delivered Qty</th>
-                          <th className="py-2 px-3">Remark</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {del.items.map((di) => (
-                          <tr key={di.id}>
-                            <td className="py-2 px-3 font-medium text-slate-800">
-                              {di.particular}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono font-bold text-emerald-700">
-                              {di.deliveredQuantity} {di.measure}
-                            </td>
-                            <td className="py-2 px-3 text-slate-500">{di.notes || "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {del.attachments && del.attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      {del.attachments.map((att) => (
-                        <button
-                          key={att.id}
-                          type="button"
-                          onClick={() =>
-                            setPreviewAttachment({
-                              name: att.fileName,
-                              url: att.fileUrl,
-                              category: getFileCategory(att.fileName, att.mimeType || undefined),
-                              size: att.fileSize,
-                            })
-                          }
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-blue-50 hover:text-blue-700 text-[11px] font-medium cursor-pointer"
-                        >
-                          <Paperclip className="h-3 w-3" />
-                          <span>{att.fileName}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* TAB 4: LINKED SUPPLIER INVOICES */}
+      {/* TAB 3: LINKED SUPPLIER INVOICES */}
       {activeTab === "invoices" && (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
@@ -826,7 +669,7 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
         </div>
       )}
 
-      {/* TAB 5: ATTACHMENTS */}
+      {/* TAB 4: ATTACHMENTS */}
       {activeTab === "attachments" && (
         <div className="space-y-4">
           {canEdit && !po.isDeleted && (
@@ -839,7 +682,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
                 >
                   <option value="PO_DOCUMENT">Signed PO Document</option>
                   <option value="SUPPLIER_QUOTATION">Supplier Quotation</option>
-                  <option value="DELIVERY_NOTE">Delivery Note</option>
                   <option value="OTHER">Other Supporting File</option>
                 </select>
               </div>
@@ -929,7 +771,7 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
         </div>
       )}
 
-      {/* TAB 6: APPROVAL & AUDIT TRAIL */}
+      {/* TAB 5: APPROVAL & AUDIT TRAIL */}
       {activeTab === "audit" && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
@@ -1061,17 +903,6 @@ export function PoDetailsView({ poId }: PoDetailsViewProps) {
           </div>
         </form>
       </Modal>
-
-      {/* RECORD DELIVERY MODAL */}
-      <RecordDeliveryModal
-        isOpen={isDeliveryModalOpen}
-        onClose={() => setIsDeliveryModalOpen(false)}
-        po={po}
-        onSuccess={() => {
-          loadPo();
-          refreshJobs?.();
-        }}
-      />
 
       {/* ATTACHMENT PREVIEW MODAL */}
       <AttachmentPreviewModal

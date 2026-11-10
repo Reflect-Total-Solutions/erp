@@ -47,20 +47,6 @@ const PO_DETAIL_INCLUDE = {
   departmentAllocations: {
     include: { department: { select: { id: true, name: true, code: true } } },
   },
-  deliveries: {
-    orderBy: { deliveryDate: "desc" as const },
-    include: {
-      createdBy: { select: { id: true, name: true, email: true } },
-      items: {
-        include: {
-          purchaseOrderItem: {
-            select: { id: true, particular: true, measure: true, quantity: true },
-          },
-        },
-      },
-      attachments: true,
-    },
-  },
   attachments: {
     where: { deletedAt: null },
     orderBy: { createdAt: "desc" as const },
@@ -376,8 +362,6 @@ export async function PUT(
             measure: item.measure,
             unitCost: comp.unitCost.toFixed(2),
             totalAmount: comp.totalAmount.toFixed(2),
-            deliveredQuantity: "0.0000",
-            remainingQuantity: comp.quantity.toFixed(4),
             invoicedQuantity: "0.0000",
             invoicedAmount: "0.00",
             isAdditionalItem: Boolean(item.isAdditionalItem || !item.jobCostItemId),
@@ -523,7 +507,6 @@ export async function DELETE(
           where: { deletedAt: null },
           select: { id: true, invoiceNumber: true, status: true },
         },
-        deliveries: { select: { id: true } },
       },
     });
 
@@ -545,19 +528,18 @@ export async function DELETE(
     }
 
     // Protect financial/operational POs from deletion
-    const lockedStatuses = ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"];
+    const lockedStatuses = ["APPROVED", "ISSUED"];
 
     if (permanent) {
       if (
         lockedStatuses.includes(existing.status) ||
-        (existing.supplierInvoices || []).length > 0 ||
-        (existing.deliveries || []).length > 0
+        (existing.supplierInvoices || []).length > 0
       ) {
         return NextResponse.json(
           {
             success: false,
             blocked: true,
-            error: `Cannot Permanently Delete Purchase Order "${existing.poNumber}": Approved, Issued, Delivered, or Invoice-linked POs cannot be permanently purged for financial audit compliance.`,
+            error: `Cannot Permanently Delete Purchase Order "${existing.poNumber}": Approved, Issued, or Invoice-linked POs cannot be permanently purged for financial audit compliance.`,
           },
           { status: 422 }
         );
@@ -570,7 +552,6 @@ export async function DELETE(
       await db.$transaction(async (tx) => {
         await (tx.purchaseOrderAttachment as any).deleteMany({ where: { purchaseOrderId: id } });
         await (tx.purchaseOrderDepartmentAllocation as any).deleteMany({ where: { purchaseOrderId: id } });
-        await (tx.purchaseOrderDelivery as any).deleteMany({ where: { purchaseOrderId: id } });
         await (tx.purchaseOrderApprovalHistory as any).deleteMany({ where: { purchaseOrderId: id } });
         await (tx.purchaseOrderAuditLog as any).deleteMany({ where: { purchaseOrderId: id } });
         await (tx.purchaseOrderItem as any).deleteMany({ where: { purchaseOrderId: id } });
@@ -597,16 +578,16 @@ export async function DELETE(
       });
     }
 
-    // Soft Delete (Move to Trash): Block if already Issued/Delivered/Linked to active invoices
+    // Soft Delete (Move to Trash): Block if already Issued/Linked to active invoices
     if (
-      ["ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(existing.status) ||
+      ["ISSUED"].includes(existing.status) ||
       (existing.supplierInvoices || []).some((inv: any) => inv.status !== "CANCELLED")
     ) {
       return NextResponse.json(
         {
           success: false,
           blocked: true,
-          error: `Cannot move "${existing.poNumber}" to Trash because it is Issued/Delivered or has linked active Supplier Invoices. Cancel the PO first if required.`,
+          error: `Cannot move "${existing.poNumber}" to Trash because it is Issued or has linked active Supplier Invoices. Cancel the PO first if required.`,
         },
         { status: 422 }
       );

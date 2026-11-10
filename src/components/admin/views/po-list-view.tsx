@@ -9,7 +9,6 @@ import {
   Edit,
   Eye,
   FileSpreadsheet,
-  Filter,
   Loader2,
   Plus,
   RefreshCw,
@@ -48,7 +47,6 @@ export function PoListView({
   const [search, setSearch] = useState(initialSearch || "");
   const [supplierFilter, setSupplierFilter] = useState(initialSupplierId || "all");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [deliveryFilter, setDeliveryFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
@@ -74,7 +72,6 @@ export function PoListView({
       if (search.trim()) qs.set("search", search.trim());
       if (supplierFilter && supplierFilter !== "all") qs.set("supplierId", supplierFilter);
       if (statusFilter !== "all") qs.set("status", statusFilter);
-      if (deliveryFilter !== "all") qs.set("deliveryStatus", deliveryFilter);
       if (dateFrom) qs.set("dateFrom", dateFrom);
       if (dateTo) qs.set("dateTo", dateTo);
 
@@ -101,7 +98,6 @@ export function PoListView({
     search,
     supplierFilter,
     statusFilter,
-    deliveryFilter,
     dateFrom,
     dateTo,
     showToast,
@@ -122,7 +118,6 @@ export function PoListView({
     if (search.trim()) qs.set("search", search.trim());
     if (supplierFilter && supplierFilter !== "all") qs.set("supplierId", supplierFilter);
     if (statusFilter !== "all") qs.set("status", statusFilter);
-    if (deliveryFilter !== "all") qs.set("deliveryStatus", deliveryFilter);
     if (dateFrom) qs.set("dateFrom", dateFrom);
     if (dateTo) qs.set("dateTo", dateTo);
     window.open(`/api/purchase-orders?${qs.toString()}`, "_blank");
@@ -209,7 +204,7 @@ export function PoListView({
         <div>
           <h2 className="text-xl font-bold text-slate-900">All Purchase Orders</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Manage Purchase Orders across approved Jobs, download Excel PO sheets, monitor deliveries, and track billed invoices.
+            Manage Purchase Orders across approved Jobs, download Excel PO sheets, and track billed invoices.
           </p>
         </div>
 
@@ -315,7 +310,7 @@ export function PoListView({
           </div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-2 border-t border-slate-100">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100">
           <div>
             <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
               PO Status
@@ -333,29 +328,8 @@ export function PoListView({
               <option value="PENDING">Pending Approval</option>
               <option value="APPROVED">Approved</option>
               <option value="ISSUED">Issued</option>
-              <option value="PARTIALLY_DELIVERED">Partially Delivered</option>
-              <option value="DELIVERED">Delivered</option>
               <option value="REJECTED">Rejected</option>
               <option value="CANCELLED">Cancelled</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-              Delivery Status
-            </label>
-            <select
-              value={deliveryFilter}
-              onChange={(e) => {
-                setDeliveryFilter(e.target.value);
-                setPage(1);
-              }}
-              className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs"
-            >
-              <option value="all">All Delivery States</option>
-              <option value="NOT_DELIVERED">Not Delivered</option>
-              <option value="PARTIALLY_DELIVERED">Partially Delivered</option>
-              <option value="DELIVERED">Delivered</option>
             </select>
           </div>
 
@@ -394,7 +368,7 @@ export function PoListView({
       {/* PO Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
         {isLoading && orders.length === 0 ? (
-          <TableSkeleton rows={8} columns={9} />
+          <TableSkeleton rows={8} columns={8} />
         ) : (
           <>
             <div className="overflow-x-auto">
@@ -407,7 +381,6 @@ export function PoListView({
                     <th className="py-3 px-3.5 text-right">PO Total</th>
                     <th className="py-3 px-3.5 text-right">Invoiced</th>
                     <th className="py-3 px-3.5 text-center">PO Status</th>
-                    <th className="py-3 px-3.5 text-center">Delivery</th>
                     <th className="py-3 px-3.5">Created By</th>
                     <th className="py-3 px-3.5 text-right">Actions</th>
                   </tr>
@@ -415,7 +388,7 @@ export function PoListView({
                 <tbody className="divide-y divide-slate-100">
                   {orders.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-12 text-center text-slate-400">
+                      <td colSpan={8} className="py-12 text-center text-slate-400">
                         <ShoppingCart className="h-10 w-10 text-slate-300 mx-auto mb-2" />
                         <p className="font-semibold text-slate-600 text-sm">
                           No Purchase Orders Found
@@ -438,7 +411,7 @@ export function PoListView({
                       const canRowTrash =
                         viewMode === "active" &&
                         canDelete &&
-                        !["ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(po.status);
+                        !["ISSUED"].includes(po.status);
 
                       return (
                         <tr key={po.id} className="hover:bg-slate-50/70 transition-colors">
@@ -498,16 +471,6 @@ export function PoListView({
 
                           <td className="py-3 px-3.5 text-center whitespace-nowrap">
                             <StatusBadge status={po.status} />
-                          </td>
-
-                          <td className="py-3 px-3.5 text-center whitespace-nowrap">
-                            <StatusBadge status={po.deliveryStatus} />
-                            <div className="mt-1 h-1.5 w-20 mx-auto rounded-full bg-slate-100 overflow-hidden">
-                              <div
-                                className="h-full bg-indigo-500 rounded-full"
-                                style={{ width: `${po.deliveryProgressPercent || 0}%` }}
-                              />
-                            </div>
                           </td>
 
                           <td className="py-3 px-3.5 whitespace-nowrap">

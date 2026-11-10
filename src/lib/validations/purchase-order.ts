@@ -83,21 +83,3 @@ export const poApprovalActionSchema = z.object({
   reason: z.string().trim().max(1000).optional().nullable(),
   notes: z.string().trim().max(1000).optional().nullable(),
 });
-
-export const poDeliverySchema = z.object({
-  deliveryReference: z.string().trim().min(1, "Delivery Reference is required").max(100),
-  deliveryDate: z.string().min(1, "Delivery Date is required"),
-  receivedBy: z.string().trim().min(1, "Received By is required").max(120),
-  notes: z.string().trim().max(1000).optional().nullable(),
-  isOverride: z.boolean().optional().default(false),
-  overrideReason: z.string().trim().max(500).optional().nullable(),
-  items: z
-    .array(
-      z.object({
-        purchaseOrderItemId: z.string().min(1),
-        deliveredQuantity: z.coerce.number().min(0),
-        notes: z.string().max(400).optional().nullable(),
-      })
-    )
-    .min(1, "Select at least one item to record delivery"),
-});

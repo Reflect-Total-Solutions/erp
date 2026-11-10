@@ -105,7 +105,7 @@ export async function recalculateJobFinances(
     } else {
       totalCommittedPoValue = totalCommittedPoValue.plus(val);
       activePoCount++;
-      if (po.approvalStatus === "APPROVED" || ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(po.status)) {
+      if (po.approvalStatus === "APPROVED" || ["APPROVED", "ISSUED"].includes(po.status)) {
         approvedPoCount++;
       }
     }

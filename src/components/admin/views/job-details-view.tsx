@@ -875,7 +875,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                   {(currentJob.poSummary?.approvedPoCount || 0) === 1 ? "" : "s"}
                 </span>
                 <span className="text-[10px] text-slate-400 block">
-                  Ready for delivery / billing
+                  Ready for billing
                 </span>
               </div>
 
@@ -1753,12 +1753,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                               : "—"}
                           </td>
                           <td className="px-4 py-3 text-center whitespace-nowrap">
-                            <div className="flex flex-col items-center gap-1">
-                              <StatusBadge status={po.status} />
-                              {po.deliveryStatus && po.deliveryStatus !== "NOT_DELIVERED" && (
-                                <StatusBadge status={po.deliveryStatus} />
-                              )}
-                            </div>
+                            <StatusBadge status={po.status} />
                           </td>
                           <td className="px-4 py-3 text-slate-600">
                             <span className="block font-medium text-slate-800">

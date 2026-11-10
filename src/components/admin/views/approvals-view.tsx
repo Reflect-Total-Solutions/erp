@@ -277,7 +277,7 @@ export function ApprovalsView() {
   const approvedActivePoCount = useMemo(
     () =>
       purchaseOrders.filter((po) =>
-        ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(
+        ["APPROVED", "ISSUED"].includes(
           String(po.status || "").toUpperCase()
         )
       ).length,
@@ -300,8 +300,6 @@ export function ApprovalsView() {
             "PENDING",
             "APPROVED",
             "ISSUED",
-            "PARTIALLY_DELIVERED",
-            "DELIVERED",
           ].includes(String(po.status || "").toUpperCase())
         )
         .reduce((sum, po) => sum + Number(po.grandTotal || 0), 0),
@@ -321,8 +319,6 @@ export function ApprovalsView() {
           ? [
               "APPROVED",
               "ISSUED",
-              "PARTIALLY_DELIVERED",
-              "DELIVERED",
             ].includes(s)
           : poStatusFilter === "rejected"
           ? s === "REJECTED"
@@ -1106,7 +1102,7 @@ export function ApprovalsView() {
                       {approvedActivePoCount}
                     </p>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      Approved, Issued &amp; Delivered
+                      Approved &amp; Issued
                     </p>
                   </div>
                   <div className="h-10 w-10 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
@@ -1426,16 +1422,7 @@ export function ApprovalsView() {
 
                                   {/* Status */}
                                   <td className="py-3.5 px-3.5 text-center whitespace-nowrap">
-                                    <div className="flex flex-col items-center gap-1">
-                                      <StatusBadge status={po.status} />
-                                      {po.deliveryStatus &&
-                                        po.deliveryStatus !==
-                                          "NOT_DELIVERED" && (
-                                          <StatusBadge
-                                            status={po.deliveryStatus}
-                                          />
-                                        )}
-                                    </div>
+                                    <StatusBadge status={po.status} />
                                   </td>
 
                                   {/* Actions */}

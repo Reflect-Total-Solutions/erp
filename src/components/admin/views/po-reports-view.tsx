@@ -390,8 +390,6 @@ export function PoReportsView() {
               <option value="PENDING">Pending Approval</option>
               <option value="APPROVED">Approved</option>
               <option value="ISSUED">Issued</option>
-              <option value="PARTIALLY_DELIVERED">Partially Delivered</option>
-              <option value="DELIVERED">Delivered</option>
               <option value="REJECTED">Rejected</option>
               <option value="CANCELLED">Cancelled</option>
             </select>

@@ -14,6 +14,7 @@ import {
   PERMISSION_MODULES,
   DEFAULT_ROLE_PERMISSIONS,
 } from "../src/lib/permissions";
+import { ensureDefaultDepartments, getOrCreatePoSettings } from "../src/lib/po-number";
 
 const prisma = new PrismaClient();
 
@@ -161,6 +162,12 @@ async function main() {
   });
 
   console.log(`✅ Admin user seeded: ${adminEmail}`);
+
+  // 5. Default PO Settings & Departments
+  await getOrCreatePoSettings(prisma);
+  await ensureDefaultDepartments(prisma);
+  console.log("✅ Purchase Order default settings and departments seeded");
+
   console.log("🎉 Seed finished successfully!");
 }
 

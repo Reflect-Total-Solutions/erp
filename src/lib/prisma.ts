@@ -6,15 +6,31 @@ import { PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
+function isStalePrismaClient(client: PrismaClient | undefined): boolean {
+  if (!client) return true;
+  const anyClient = client as any;
+  if (!anyClient.supplierInvoice || !anyClient.purchaseOrder || !anyClient.purchaseOrderSettings) {
+    return true;
+  }
+  if (anyClient.purchaseOrderDelivery || anyClient.purchaseOrderDeliveryItem) {
+    return true;
+  }
+  const poFields = anyClient._runtimeDataModel?.models?.PurchaseOrder?.fields;
+  if (
+    Array.isArray(poFields) &&
+    poFields.some((f: any) => f?.name === "deliveryStatus" || f?.dbName === "delivery_status")
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Returns the active PrismaClient singleton, re-creating it if newly generated models
- * (such as supplierInvoice) are missing from the memory cache.
+ * or schema changes (such as supplierInvoice / purchaseOrder) are stale in memory.
  */
 export function getPrisma(): PrismaClient {
-  if (
-    !globalForPrisma.prisma ||
-    !(globalForPrisma.prisma as any).supplierInvoice
-  ) {
+  if (isStalePrismaClient(globalForPrisma.prisma)) {
     if (globalForPrisma.prisma) {
       try {
         globalForPrisma.prisma.$disconnect();
@@ -26,13 +42,13 @@ export function getPrisma(): PrismaClient {
       log: ["error"],
     });
   }
-  return globalForPrisma.prisma;
+  return globalForPrisma.prisma!;
 }
 
-// Invalidate in-memory cache if missing newer models
-if (globalForPrisma.prisma && !(globalForPrisma.prisma as any).supplierInvoice) {
+// Invalidate in-memory cache if schema changed
+if (isStalePrismaClient(globalForPrisma.prisma)) {
   try {
-    globalForPrisma.prisma.$disconnect();
+    globalForPrisma.prisma?.$disconnect();
   } catch {
     // ignore
   }

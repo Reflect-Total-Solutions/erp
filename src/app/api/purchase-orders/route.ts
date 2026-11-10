@@ -38,7 +38,6 @@ export async function GET(req: NextRequest) {
     const trash = searchParams.get("trash") === "true" || searchParams.get("deleted") === "true";
     const status = searchParams.get("status")?.trim();
     const approvalStatus = searchParams.get("approvalStatus")?.trim();
-    const deliveryStatus = searchParams.get("deliveryStatus")?.trim();
     const jobId = searchParams.get("jobId")?.trim();
     const supplierId = searchParams.get("supplierId")?.trim();
     const createdBy = searchParams.get("createdBy")?.trim();
@@ -82,9 +81,6 @@ export async function GET(req: NextRequest) {
     }
     if (approvalStatus && approvalStatus !== "all") {
       where.approvalStatus = approvalStatus.toUpperCase();
-    }
-    if (deliveryStatus && deliveryStatus !== "all") {
-      where.deliveryStatus = deliveryStatus.toUpperCase();
     }
     if (jobId && jobId !== "all") {
       where.jobId = jobId;
@@ -529,7 +525,6 @@ export async function POST(req: NextRequest) {
           terms: input.terms || null,
           status: isSubmit ? "PENDING" : "DRAFT",
           approvalStatus: isSubmit ? "PENDING" : "DRAFT",
-          deliveryStatus: "NOT_DELIVERED",
           subTotal: financials.subTotal.toFixed(2),
           discountAmount: financials.discountAmount.toFixed(2),
           totalAfterDiscount: financials.totalAfterDiscount.toFixed(2),
@@ -574,8 +569,6 @@ export async function POST(req: NextRequest) {
             measure: item.measure,
             unitCost: comp.unitCost.toFixed(2),
             totalAmount: comp.totalAmount.toFixed(2),
-            deliveredQuantity: "0.0000",
-            remainingQuantity: comp.quantity.toFixed(4),
             invoicedQuantity: "0.0000",
             invoicedAmount: "0.00",
             isAdditionalItem: Boolean(item.isAdditionalItem || !item.jobCostItemId),

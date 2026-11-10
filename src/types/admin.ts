@@ -289,7 +289,6 @@ export interface ModulePermission {
   issue?: boolean;
   moveToPending?: boolean;
   cancel?: boolean;
-  trackDelivery?: boolean;
   manageAttachments?: boolean;
   viewFinancials?: boolean;
   managePermissions?: boolean;
@@ -430,13 +429,10 @@ export type PurchaseOrderStatus =
   | "APPROVED"
   | "REJECTED"
   | "ISSUED"
-  | "PARTIALLY_DELIVERED"
-  | "DELIVERED"
   | "CANCELLED"
   | string;
 
 export type PurchaseOrderApprovalStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | string;
-export type PurchaseOrderDeliveryStatus = "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | string;
 
 export interface Department {
   id: string;
@@ -515,8 +511,6 @@ export interface PurchaseOrderItem {
   measure: string;
   unitCost: number;
   totalAmount: number;
-  deliveredQuantity: number;
-  remainingQuantity: number;
   invoicedQuantity: number;
   invoicedAmount: number;
   isAdditionalItem: boolean;
@@ -528,7 +522,6 @@ export interface PurchaseOrderItem {
 export interface PurchaseOrderAttachment {
   id: string;
   purchaseOrderId: string;
-  deliveryId?: string | null;
   category: string;
   fileName: string;
   originalFileName?: string | null;
@@ -540,33 +533,6 @@ export interface PurchaseOrderAttachment {
   mimeType?: string | null;
   fileUrl: string;
   signedUrl?: string | null;
-  createdAt: string;
-}
-
-export interface PurchaseOrderDeliveryItem {
-  id: string;
-  deliveryId: string;
-  purchaseOrderItemId: string;
-  particular?: string;
-  measure?: string;
-  orderedQuantity?: number;
-  deliveredQuantity: number;
-  notes?: string | null;
-}
-
-export interface PurchaseOrderDelivery {
-  id: string;
-  purchaseOrderId: string;
-  deliveryReference: string;
-  deliveryDate: string;
-  receivedBy: string;
-  notes?: string | null;
-  isOverride: boolean;
-  overrideReason?: string | null;
-  createdById?: string | null;
-  createdByName?: string | null;
-  items: PurchaseOrderDeliveryItem[];
-  attachments?: PurchaseOrderAttachment[];
   createdAt: string;
 }
 
@@ -624,7 +590,6 @@ export interface PurchaseOrder {
   terms?: string | null;
   status: PurchaseOrderStatus;
   approvalStatus: PurchaseOrderApprovalStatus;
-  deliveryStatus: PurchaseOrderDeliveryStatus;
   subTotal: number;
   discountAmount: number;
   totalAfterDiscount: number;
@@ -667,16 +632,12 @@ export interface PurchaseOrder {
   isDeleted?: boolean;
   items?: PurchaseOrderItem[];
   departmentAllocations?: PurchaseOrderDepartmentAllocation[];
-  deliveries?: PurchaseOrderDelivery[];
   attachments?: PurchaseOrderAttachment[];
   approvalHistory?: PurchaseOrderApprovalHistory[];
   auditLogs?: PurchaseOrderAuditLog[];
   supplierInvoices?: SupplierInvoice[];
   invoicedTotal?: number;
   remainingUninvoiced?: number;
-  totalOrderedQuantity?: number;
-  totalDeliveredQuantity?: number;
-  deliveryProgressPercent?: number;
   itemCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -717,12 +678,6 @@ export interface DashboardStats {
   pendingApprovalsCount: number;
   visibilityScope?: string;
   canViewFinancials?: boolean;
-  poStats?: {
-    totalPurchaseOrders: number;
-    pendingPoApprovals: number;
-    committedPoValue: number;
-    openPoDeliveries: number;
-  };
   employeeStats?: Array<{
     userId: string;
     name: string;

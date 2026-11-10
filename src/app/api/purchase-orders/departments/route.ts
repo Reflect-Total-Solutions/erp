@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth";
 import { checkSessionPermission } from "@/lib/permissions";
 import { logAuditEvent } from "@/lib/audit";
 import { departmentSchema } from "@/lib/validations/purchase-order";
+import { ensureDefaultDepartments } from "@/lib/po-number";
 
 // GET /api/purchase-orders/departments
 export async function GET(req: NextRequest) {
@@ -26,6 +27,7 @@ export async function GET(req: NextRequest) {
     const includeInactive = searchParams.get("all") === "true";
 
     const db = getPrisma();
+    await ensureDefaultDepartments(db);
     const departments = await (db.department as any).findMany({
       where: includeInactive ? {} : { isActive: true },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],

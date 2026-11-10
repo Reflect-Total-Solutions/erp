@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { checkSessionPermission } from "@/lib/permissions";
 import { logAuditEvent } from "@/lib/audit";
 import { poSettingsSchema } from "@/lib/validations/purchase-order";
-import { previewNextPoNumber } from "@/lib/po-number";
+import { previewNextPoNumber, ensureDefaultDepartments } from "@/lib/po-number";
 
 // GET /api/purchase-orders/settings
 export async function GET() {
@@ -24,6 +24,7 @@ export async function GET() {
 
   try {
     const db = getPrisma();
+    await ensureDefaultDepartments(db);
     const [{ nextPoNumber, settings }, departments] = await Promise.all([
       previewNextPoNumber(db),
       (db.department as any).findMany({

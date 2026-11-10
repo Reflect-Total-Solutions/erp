@@ -94,8 +94,6 @@ export async function GET(
                 measure: true,
                 unitCost: true,
                 totalAmount: true,
-                deliveredQuantity: true,
-                remainingQuantity: true,
                 invoicedQuantity: true,
                 invoicedAmount: true,
               },
@@ -342,7 +340,6 @@ export async function GET(
           supplierName: po.supplierNameSnapshot || po.supplier?.name || "Unknown Supplier",
           status: po.status,
           approvalStatus: po.approvalStatus,
-          deliveryStatus: po.deliveryStatus,
           grandTotal: Number(po.grandTotal || 0),
           invoicedTotal,
           currency: po.currency || "LKR",
@@ -360,7 +357,7 @@ export async function GET(
           PO_ACTIVE_COMMITMENT_STATUSES.includes(String(p.status || "").toUpperCase())
         );
         const approvedPos = pos.filter((p: any) =>
-          ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(
+          ["APPROVED", "ISSUED"].includes(
             String(p.status || "").toUpperCase()
           )
         );

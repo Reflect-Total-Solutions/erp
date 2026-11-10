@@ -188,14 +188,14 @@ export async function DELETE(
     const isAdmin = session.roles?.some((r) => r.toLowerCase() === "admin");
     if (
       !isAdmin &&
-      ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(
+      ["APPROVED", "ISSUED"].includes(
         attachment.purchaseOrder?.status || ""
       )
     ) {
       return NextResponse.json(
         {
           success: false,
-          error: "Attachments on Approved/Issued/Delivered POs can only be removed by Administrators.",
+          error: "Attachments on Approved/Issued POs can only be removed by Administrators.",
         },
         { status: 422 }
       );

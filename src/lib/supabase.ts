@@ -190,7 +190,7 @@ export async function uploadSupplierInvoiceAttachment({
 }
 
 /**
- * Uploads a Purchase Order attachment or delivery note to Supabase Storage:
+ * Uploads a Purchase Order attachment to Supabase Storage:
  * purchase-orders / [JOB-CODE] / [PO-NUMBER] / [CATEGORY] / [TIMESTAMP-RAND_FILENAME]
  */
 export async function uploadPurchaseOrderAttachment({

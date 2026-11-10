@@ -507,7 +507,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            error: `Purchase Order "${linkedPo.poNumber}" (${linkedPo.status}) must be Approved, Issued, or Delivered before linking to a Supplier Invoice.`,
+            error: `Purchase Order "${linkedPo.poNumber}" (${linkedPo.status}) must be Approved or Issued before linking to a Supplier Invoice.`,
           },
           { status: 422 }
         );

@@ -17,10 +17,8 @@ import {
   ShoppingCart,
   ChevronDown,
   ChevronRight,
-  BarChart3,
   ClipboardList,
   PlusCircle,
-  Truck,
   CheckSquare,
   FileSpreadsheet,
 } from "lucide-react";
@@ -141,12 +139,6 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
       isActive: boolean;
     }> = [
       {
-        name: "PO Dashboard",
-        href: "/admin/purchase-orders",
-        icon: BarChart3,
-        isActive: pathname === "/admin/purchase-orders",
-      },
-      {
         name: "All Purchase Orders",
         href: "/admin/purchase-orders/list",
         icon: ClipboardList,
@@ -154,7 +146,6 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
           pathname === "/admin/purchase-orders/list" ||
           (pathname.startsWith("/admin/purchase-orders/") &&
             !pathname.startsWith("/admin/purchase-orders/create") &&
-            !pathname.startsWith("/admin/purchase-orders/tracking") &&
             !pathname.startsWith("/admin/purchase-orders/reports")),
       },
     ];
@@ -167,13 +158,6 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
         isActive: pathname === "/admin/purchase-orders/create",
       });
     }
-
-    list.push({
-      name: "PO Tracking",
-      href: "/admin/purchase-orders/tracking",
-      icon: Truck,
-      isActive: pathname.startsWith("/admin/purchase-orders/tracking"),
-    });
 
     if (can("purchaseOrders", "approve") || can("approvals", "view") || can("purchaseOrders", "view")) {
       list.push({

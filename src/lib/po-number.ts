@@ -1,6 +1,30 @@
 import { Prisma } from "@prisma/client";
 import { getPrisma } from "@/lib/prisma";
 
+export const DEFAULT_PO_DEPARTMENTS = [
+  { name: "Operations", code: "OPS", sortOrder: 1 },
+  { name: "Production", code: "PROD", sortOrder: 2 },
+  { name: "Administration", code: "ADMIN", sortOrder: 3 },
+  { name: "Finance & Accounts", code: "FIN", sortOrder: 4 },
+  { name: "Sales & Client Servicing", code: "SALES", sortOrder: 5 },
+] as const;
+
+export async function ensureDefaultDepartments(client?: Prisma.TransactionClient | any) {
+  const db = client || getPrisma();
+  const count = await (db.department as any).count();
+  if (count === 0) {
+    await (db.department as any).createMany({
+      data: DEFAULT_PO_DEPARTMENTS.map((d) => ({
+        name: d.name,
+        code: d.code,
+        isActive: true,
+        sortOrder: d.sortOrder,
+      })),
+      skipDuplicates: true,
+    });
+  }
+}
+
 export async function getOrCreatePoSettings(client?: Prisma.TransactionClient | any) {
   const db = client || getPrisma();
   let settings = await (db.purchaseOrderSettings as any).findUnique({

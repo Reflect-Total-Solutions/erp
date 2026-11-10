@@ -29,7 +29,6 @@ import {
   Edit,
   Info,
   ShieldAlert,
-  ShoppingCart,
 } from "lucide-react";
 import { Decimal } from "decimal.js";
 import {
@@ -43,7 +42,6 @@ import {
   AttachmentPreviewModal,
   PreviewableAttachment,
 } from "@/components/admin/modals/attachment-preview-modal";
-import type { EligiblePoOption } from "@/components/admin/modals/create-supplier-invoice-modal";
 
 interface SupplierOption {
   id: string;
@@ -107,8 +105,7 @@ export function EditSupplierInvoiceModal({
   onSuccess,
   isAdmin = true,
 }: EditSupplierInvoiceModalProps) {
-  const { suppliers: contextSuppliers, refreshJobs, can } = useAdminData();
-  const canOverridePoBalance = can("purchaseOrders", "overrideJobBudget");
+  const { suppliers: contextSuppliers, refreshJobs } = useAdminData();
 
   const [isLoadingInvoice, setIsLoadingInvoice] = useState(false);
   const [currentInvoice, setCurrentInvoice] = useState<SupplierInvoice | null>(initialInvoice);
@@ -133,12 +130,6 @@ export function EditSupplierInvoiceModal({
   const [notes, setNotes] = useState("");
   const [editReason, setEditReason] = useState("");
 
-  // Optional Purchase Order Linking
-  const [eligiblePos, setEligiblePos] = useState<EligiblePoOption[]>([]);
-  const [isLoadingPos, setIsLoadingPos] = useState(false);
-  const [selectedPo, setSelectedPo] = useState<EligiblePoOption | null>(null);
-  const [poOverInvoiceOverride, setPoOverInvoiceOverride] = useState(false);
-
   // Dynamic rows & attachments
   const [rows, setRows] = useState<EditInvoiceRow[]>([]);
   const [deletedAttachmentIds, setDeletedAttachmentIds] = useState<string[]>([]);
@@ -155,40 +146,6 @@ export function EditSupplierInvoiceModal({
   const jobSearchTimeout = useRef<NodeJS.Timeout | null>(null);
   const supplierSearchSeq = useRef(0);
   const jobSearchSeq = useRef(0);
-  const selectedPoRef = useRef<EligiblePoOption | null>(null);
-
-  useEffect(() => {
-    selectedPoRef.current = selectedPo;
-  }, [selectedPo]);
-
-  const loadEligiblePosForEdit = useCallback(async (
-    jobIdFilter?: string,
-    supplierIdFilter?: string,
-    includePoId?: string | null,
-    excludeInvId?: string | null
-  ): Promise<EligiblePoOption[]> => {
-    setIsLoadingPos(true);
-    try {
-      const qs = new URLSearchParams();
-      if (jobIdFilter) qs.set("jobId", jobIdFilter);
-      if (supplierIdFilter) qs.set("supplierId", supplierIdFilter);
-      if (includePoId) qs.set("includePoId", includePoId);
-      if (excludeInvId) qs.set("excludeInvoiceId", excludeInvId);
-      const res = await fetch(`/api/purchase-orders/eligible-for-invoice?${qs.toString()}`);
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && Array.isArray(json.data)) {
-          setEligiblePos(json.data);
-          return json.data;
-        }
-      }
-    } catch (err) {
-      console.error("loadEligiblePosForEdit error:", err);
-    } finally {
-      setIsLoadingPos(false);
-    }
-    return [];
-  }, []);
 
   // Search Suppliers
   const searchSuppliers = useCallback(async (query: string) => {
@@ -271,9 +228,6 @@ export function EditSupplierInvoiceModal({
         setDeletedAttachmentIds([]);
         setSubmitError("");
         setEditReason("");
-        setSelectedPo(null);
-        setEligiblePos([]);
-        setPoOverInvoiceOverride(false);
         return;
       }
 
@@ -346,20 +300,6 @@ export function EditSupplierInvoiceModal({
               ]);
             }
 
-            // Load eligible POs & auto-select existing linked PO if present
-            const pos = await loadEligiblePosForEdit(
-              inv.jobId,
-              inv.supplierId,
-              inv.purchaseOrderId || null,
-              inv.id
-            );
-            if (cancelled) return;
-            if (inv.purchaseOrderId) {
-              const matchedPo = pos.find((p) => p.id === inv.purchaseOrderId);
-              if (matchedPo) setSelectedPo(matchedPo);
-            } else {
-              setSelectedPo(null);
-            }
           }
         })
         .catch((err) => {
@@ -380,160 +320,7 @@ export function EditSupplierInvoiceModal({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [isOpen, initialInvoice?.id, invoiceId, searchSuppliers, searchApprovedJobs, loadEligiblePosForEdit]);
-
-  // Reload eligible POs if supplier/job changes during edit
-  useEffect(() => {
-    if (!isOpen || isLoadingInvoice || !currentInvoice?.id) return;
-    const invId = currentInvoice.id;
-    const linkedPoId = currentInvoice.purchaseOrderId || null;
-    const timer = setTimeout(() => {
-      void loadEligiblePosForEdit(
-        selectedJob?.id,
-        selectedSupplier?.id,
-        linkedPoId,
-        invId
-      );
-      const currentPo = selectedPoRef.current;
-      if (currentPo) {
-        const jobMismatch = selectedJob && currentPo.jobId !== selectedJob.id;
-        const supMismatch = selectedSupplier && currentPo.supplierId !== selectedSupplier.id;
-        if (jobMismatch || supMismatch) {
-          setSelectedPo(null);
-          setPoOverInvoiceOverride(false);
-          setRows((prev) => prev.map((r) => ({ ...r, purchaseOrderItemId: null })));
-        }
-      }
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [
-    isOpen,
-    isLoadingInvoice,
-    currentInvoice?.id,
-    currentInvoice?.purchaseOrderId,
-    selectedJob,
-    selectedSupplier,
-    loadEligiblePosForEdit,
-  ]);
-
-  const handleSelectPurchaseOrder = (poId: string) => {
-    if (!poId) {
-      setSelectedPo(null);
-      setPoOverInvoiceOverride(false);
-      setRows((prev) => prev.map((r) => ({ ...r, purchaseOrderItemId: null })));
-      return;
-    }
-    const found = eligiblePos.find((p) => p.id === poId);
-    if (!found) return;
-    setSelectedPo(found);
-    setPoOverInvoiceOverride(false);
-
-    if (!selectedSupplier || selectedSupplier.id !== found.supplierId) {
-      const matchedSup =
-        suppliersList.find((s) => s.id === found.supplierId) ||
-        (contextSuppliers || []).find((s) => s.id === found.supplierId);
-      if (matchedSup) {
-        setSelectedSupplier({
-          id: matchedSup.id,
-          code: matchedSup.code,
-          name: matchedSup.name,
-          contactPerson: matchedSup.contactPerson,
-          phone: matchedSup.phone,
-          email: matchedSup.email,
-        });
-      } else {
-        setSelectedSupplier({
-          id: found.supplierId,
-          code: found.supplierCode,
-          name: found.supplierName,
-        });
-      }
-    }
-
-    if (!selectedJob || selectedJob.id !== found.jobId) {
-      const matchedJob = approvedJobsList.find((j) => j.id === found.jobId);
-      if (matchedJob) setSelectedJob(matchedJob);
-    }
-  };
-
-  const handleLinkRowPoItem = (rowId: string, poItemId: string) => {
-    if (!poItemId) {
-      setRows((prev) =>
-        prev.map((r) => (r.id === rowId ? { ...r, purchaseOrderItemId: null } : r))
-      );
-      return;
-    }
-    const poItem = selectedPo?.items?.find((it) => it.id === poItemId);
-    if (!poItem) return;
-    const defaultQty = poItem.remainingQuantity > 0 ? poItem.remainingQuantity : poItem.quantity;
-    const defaultAmt = poItem.remainingAmount > 0 ? poItem.remainingAmount : poItem.totalAmount;
-    setRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== rowId) return r;
-        return {
-          ...r,
-          purchaseOrderItemId: poItem.id,
-          description: r.description.trim() ? r.description : poItem.particular,
-          quantity: r.quantity && parseFloat(r.quantity) > 0 ? r.quantity : String(defaultQty),
-          amount:
-            r.amount && parseFloat(r.amount) > 0 ? r.amount : defaultAmt.toFixed(2),
-        };
-      })
-    );
-  };
-
-  const handleRowQuantityChange = (rowId: string, value: string) => {
-    setRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== rowId) return r;
-        const poItem =
-          r.purchaseOrderItemId && selectedPo
-            ? selectedPo.items.find((it) => it.id === r.purchaseOrderItemId)
-            : null;
-        const q = parseFloat(value);
-        const computedAmt =
-          poItem && poItem.unitCost > 0 && !isNaN(q) && q > 0
-            ? new Decimal(q).times(poItem.unitCost).toFixed(2)
-            : r.amount;
-        return { ...r, quantity: value, amount: computedAmt };
-      })
-    );
-  };
-
-  const handleLoadMissingPoItems = () => {
-    if (!selectedPo || !selectedPo.items || selectedPo.items.length === 0) return;
-    const isSingleBlankRow =
-      rows.length === 1 && !rows[0].description.trim() && !rows[0].amount.trim();
-
-    const mappedPoRows: EditInvoiceRow[] = selectedPo.items.map((it, idx) => {
-      const qtyToBill = it.remainingQuantity > 0 ? it.remainingQuantity : it.quantity;
-      const amtToBill = it.remainingAmount > 0 ? it.remainingAmount : it.totalAmount;
-      return {
-        id: `new-po-row-${it.id}-${Date.now().toString(36)}-${idx}`,
-        isNew: true,
-        purchaseOrderItemId: it.id,
-        quantity: String(qtyToBill),
-        description: it.particular,
-        amount: amtToBill.toFixed(2),
-        existingAttachments: [],
-        newAttachments: [],
-      };
-    });
-
-    if (isSingleBlankRow) {
-      setRows(mappedPoRows);
-    } else {
-      const existingMappedIds = new Set(
-        rows.map((r) => r.purchaseOrderItemId).filter(Boolean)
-      );
-      const additions = mappedPoRows.filter(
-        (r) => !existingMappedIds.has(r.purchaseOrderItemId!)
-      );
-      if (additions.length > 0) {
-        setRows((prev) => [...prev, ...additions]);
-      }
-    }
-  };
+  }, [isOpen, initialInvoice?.id, invoiceId, searchSuppliers, searchApprovedJobs]);
 
   // Dynamic Row Actions
   const handleAddRow = () => {
@@ -543,8 +330,6 @@ export function EditSupplierInvoiceModal({
       {
         id: nextId,
         isNew: true,
-        purchaseOrderItemId: null,
-        quantity: "",
         description: "",
         amount: "",
         existingAttachments: [],
@@ -711,10 +496,6 @@ export function EditSupplierInvoiceModal({
       };
     }, [rows, selectedJob, currentInvoice]);
 
-  const isPoOverInvoiced = Boolean(
-    selectedPo && totalInvoiceAmount > Number(selectedPo.remainingUninvoiced || 0) + 0.01
-  );
-
   // Form Submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -744,21 +525,6 @@ export function EditSupplierInvoiceModal({
     if (!selectedJob?.id) {
       setSubmitError("Please select an approved Job.");
       return;
-    }
-
-    if (selectedPo && isPoOverInvoiced) {
-      if (!canOverridePoBalance) {
-        setSubmitError(
-          `Invoice total (${formatCurrency(totalInvoiceAmount)}) exceeds remaining uninvoiced balance of PO "${selectedPo.poNumber}" (${formatCurrency(selectedPo.remainingUninvoiced)}). Over-invoicing requires budget override permission.`
-        );
-        return;
-      }
-      if (!poOverInvoiceOverride) {
-        setSubmitError(
-          `Invoice total exceeds remaining uninvoiced balance of PO "${selectedPo.poNumber}". Check "Approve Over-Invoicing Override" below or reduce row amounts.`
-        );
-        return;
-      }
     }
 
     if (rows.length === 0) {
@@ -799,11 +565,6 @@ export function EditSupplierInvoiceModal({
       const formData = new FormData();
       formData.append("supplierId", selectedSupplier.id);
       formData.append("jobId", selectedJob.id);
-      formData.append("purchaseOrderId", selectedPo ? selectedPo.id : "");
-      formData.append(
-        "poOverInvoiceOverride",
-        String(Boolean(selectedPo && isPoOverInvoiced && poOverInvoiceOverride))
-      );
       formData.append("invoiceNumber", invoiceNumber.trim() || currentInvoice.invoiceNumber);
       formData.append("invoiceDate", invoiceDate);
       formData.append("notes", notes.trim());
@@ -1154,93 +915,6 @@ export function EditSupplierInvoiceModal({
             </div>
           </div>
 
-          {/* Section 1B: Optional Purchase Order Linking */}
-          <div className="p-3.5 rounded-xl bg-indigo-50/50 border border-indigo-200 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <ShoppingCart className="h-4 w-4 text-indigo-600 shrink-0" />
-                <div>
-                  <label className="font-bold text-slate-900 uppercase tracking-wider text-[11px] block">
-                    Link Purchase Order (Optional)
-                  </label>
-                  <p className="text-[11px] text-slate-500">
-                    Link or unlink an Approved/Issued PO for the selected Supplier &amp; Job to track invoiced vs PO balance.
-                  </p>
-                </div>
-              </div>
-              {isLoadingPos && (
-                <span className="inline-flex items-center gap-1 text-[11px] text-indigo-600 font-semibold">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Loading POs...
-                </span>
-              )}
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-2">
-              <select
-                value={selectedPo?.id || ""}
-                onChange={(e) => handleSelectPurchaseOrder(e.target.value)}
-                className="flex-1 h-9 rounded-lg border border-indigo-200 bg-white px-3 text-xs text-slate-900 font-medium focus:ring-2 focus:ring-indigo-500 outline-none"
-              >
-                <option value="">
-                  -- Standalone Invoice (No Purchase Order Linked — {eligiblePos.length} Eligible PO
-                  {eligiblePos.length === 1 ? "" : "s"} Available) --
-                </option>
-                {eligiblePos.map((po) => (
-                  <option key={po.id} value={po.id}>
-                    {po.poNumber} • {po.supplierName} • {po.jobCode} • Remaining:{" "}
-                    {formatCurrency(po.remainingUninvoiced)} / {formatCurrency(po.grandTotal)} ({po.status})
-                  </option>
-                ))}
-              </select>
-
-              {selectedPo && (
-                <button
-                  type="button"
-                  onClick={handleLoadMissingPoItems}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors shrink-0 cursor-pointer"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Add Unlinked PO Items ({selectedPo.items.length})</span>
-                </button>
-              )}
-            </div>
-
-            {selectedPo && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2.5 rounded-lg bg-white border border-indigo-200 text-[11px]">
-                <div>
-                  <span className="text-[10px] text-slate-400 block">Selected PO</span>
-                  <span className="font-mono font-bold text-indigo-700">
-                    {selectedPo.poNumber}
-                  </span>
-                  <span className="text-[10px] text-slate-500 ml-1">({selectedPo.status})</span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-slate-400 block">PO Grand Total</span>
-                  <span className="font-mono font-bold text-slate-900">
-                    {formatCurrency(selectedPo.grandTotal, { showCurrencyPrefix: true })}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-slate-400 block">Other Invoices on PO</span>
-                  <span className="font-mono font-semibold text-amber-700">
-                    {formatCurrency(selectedPo.invoicedTotal, { showCurrencyPrefix: true })}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-slate-400 block">Available PO Ceiling</span>
-                  <span
-                    className={`font-mono font-bold ${
-                      isPoOverInvoiced ? "text-rose-600" : "text-emerald-700"
-                    }`}
-                  >
-                    {formatCurrency(selectedPo.remainingUninvoiced, { showCurrencyPrefix: true })}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-
           {/* Section 2: Invoice Metadata & Mandatory Edit Reason */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
             <div>
@@ -1340,8 +1014,8 @@ export function EditSupplierInvoiceModal({
                           {rowNumber}
                         </td>
 
-                        {/* Description & Optional PO Item Link */}
-                        <td className="py-3 px-3 space-y-1.5">
+                        {/* Description */}
+                        <td className="py-3 px-3">
                           <input
                             type="text"
                             value={row.description}
@@ -1350,34 +1024,6 @@ export function EditSupplierInvoiceModal({
                             className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none"
                             required
                           />
-                          {selectedPo && (
-                            <div className="flex items-center gap-1.5">
-                              <select
-                                value={row.purchaseOrderItemId || ""}
-                                onChange={(e) => handleLinkRowPoItem(row.id, e.target.value)}
-                                className="flex-1 h-7 rounded border border-indigo-200 bg-indigo-50/40 px-2 text-[11px] text-slate-700 outline-none"
-                                title="Optionally link row to a specific PO line item"
-                              >
-                                <option value="">-- Optional: Link PO Line Item --</option>
-                                {(selectedPo.items || []).map((it) => (
-                                  <option key={it.id} value={it.id}>
-                                    #{it.rowNumber} {it.particular} (Rem Qty: {it.remainingQuantity}{" "}
-                                    {it.measure} • Rem: {formatCurrency(it.remainingAmount)})
-                                  </option>
-                                ))}
-                              </select>
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={row.quantity || ""}
-                                onChange={(e) => handleRowQuantityChange(row.id, e.target.value)}
-                                placeholder="Qty"
-                                className="w-20 h-7 rounded border border-indigo-200 bg-white px-2 text-right font-mono text-[11px] text-slate-800 outline-none"
-                                title="Invoiced quantity (optional)"
-                              />
-                            </div>
-                          )}
                         </td>
 
                         {/* Attachments Section */}
@@ -1554,36 +1200,6 @@ export function EditSupplierInvoiceModal({
                 {formatCurrency(projectedJobSupplierCost)}) to exceed the approved budget ceiling (
                 {formatCurrency(selectedJob?.originalApprovedCost)}).
               </div>
-            </div>
-          )}
-
-          {/* PO Over-Invoicing Guard */}
-          {selectedPo && isPoOverInvoiced && (
-            <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-2">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
-                <div>
-                  <span className="font-bold">PO Over-Invoicing Guard:</span> Edited invoice total (
-                  <strong className="font-mono">{formatCurrency(totalInvoiceAmount)}</strong>) exceeds the
-                  remaining uninvoiced balance of <strong>{selectedPo.poNumber}</strong> (
-                  <strong className="font-mono">{formatCurrency(selectedPo.remainingUninvoiced)}</strong>).
-                </div>
-              </div>
-              {canOverridePoBalance ? (
-                <label className="flex items-center gap-2 pl-6 cursor-pointer select-none font-semibold text-amber-950">
-                  <input
-                    type="checkbox"
-                    checked={poOverInvoiceOverride}
-                    onChange={(e) => setPoOverInvoiceOverride(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-amber-500 text-amber-600"
-                  />
-                  <span>Approve Over-Invoicing Override (Admin / Authorized Override)</span>
-                </label>
-              ) : (
-                <p className="pl-6 text-rose-700 font-semibold">
-                  You do not have Budget Override permission to invoice above the PO balance.
-                </p>
-              )}
             </div>
           )}
 

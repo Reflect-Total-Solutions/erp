@@ -155,7 +155,6 @@ model User {
   rejectedPurchaseOrders   PurchaseOrder[]               @relation("PORejectedBy")
   issuedPurchaseOrders     PurchaseOrder[]               @relation("POIssuedBy")
   cancelledPurchaseOrders  PurchaseOrder[]               @relation("POCancelledBy")
-  purchaseOrderDeliveries  PurchaseOrderDelivery[]       @relation("PODeliveryCreatedBy")
   uploadedPOAttachments    PurchaseOrderAttachment[]     @relation("POAttachmentUploadedBy")
   poApprovalHistories      PurchaseOrderApprovalHistory[] @relation("POApprovalActor")
   poAuditLogs              PurchaseOrderAuditLog[]       @relation("POAuditActor")
@@ -661,9 +660,8 @@ model PurchaseOrder {
   supplierContactSnapshot  String?                             @map("supplier_contact_snapshot")
   comments                 String?
   terms                    String?
-  status                   String                              @default("DRAFT") // "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "ISSUED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "CANCELLED"
+  status                   String                              @default("DRAFT") // "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "ISSUED" | "CANCELLED"
   approvalStatus           String                              @default("DRAFT") @map("approval_status") // "DRAFT" | "PENDING" | "APPROVED" | "REJECTED"
-  deliveryStatus           String                              @default("NOT_DELIVERED") @map("delivery_status") // "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED"
   subTotal                 Decimal                             @default(0) @map("sub_total") @db.Decimal(18, 2)
   discountAmount           Decimal                             @default(0) @map("discount_amount") @db.Decimal(18, 2)
   totalAfterDiscount       Decimal                             @default(0) @map("total_after_discount") @db.Decimal(18, 2)
@@ -710,7 +708,6 @@ model PurchaseOrder {
 
   items                    PurchaseOrderItem[]
   departmentAllocations    PurchaseOrderDepartmentAllocation[]
-  deliveries               PurchaseOrderDelivery[]
   attachments              PurchaseOrderAttachment[]
   approvalHistory          PurchaseOrderApprovalHistory[]
   auditLogs                PurchaseOrderAuditLog[]
@@ -720,7 +717,6 @@ model PurchaseOrder {
   @@index([supplierId, deletedAt])
   @@index([status, deletedAt])
   @@index([approvalStatus, deletedAt])
-  @@index([deliveryStatus, deletedAt])
   @@index([createdById, deletedAt])
   @@index([poDate])
   @@map("purchase_orders")
@@ -740,8 +736,6 @@ model PurchaseOrderItem {
   measure               String                              @default("Nos")
   unitCost              Decimal                             @default(0) @map("unit_cost") @db.Decimal(18, 2)
   totalAmount           Decimal                             @default(0) @map("total_amount") @db.Decimal(18, 2)
-  deliveredQuantity     Decimal                             @default(0) @map("delivered_quantity") @db.Decimal(18, 4)
-  remainingQuantity     Decimal                             @default(1) @map("remaining_quantity") @db.Decimal(18, 4)
   invoicedQuantity      Decimal                             @default(0) @map("invoiced_quantity") @db.Decimal(18, 4)
   invoicedAmount        Decimal                             @default(0) @map("invoiced_amount") @db.Decimal(18, 2)
   isAdditionalItem      Boolean                             @default(false) @map("is_additional_item")
@@ -753,7 +747,6 @@ model PurchaseOrderItem {
   purchaseOrder         PurchaseOrder                       @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   jobCostItem           JobCostItem?                        @relation(fields: [jobCostItemId], references: [id], onDelete: SetNull)
   departmentAllocations PurchaseOrderDepartmentAllocation[]
-  deliveryItems         PurchaseOrderDeliveryItem[]
   supplierInvoiceItems  SupplierInvoiceItem[]
 
   @@index([purchaseOrderId, rowNumber])
@@ -783,48 +776,10 @@ model PurchaseOrderDepartmentAllocation {
   @@map("purchase_order_department_allocations")
 }
 
-model PurchaseOrderDelivery {
-  id                String                      @id @default(cuid())
-  purchaseOrderId   String                      @map("purchase_order_id")
-  deliveryReference String                      @map("delivery_reference")
-  deliveryDate      DateTime                    @map("delivery_date")
-  receivedBy        String                      @map("received_by")
-  notes             String?
-  isOverride        Boolean                     @default(false) @map("is_override")
-  overrideReason    String?                     @map("override_reason")
-  createdById       String?                     @map("created_by_id")
-  createdAt         DateTime                    @default(now()) @map("created_at")
-  updatedAt         DateTime                    @updatedAt @map("updated_at")
-
-  purchaseOrder     PurchaseOrder               @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  createdBy         User?                       @relation("PODeliveryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  items             PurchaseOrderDeliveryItem[]
-  attachments       PurchaseOrderAttachment[]
-
-  @@index([purchaseOrderId, deliveryDate])
-  @@map("purchase_order_deliveries")
-}
-
-model PurchaseOrderDeliveryItem {
-  id                  String                @id @default(cuid())
-  deliveryId          String                @map("delivery_id")
-  purchaseOrderItemId String                @map("purchase_order_item_id")
-  deliveredQuantity   Decimal               @default(0) @map("delivered_quantity") @db.Decimal(18, 4)
-  notes               String?
-
-  delivery            PurchaseOrderDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
-  purchaseOrderItem   PurchaseOrderItem     @relation(fields: [purchaseOrderItemId], references: [id], onDelete: Cascade)
-
-  @@index([deliveryId])
-  @@index([purchaseOrderItemId])
-  @@map("purchase_order_delivery_items")
-}
-
 model PurchaseOrderAttachment {
   id               String                 @id @default(cuid())
   purchaseOrderId  String                 @map("purchase_order_id")
-  deliveryId       String?                @map("delivery_id")
-  category         String                 @default("PO_DOCUMENT") // "PO_DOCUMENT" | "SUPPLIER_QUOTATION" | "DELIVERY_NOTE" | "OTHER"
+  category         String                 @default("PO_DOCUMENT") // "PO_DOCUMENT" | "SUPPLIER_QUOTATION" | "OTHER"
   fileName         String                 @map("file_name")
   originalFileName String?                @map("original_file_name")
   storedFileName   String?                @map("stored_file_name")
@@ -839,11 +794,9 @@ model PurchaseOrderAttachment {
   createdAt        DateTime               @default(now()) @map("created_at")
 
   purchaseOrder    PurchaseOrder          @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  delivery         PurchaseOrderDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
   uploadedBy       User?                  @relation("POAttachmentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
 
   @@index([purchaseOrderId, deletedAt])
-  @@index([deliveryId])
   @@map("purchase_order_attachments")
 }
 
@@ -869,7 +822,7 @@ model PurchaseOrderAuditLog {
   id              String        @id @default(cuid())
   purchaseOrderId String        @map("purchase_order_id")
   userId          String?       @map("user_id")
-  action          String        // "CREATE" | "EDIT" | "SUBMIT" | "APPROVE" | "REJECT" | "ISSUE" | "DELIVER" | "CANCEL" | "SOFT_DELETE" | "RESTORE" | "PERMANENT_DELETE" | "EXPORT"
+  action          String        // "CREATE" | "EDIT" | "SUBMIT" | "APPROVE" | "REJECT" | "ISSUE" | "CANCEL" | "SOFT_DELETE" | "RESTORE" | "PERMANENT_DELETE" | "EXPORT"
   reason          String?
   previousData    Json?         @map("previous_data")
   newData         Json?         @map("new_data")

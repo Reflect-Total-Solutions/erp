@@ -32,7 +32,7 @@ export interface JobBudgetCalculationResult {
 
 /**
  * Loads a Job's real cost categories and items from DB along with live PO commitments
- * across all active POs (`PENDING`, `APPROVED`, `ISSUED`, `PARTIALLY_DELIVERED`, `DELIVERED`)
+ * across all active POs (`PENDING`, `APPROVED`, `ISSUED`)
  * and draft POs (`DRAFT`), optionally excluding `excludePoId` (used during PO Edit / Submit).
  */
 export async function getJobCostItemsWithPoBudget(
@@ -187,7 +187,6 @@ export async function getJobCostItemsWithPoBudget(
 export function serializePurchaseOrder(po: any, maskFinancials = false): PurchaseOrder {
   const items = (po.items || []).map((it: any) => {
     const qty = Number(it.quantity || 0);
-    const deliv = Number(it.deliveredQuantity || 0);
     return {
       id: it.id,
       purchaseOrderId: it.purchaseOrderId,
@@ -202,8 +201,6 @@ export function serializePurchaseOrder(po: any, maskFinancials = false): Purchas
       measure: it.measure || "Nos",
       unitCost: maskFinancials ? 0 : Number(it.unitCost || 0),
       totalAmount: maskFinancials ? 0 : Number(it.totalAmount || 0),
-      deliveredQuantity: deliv,
-      remainingQuantity: Number(it.remainingQuantity ?? Math.max(0, qty - deliv)),
       invoicedQuantity: Number(it.invoicedQuantity || 0),
       invoicedAmount: maskFinancials ? 0 : Number(it.invoicedAmount || 0),
       isAdditionalItem: Boolean(it.isAdditionalItem),
@@ -223,16 +220,6 @@ export function serializePurchaseOrder(po: any, maskFinancials = false): Purchas
       })),
     };
   });
-
-  const totalOrderedQuantity = items.reduce((s: number, it: any) => s + Number(it.quantity || 0), 0);
-  const totalDeliveredQuantity = items.reduce(
-    (s: number, it: any) => s + Math.min(Number(it.quantity || 0), Number(it.deliveredQuantity || 0)),
-    0
-  );
-  const deliveryProgressPercent =
-    totalOrderedQuantity > 0
-      ? Number(((totalDeliveredQuantity / totalOrderedQuantity) * 100).toFixed(1))
-      : 0;
 
   const activeInvoices = (po.supplierInvoices || []).filter(
     (inv: any) => !inv.deletedAt && inv.status !== "CANCELLED"
@@ -277,7 +264,6 @@ export function serializePurchaseOrder(po: any, maskFinancials = false): Purchas
     terms: po.terms || null,
     status: po.status,
     approvalStatus: po.approvalStatus,
-    deliveryStatus: po.deliveryStatus,
     subTotal: maskFinancials ? 0 : Number(po.subTotal || 0),
     discountAmount: maskFinancials ? 0 : Number(po.discountAmount || 0),
     totalAfterDiscount: maskFinancials ? 0 : Number(po.totalAfterDiscount || 0),
@@ -331,51 +317,11 @@ export function serializePurchaseOrder(po: any, maskFinancials = false): Purchas
       percentage: Number(da.percentage || 0),
       notes: da.notes || null,
     })),
-    deliveries: (po.deliveries || []).map((del: any) => ({
-      id: del.id,
-      purchaseOrderId: del.purchaseOrderId,
-      deliveryReference: del.deliveryReference,
-      deliveryDate: del.deliveryDate ? new Date(del.deliveryDate).toISOString().split("T")[0] : "",
-      receivedBy: del.receivedBy,
-      notes: del.notes || null,
-      isOverride: Boolean(del.isOverride),
-      overrideReason: del.overrideReason || null,
-      createdById: del.createdById || null,
-      createdByName: del.createdBy?.name || null,
-      items: (del.items || []).map((di: any) => ({
-        id: di.id,
-        deliveryId: di.deliveryId,
-        purchaseOrderItemId: di.purchaseOrderItemId,
-        particular: di.purchaseOrderItem?.particular || "",
-        measure: di.purchaseOrderItem?.measure || "Nos",
-        orderedQuantity: Number(di.purchaseOrderItem?.quantity || 0),
-        deliveredQuantity: Number(di.deliveredQuantity || 0),
-        notes: di.notes || null,
-      })),
-      attachments: (del.attachments || []).map((att: any) => ({
-        id: att.id,
-        purchaseOrderId: att.purchaseOrderId,
-        deliveryId: att.deliveryId || null,
-        category: att.category,
-        fileName: att.fileName,
-        originalFileName: att.originalFileName || att.fileName,
-        storedFileName: att.storedFileName,
-        bucketName: att.bucketName,
-        storagePath: att.storagePath,
-        fileSize: att.fileSize,
-        fileType: att.fileType,
-        mimeType: att.mimeType || att.fileType,
-        fileUrl: `/api/purchase-orders/attachments/${att.id}`,
-        createdAt: att.createdAt ? new Date(att.createdAt).toISOString() : "",
-      })),
-      createdAt: del.createdAt ? new Date(del.createdAt).toISOString() : "",
-    })),
     attachments: (po.attachments || [])
       .filter((att: any) => !att.deletedAt)
       .map((att: any) => ({
         id: att.id,
         purchaseOrderId: att.purchaseOrderId,
-        deliveryId: att.deliveryId || null,
         category: att.category,
         fileName: att.fileName,
         originalFileName: att.originalFileName || att.fileName,
@@ -428,9 +374,6 @@ export function serializePurchaseOrder(po: any, maskFinancials = false): Purchas
     })),
     invoicedTotal: maskFinancials ? 0 : roundFinancial(invoicedTotal, 2).toNumber(),
     remainingUninvoiced: maskFinancials ? 0 : remainingUninvoiced,
-    totalOrderedQuantity,
-    totalDeliveredQuantity,
-    deliveryProgressPercent,
     itemCount: items.length,
     createdAt: po.createdAt ? new Date(po.createdAt).toISOString() : "",
     updatedAt: po.updatedAt ? new Date(po.updatedAt).toISOString() : "",

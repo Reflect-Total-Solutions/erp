@@ -3,7 +3,6 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { checkSessionPermission } from "@/lib/permissions";
 import { buildRecordVisibilityFilter } from "@/lib/data-visibility";
-import { PO_ELIGIBLE_FOR_INVOICE_STATUSES, PO_STATUSES } from "@/lib/po-financial";
 
 // GET /api/dashboard/stats
 // Returns real-time database aggregations for the Executive Dashboard
@@ -26,10 +25,6 @@ export async function GET() {
     }
 
     const canViewFinancials = await checkSessionPermission(session, "dashboard", "viewFinancials");
-    const [canViewPos, canViewPoFinancials] = await Promise.all([
-      checkSessionPermission(session, "purchaseOrders", "view"),
-      checkSessionPermission(session, "purchaseOrders", "viewFinancials"),
-    ]);
 
     // 1. Resolve record visibility filters for jobs and supplier invoices
     const jobVis = await buildRecordVisibilityFilter(session, "jobs", "submittedById");
@@ -206,70 +201,6 @@ export async function GET() {
       }
     }
 
-    let poStats:
-      | {
-          totalPurchaseOrders: number;
-          pendingPoApprovals: number;
-          committedPoValue: number;
-          openPoDeliveries: number;
-        }
-      | undefined;
-
-    if (canViewPos) {
-      try {
-        const poVis = await buildRecordVisibilityFilter(session, "purchaseOrders", "createdById");
-        const basePoWhere: any = {
-          deletedAt: null,
-          ...(poVis.filter.createdById
-            ? { createdById: poVis.filter.createdById }
-            : poVis.filter.OR
-            ? { OR: poVis.filter.OR }
-            : {}),
-        };
-
-        const [totalPurchaseOrders, pendingPoApprovals, committedPoAgg, openPoDeliveries] =
-          await Promise.all([
-            prisma.purchaseOrder.count({ where: basePoWhere }),
-            prisma.purchaseOrder.count({
-              where: { ...basePoWhere, status: PO_STATUSES.PENDING },
-            }),
-            prisma.purchaseOrder.aggregate({
-              where: {
-                ...basePoWhere,
-                status: {
-                  in: PO_ELIGIBLE_FOR_INVOICE_STATUSES,
-                },
-              },
-              _sum: { grandTotal: true },
-            }),
-            prisma.purchaseOrder.count({
-              where: {
-                ...basePoWhere,
-                status: {
-                  in: [
-                    PO_STATUSES.APPROVED,
-                    PO_STATUSES.ISSUED,
-                    PO_STATUSES.PARTIALLY_DELIVERED,
-                  ],
-                },
-              },
-            }),
-          ]);
-
-        poStats = {
-          totalPurchaseOrders,
-          pendingPoApprovals,
-          committedPoValue:
-            canViewFinancials && canViewPoFinancials
-              ? Number(committedPoAgg._sum.grandTotal || 0)
-              : 0,
-          openPoDeliveries,
-        };
-      } catch (poErr) {
-        console.warn("Could not generate PO dashboard stats:", poErr);
-      }
-    }
-
     return NextResponse.json({
       success: true,
       data: {
@@ -288,7 +219,6 @@ export async function GET() {
         pendingApprovalsCount: pendingJobs,
         canViewFinancials,
         visibilityScope: jobVis.scope,
-        poStats,
         employeeStats,
       },
     });

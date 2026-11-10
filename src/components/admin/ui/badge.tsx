@@ -60,15 +60,6 @@ export function StatusBadge({ status }: { status: JobStatus | InvoiceStatus | Ex
   if (norm === "issued") {
     return <Badge variant="default">Issued</Badge>;
   }
-  if (norm === "partially_delivered" || norm === "partially delivered") {
-    return <Badge variant="info">Partially Delivered</Badge>;
-  }
-  if (norm === "delivered") {
-    return <Badge variant="success">Delivered</Badge>;
-  }
-  if (norm === "not_delivered" || norm === "not delivered") {
-    return <Badge variant="neutral">Not Delivered</Badge>;
-  }
   if (norm === "rejected") {
     return <Badge variant="danger">Rejected</Badge>;
   }

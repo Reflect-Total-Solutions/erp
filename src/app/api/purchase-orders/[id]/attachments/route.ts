@@ -28,14 +28,9 @@ export async function POST(
     const formData = await req.formData();
     const category = String(formData.get("category") || "PO_DOCUMENT").trim() || "PO_DOCUMENT";
 
-    const requiredAction = category === "DELIVERY_NOTE" ? "trackDelivery" : "edit";
     const hasEditPerm = await checkSessionPermission(session, "purchaseOrders", "edit");
-    const hasTrackPerm =
-      category === "DELIVERY_NOTE"
-        ? await checkSessionPermission(session, "purchaseOrders", "trackDelivery")
-        : false;
 
-    if (!hasEditPerm && !hasTrackPerm) {
+    if (!hasEditPerm) {
       return NextResponse.json(
         { success: false, error: "Forbidden: You do not have permission to upload PO attachments." },
         { status: 403 }
@@ -58,7 +53,7 @@ export async function POST(
       session,
       "purchaseOrders",
       po.createdById,
-      hasEditPerm ? "edit" : requiredAction
+      "edit"
     );
     if (!scopeCheck.allowed) {
       return NextResponse.json(

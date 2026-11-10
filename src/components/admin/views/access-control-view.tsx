@@ -186,7 +186,7 @@ export function AccessControlView() {
       {
         key: "purchaseOrders",
         title: "Purchase Order Management",
-        description: "Purchase Orders, Job budget checks, approvals, deliveries, and Excel/PDF exports",
+        description: "Purchase Orders, Job budget checks, approvals, and Excel/PDF exports",
         icon: ClipboardList,
       },
       {
