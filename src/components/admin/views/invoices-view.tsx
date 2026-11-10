@@ -666,6 +666,22 @@ export function InvoicesView() {
                               Client: {inv.clientName}
                             </span>
                           )}
+                          {inv.purchaseOrderNumber && (
+                            <div className="mt-1">
+                              {can("purchaseOrders", "view") && inv.purchaseOrderId ? (
+                                <Link
+                                  href={`/admin/purchase-orders/${inv.purchaseOrderId}`}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono text-[10px] font-bold hover:bg-indigo-100"
+                                >
+                                  PO: {inv.purchaseOrderNumber}
+                                </Link>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono text-[10px] font-bold">
+                                  PO: {inv.purchaseOrderNumber}
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </td>
                         <td className="py-3.5 px-3.5 text-slate-600 font-mono whitespace-nowrap">
                           {inv.invoiceDate}

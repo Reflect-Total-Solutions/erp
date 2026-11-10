@@ -4,6 +4,7 @@ export type ERPModule =
   | "dashboard"
   | "jobs"
   | "suppliers"
+  | "purchaseOrders"
   | "approvals"
   | "supplierInvoices"
   | "invoices"
@@ -18,21 +19,28 @@ export type ERPAction =
   | "viewAll"
   | "create"
   | "edit"
+  | "submit"
   | "delete"
   | "restore"
   | "permanentDelete"
   | "download"
+  | "downloadExcel"
   | "bulkDownload"
   | "export"
   | "print"
   | "approve"
   | "reject"
+  | "issue"
   | "moveToPending"
   | "cancel"
+  | "trackDelivery"
   | "manageAttachments"
   | "viewFinancials"
   | "managePermissions"
-  | "viewHistory";
+  | "viewHistory"
+  | "overrideJobBudget"
+  | "manageDepartmentAllocation"
+  | "manageSettings";
 
 // Backwards-compatible action alias
 export type Action = ERPAction;
@@ -105,6 +113,37 @@ export const PERMISSION_MODULES: ModuleDef[] = [
       { key: "permanentDelete", label: "Permanently Delete Suppliers", description: "Permanently purge supplier records from the system", isDangerous: true },
       { key: "download", label: "Download Supplier Information", description: "Download individual supplier records" },
       { key: "export", label: "Export Suppliers", description: "Export supplier lists to CSV" },
+    ],
+  },
+  {
+    key: "purchaseOrders",
+    name: "Purchase Order Management",
+    category: "Procurement",
+    description: "Purchase Orders linked to approved Jobs, budget controls, approvals, deliveries, and exports.",
+    actions: [
+      { key: "view", label: "View Purchase Orders", description: "Access the Purchase Order module and view PO details" },
+      { key: "viewOwn", label: "View Own Purchase Orders", description: "View only POs created by the logged-in user" },
+      { key: "viewTeam", label: "View Team Purchase Orders", description: "View POs created by team members / subordinates" },
+      { key: "viewAll", label: "View All Purchase Orders", description: "View all Purchase Orders across the entire organization" },
+      { key: "create", label: "Create Purchase Orders", description: "Create new Purchase Orders linked to approved Jobs" },
+      { key: "edit", label: "Edit Purchase Orders", description: "Modify Draft or Rejected Purchase Orders" },
+      { key: "submit", label: "Submit for Approval", description: "Submit Draft Purchase Orders for approval" },
+      { key: "approve", label: "Approve Purchase Orders", description: "Approve Pending Purchase Orders", isDangerous: true },
+      { key: "reject", label: "Reject Purchase Orders", description: "Reject Pending Purchase Orders with mandatory reason", isDangerous: true },
+      { key: "issue", label: "Issue Purchase Orders", description: "Mark Approved Purchase Orders as Issued to suppliers" },
+      { key: "cancel", label: "Cancel Purchase Orders", description: "Cancel Purchase Orders with mandatory reason and release commitments", isDangerous: true },
+      { key: "delete", label: "Delete Purchase Orders (Trash)", description: "Move Purchase Orders to Trash", isDangerous: true },
+      { key: "restore", label: "Restore Purchase Orders", description: "Restore soft-deleted Purchase Orders from Trash" },
+      { key: "permanentDelete", label: "Permanently Delete PO", description: "Permanently purge eligible Draft/Rejected Purchase Orders", isDangerous: true },
+      { key: "download", label: "Download PO & Attachments", description: "Download PO supporting documents and delivery receipts" },
+      { key: "downloadExcel", label: "Download PO Excel", description: "Download formatted multi-sheet Excel Purchase Order" },
+      { key: "export", label: "Export PO Reports", description: "Export Purchase Order listings and reports to CSV" },
+      { key: "print", label: "Print / Export PDF PO", description: "Print official Purchase Order or save as PDF" },
+      { key: "trackDelivery", label: "Track & Record Delivery", description: "Record partial/full deliveries and upload delivery notes" },
+      { key: "viewFinancials", label: "View PO Financial Analytics", description: "Inspect executive PO KPIs, budget comparisons, and financial reports", isDangerous: true },
+      { key: "manageDepartmentAllocation", label: "Manage Department Allocation", description: "Allocate PO quantities and costs across company departments" },
+      { key: "overrideJobBudget", label: "Override Job Cost Budget", description: "Exceed remaining Job cost item budget or add unbudgeted items", isDangerous: true },
+      { key: "manageSettings", label: "Manage PO Settings & Departments", description: "Configure PO numbering, tax defaults, company header, and departments", isDangerous: true },
     ],
   },
   {
@@ -225,6 +264,31 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       download: true,
       export: true,
     },
+    purchaseOrders: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      create: true,
+      edit: true,
+      submit: true,
+      approve: true,
+      reject: true,
+      issue: true,
+      cancel: true,
+      delete: true,
+      restore: true,
+      permanentDelete: true,
+      download: true,
+      downloadExcel: true,
+      export: true,
+      print: true,
+      trackDelivery: true,
+      viewFinancials: true,
+      manageDepartmentAllocation: true,
+      overrideJobBudget: true,
+      manageSettings: true,
+    },
     approvals: {
       view: true,
       viewOwn: true,
@@ -310,6 +374,31 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       download: true,
       export: true,
     },
+    purchaseOrders: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: false,
+      create: true,
+      edit: true,
+      submit: true,
+      approve: true,
+      reject: true,
+      issue: true,
+      cancel: false,
+      delete: true,
+      restore: true,
+      permanentDelete: false,
+      download: true,
+      downloadExcel: true,
+      export: true,
+      print: true,
+      trackDelivery: true,
+      viewFinancials: true,
+      manageDepartmentAllocation: true,
+      overrideJobBudget: false,
+      manageSettings: false,
+    },
     approvals: {
       view: true,
       viewOwn: true,
@@ -394,6 +483,31 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       permanentDelete: false,
       download: false,
       export: false,
+    },
+    purchaseOrders: {
+      view: true,
+      viewOwn: true,
+      viewTeam: false,
+      viewAll: false,
+      create: true,
+      edit: true,
+      submit: true,
+      approve: false,
+      reject: false,
+      issue: false,
+      cancel: false,
+      delete: false,
+      restore: false,
+      permanentDelete: false,
+      download: true,
+      downloadExcel: true,
+      export: false,
+      print: true,
+      trackDelivery: true,
+      viewFinancials: false,
+      manageDepartmentAllocation: true,
+      overrideJobBudget: false,
+      manageSettings: false,
     },
     approvals: {
       view: true,

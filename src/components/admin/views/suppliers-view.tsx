@@ -399,9 +399,19 @@ export function SuppliersView() {
                               Soft-Deleted
                             </span>
                           ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                              Active ({jobCount} {jobCount === 1 ? "Job" : "Jobs"})
-                            </span>
+                            <div className="inline-flex flex-col items-center gap-1">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                Active ({jobCount} {jobCount === 1 ? "Job" : "Jobs"})
+                              </span>
+                              {can("purchaseOrders", "view") && (s.purchaseOrderCount ?? 0) > 0 && (
+                                <Link
+                                  href={`/admin/purchase-orders/list?supplierId=${s.id}`}
+                                  className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100"
+                                >
+                                  {s.purchaseOrderCount} PO{s.purchaseOrderCount === 1 ? "" : "s"}
+                                </Link>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="px-5 py-3.5 text-right">

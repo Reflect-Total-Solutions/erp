@@ -178,6 +178,17 @@ export interface Job {
   supplierInvoiceCount?: number;
   supplierInvoiceTotal?: number;
   invoiceStatusSummary?: string;
+  purchaseOrders?: PurchaseOrder[];
+  purchaseOrderCount?: number;
+  poSummary?: {
+    totalCommittedPoValue: number;
+    draftPoValue: number;
+    approvedPoCount: number;
+    activePoCount: number;
+    totalPoCount?: number;
+    totalDeliveredValue?: number;
+    remainingUncommittedBudget: number;
+  };
   financialOverview?: {
     approvedJobValue: number;
     totalSupplierCost: number;
@@ -206,6 +217,7 @@ export interface Supplier {
   createdByName?: string | null;
   updatedById?: string | null;
   updatedByName?: string | null;
+  purchaseOrderCount?: number;
   isDeleted?: boolean;
   deletedAt?: string;
 }
@@ -263,21 +275,28 @@ export interface ModulePermission {
   viewAll?: boolean;
   create?: boolean;
   edit?: boolean;
+  submit?: boolean;
   delete?: boolean;
   restore?: boolean;
   permanentDelete?: boolean;
   download?: boolean;
+  downloadExcel?: boolean;
   bulkDownload?: boolean;
   export?: boolean;
   print?: boolean;
   approve?: boolean;
   reject?: boolean;
+  issue?: boolean;
   moveToPending?: boolean;
   cancel?: boolean;
+  trackDelivery?: boolean;
   manageAttachments?: boolean;
   viewFinancials?: boolean;
   managePermissions?: boolean;
   viewHistory?: boolean;
+  overrideJobBudget?: boolean;
+  manageDepartmentAllocation?: boolean;
+  manageSettings?: boolean;
   [key: string]: boolean | undefined;
 }
 
@@ -346,8 +365,10 @@ export interface SupplierInvoiceAttachment {
 export interface SupplierInvoiceItem {
   id: string;
   invoiceId: string;
+  purchaseOrderItemId?: string | null;
   rowNumber: number;
   description: string;
+  quantity?: number | null;
   amount: number;
   notes?: string | null;
   attachments?: SupplierInvoiceAttachment[];
@@ -378,6 +399,9 @@ export interface SupplierInvoice {
   jobName?: string;
   clientName?: string;
   job?: any;
+  purchaseOrderId?: string | null;
+  purchaseOrderNumber?: string | null;
+  purchaseOrder?: any;
   invoiceDate: string;
   totalAmount: number;
   status: "APPROVED" | "PAID" | "CANCELLED" | string;
@@ -394,6 +418,266 @@ export interface SupplierInvoice {
   items?: SupplierInvoiceItem[];
   attachments?: SupplierInvoiceAttachment[];
   auditLogs?: SupplierInvoiceAuditLog[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ─── Purchase Order Management ────────────────────────────────────────────────
+
+export type PurchaseOrderStatus =
+  | "DRAFT"
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "ISSUED"
+  | "PARTIALLY_DELIVERED"
+  | "DELIVERED"
+  | "CANCELLED"
+  | string;
+
+export type PurchaseOrderApprovalStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | string;
+export type PurchaseOrderDeliveryStatus = "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | string;
+
+export interface Department {
+  id: string;
+  name: string;
+  code?: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PurchaseOrderSettings {
+  id: string;
+  companyName: string;
+  companyAddress: string;
+  companyRegNo?: string | null;
+  companyEmail?: string | null;
+  companyPhone?: string | null;
+  defaultDeliverToName?: string | null;
+  defaultDeliverToAddress?: string | null;
+  defaultDeliverToEmail?: string | null;
+  poNumberPrefix: string;
+  financialYearCode: string;
+  poNumberPadding: number;
+  defaultSsclRate: number;
+  defaultVatRate: number;
+  defaultApplySscl: boolean;
+  defaultApplyVat: boolean;
+  defaultCurrency: string;
+  defaultComments?: string | null;
+  defaultTerms?: string | null;
+  nextPoNumberPreview?: string;
+}
+
+export interface JobCostItemBudgetInfo {
+  id: string;
+  jobId: string;
+  categoryId?: string | null;
+  categoryName: string;
+  itemNumber?: number | null;
+  description: string;
+  rcNrc?: string | null;
+  quantity: number;
+  rate: number;
+  originalAmount: number;
+  committedPoAmount: number;
+  draftPoAmount: number;
+  remainingBudget: number;
+  isFullyAllocated: boolean;
+}
+
+export interface PurchaseOrderDepartmentAllocation {
+  id: string;
+  purchaseOrderId: string;
+  purchaseOrderItemId?: string | null;
+  departmentId: string;
+  departmentName?: string;
+  departmentCode?: string | null;
+  allocatedQuantity: number;
+  allocatedAmount: number;
+  percentage: number;
+  notes?: string | null;
+}
+
+export interface PurchaseOrderItem {
+  id: string;
+  purchaseOrderId: string;
+  rowNumber: number;
+  jobCostCategoryId?: string | null;
+  jobCostCategoryName?: string | null;
+  jobCostItemId?: string | null;
+  particular: string;
+  brand?: string | null;
+  specifications?: string | null;
+  quantity: number;
+  measure: string;
+  unitCost: number;
+  totalAmount: number;
+  deliveredQuantity: number;
+  remainingQuantity: number;
+  invoicedQuantity: number;
+  invoicedAmount: number;
+  isAdditionalItem: boolean;
+  budgetOverrideReason?: string | null;
+  notes?: string | null;
+  departmentAllocations?: PurchaseOrderDepartmentAllocation[];
+}
+
+export interface PurchaseOrderAttachment {
+  id: string;
+  purchaseOrderId: string;
+  deliveryId?: string | null;
+  category: string;
+  fileName: string;
+  originalFileName?: string | null;
+  storedFileName?: string | null;
+  bucketName?: string | null;
+  storagePath?: string | null;
+  fileSize: string;
+  fileType?: string | null;
+  mimeType?: string | null;
+  fileUrl: string;
+  signedUrl?: string | null;
+  createdAt: string;
+}
+
+export interface PurchaseOrderDeliveryItem {
+  id: string;
+  deliveryId: string;
+  purchaseOrderItemId: string;
+  particular?: string;
+  measure?: string;
+  orderedQuantity?: number;
+  deliveredQuantity: number;
+  notes?: string | null;
+}
+
+export interface PurchaseOrderDelivery {
+  id: string;
+  purchaseOrderId: string;
+  deliveryReference: string;
+  deliveryDate: string;
+  receivedBy: string;
+  notes?: string | null;
+  isOverride: boolean;
+  overrideReason?: string | null;
+  createdById?: string | null;
+  createdByName?: string | null;
+  items: PurchaseOrderDeliveryItem[];
+  attachments?: PurchaseOrderAttachment[];
+  createdAt: string;
+}
+
+export interface PurchaseOrderApprovalHistory {
+  id: string;
+  purchaseOrderId: string;
+  userId?: string | null;
+  userName?: string | null;
+  userEmail?: string | null;
+  action: string;
+  previousStatus: string;
+  newStatus: string;
+  reason?: string | null;
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface PurchaseOrderAuditLog {
+  id: string;
+  purchaseOrderId: string;
+  userId?: string | null;
+  userName?: string | null;
+  action: string;
+  reason?: string | null;
+  previousData?: any;
+  newData?: any;
+  createdAt: string;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  poNumber: string;
+  jobId: string;
+  jobCode?: string;
+  jobName?: string;
+  clientName?: string;
+  jobDate?: string;
+  jobApprovedValue?: number;
+  job?: any;
+  supplierId: string;
+  supplierCode?: string;
+  supplierName?: string;
+  supplierEmail?: string;
+  supplierPhone?: string;
+  supplierAddress?: string;
+  supplierContactPerson?: string;
+  supplier?: any;
+  poDate: string;
+  quotationRef?: string | null;
+  expectedDeliveryDate?: string | null;
+  deliverToName: string;
+  deliverToAddress: string;
+  deliverToEmail?: string | null;
+  comments?: string | null;
+  terms?: string | null;
+  status: PurchaseOrderStatus;
+  approvalStatus: PurchaseOrderApprovalStatus;
+  deliveryStatus: PurchaseOrderDeliveryStatus;
+  subTotal: number;
+  discountAmount: number;
+  totalAfterDiscount: number;
+  applySscl: boolean;
+  ssclRate: number;
+  ssclAmount: number;
+  totalWithSscl: number;
+  applyVat: boolean;
+  vatRate: number;
+  vatAmount: number;
+  grandTotal: number;
+  currency: string;
+  hasDepartmentAllocation: boolean;
+  departmentAllocationMode?: string | null;
+  budgetOverrideApproved: boolean;
+  budgetOverrideReason?: string | null;
+  submittedById?: string | null;
+  submittedByName?: string | null;
+  submittedAt?: string | null;
+  approvedById?: string | null;
+  approvedByName?: string | null;
+  approvedAt?: string | null;
+  rejectedById?: string | null;
+  rejectedByName?: string | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
+  issuedById?: string | null;
+  issuedByName?: string | null;
+  issuedAt?: string | null;
+  cancelledById?: string | null;
+  cancelledByName?: string | null;
+  cancelledAt?: string | null;
+  cancellationReason?: string | null;
+  createdById?: string | null;
+  createdByName?: string | null;
+  createdByEmail?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
+  deletedAt?: string | null;
+  isDeleted?: boolean;
+  items?: PurchaseOrderItem[];
+  departmentAllocations?: PurchaseOrderDepartmentAllocation[];
+  deliveries?: PurchaseOrderDelivery[];
+  attachments?: PurchaseOrderAttachment[];
+  approvalHistory?: PurchaseOrderApprovalHistory[];
+  auditLogs?: PurchaseOrderAuditLog[];
+  supplierInvoices?: SupplierInvoice[];
+  invoicedTotal?: number;
+  remainingUninvoiced?: number;
+  totalOrderedQuantity?: number;
+  totalDeliveredQuantity?: number;
+  deliveryProgressPercent?: number;
+  itemCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -433,6 +717,12 @@ export interface DashboardStats {
   pendingApprovalsCount: number;
   visibilityScope?: string;
   canViewFinancials?: boolean;
+  poStats?: {
+    totalPurchaseOrders: number;
+    pendingPoApprovals: number;
+    committedPoValue: number;
+    openPoDeliveries: number;
+  };
   employeeStats?: Array<{
     userId: string;
     name: string;

@@ -13,6 +13,8 @@ import {
 import { recalculateJobFinances } from "@/lib/financial-recalculation";
 import { checkSessionPermission } from "@/lib/permissions";
 import { canUserAccessRecord } from "@/lib/data-visibility";
+import { PO_ELIGIBLE_FOR_INVOICE_STATUSES } from "@/lib/po-financial";
+import { syncPurchaseOrderInvoicedTotalsTx } from "@/lib/po-helpers";
 
 // GET /api/supplier-invoices/[id]
 export async function GET(
@@ -54,6 +56,14 @@ export async function GET(
             status: true,
             grandTotal: true,
             totalCost: true,
+          },
+        },
+        purchaseOrder: {
+          select: {
+            id: true,
+            poNumber: true,
+            status: true,
+            grandTotal: true,
           },
         },
         items: {
@@ -123,6 +133,9 @@ export async function GET(
         supplier: invoice.supplier,
         jobId: invoice.jobId,
         job: invoice.job,
+        purchaseOrderId: invoice.purchaseOrderId || null,
+        purchaseOrderNumber: invoice.purchaseOrder?.poNumber || null,
+        purchaseOrder: invoice.purchaseOrder || null,
         approvedJobValue,
         totalJobSupplierCost,
         remainingJobBudget,
@@ -142,7 +155,9 @@ export async function GET(
         items: (invoice.items || []).map((item: any) => ({
           id: item.id,
           rowNumber: item.rowNumber,
+          purchaseOrderItemId: item.purchaseOrderItemId || null,
           description: item.description,
+          quantity: item.quantity != null ? Number(item.quantity) : undefined,
           amount: Number(item.amount || 0),
           notes: item.notes || "",
           attachments: (item.attachments || []).map((att: any) => ({
@@ -278,15 +293,19 @@ export async function PUT(
     const contentType = req.headers.get("content-type") || "";
     let supplierId = existingInvoice.supplierId;
     let jobId = existingInvoice.jobId;
+    let purchaseOrderId: string | null = existingInvoice.purchaseOrderId || null;
     let invoiceNumber = existingInvoice.invoiceNumber;
     let invoiceDate = existingInvoice.invoiceDate
       ? new Date(existingInvoice.invoiceDate).toISOString().split("T")[0]
       : new Date().toISOString().split("T")[0];
     let notes = existingInvoice.notes || "";
     let reason = "";
+    let poOverInvoiceOverride = false;
     let parsedItems: Array<{
       id?: string;
+      purchaseOrderItemId?: string | null;
       description: string;
+      quantity?: number | null;
       amount: number | string;
       notes?: string;
       keepAttachmentIds?: string[];
@@ -303,10 +322,15 @@ export async function PUT(
       const formData = await req.formData();
       supplierId = (formData.get("supplierId") as string) || supplierId;
       jobId = (formData.get("jobId") as string) || jobId;
+      if (formData.has("purchaseOrderId")) {
+        const rawPoId = (formData.get("purchaseOrderId") as string) || "";
+        purchaseOrderId = rawPoId.trim() || null;
+      }
       invoiceNumber = (formData.get("invoiceNumber") as string)?.trim() || invoiceNumber;
       invoiceDate = (formData.get("invoiceDate") as string) || invoiceDate;
       notes = (formData.get("notes") as string) ?? notes;
       reason = (formData.get("reason") as string)?.trim() || "";
+      poOverInvoiceOverride = formData.get("poOverInvoiceOverride") === "true";
 
       const rawItems = formData.get("items") as string;
       if (rawItems) {
@@ -354,10 +378,17 @@ export async function PUT(
       const body = await req.json();
       supplierId = body.supplierId || supplierId;
       jobId = body.jobId || jobId;
+      if (Object.prototype.hasOwnProperty.call(body, "purchaseOrderId")) {
+        purchaseOrderId =
+          typeof body.purchaseOrderId === "string" && body.purchaseOrderId.trim()
+            ? body.purchaseOrderId.trim()
+            : null;
+      }
       invoiceNumber = body.invoiceNumber?.trim() || invoiceNumber;
       invoiceDate = body.invoiceDate || invoiceDate;
       notes = body.notes ?? notes;
       reason = body.reason?.trim() || "";
+      poOverInvoiceOverride = Boolean(body.poOverInvoiceOverride);
       parsedItems = Array.isArray(body.items) ? body.items : [];
       deletedAttachmentIds = Array.isArray(body.deletedAttachmentIds) ? body.deletedAttachmentIds : [];
     }
@@ -475,6 +506,79 @@ export async function PUT(
         );
       }
       totalInvoiceAmount = totalInvoiceAmount.plus(amt);
+    }
+
+    // 4B. Optional Purchase Order Validation on Edit
+    let linkedPo: any = null;
+    const validPoItemIds = new Set<string>();
+    if (purchaseOrderId) {
+      linkedPo = await (db.purchaseOrder as any).findFirst({
+        where: { id: purchaseOrderId, deletedAt: null },
+        include: {
+          items: { select: { id: true } },
+          supplierInvoices: {
+            where: {
+              deletedAt: null,
+              status: { not: "CANCELLED" },
+              id: { not: id },
+            },
+            select: { id: true, totalAmount: true },
+          },
+        },
+      });
+      if (!linkedPo) {
+        return NextResponse.json(
+          { success: false, error: "Selected Purchase Order not found." },
+          { status: 404 }
+        );
+      }
+      if (
+        purchaseOrderId !== existingInvoice.purchaseOrderId &&
+        !PO_ELIGIBLE_FOR_INVOICE_STATUSES.includes(String(linkedPo.status || "").toUpperCase())
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Purchase Order "${linkedPo.poNumber}" (${linkedPo.status}) is not eligible for invoicing.`,
+          },
+          { status: 422 }
+        );
+      }
+      if (linkedPo.jobId !== jobId || linkedPo.supplierId !== supplierId) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Selected Job/Supplier must match Purchase Order "${linkedPo.poNumber}".`,
+          },
+          { status: 422 }
+        );
+      }
+      (linkedPo.items || []).forEach((it: any) => validPoItemIds.add(it.id));
+
+      const otherInvoiced = (linkedPo.supplierInvoices || []).reduce(
+        (sum: Decimal, inv: any) => sum.plus(new Decimal(inv.totalAmount || 0)),
+        new Decimal(0)
+      );
+      const poCeiling = new Decimal(linkedPo.grandTotal || 0);
+      const remainingPoBalance = Decimal.max(0, poCeiling.minus(otherInvoiced));
+
+      if (otherInvoiced.plus(totalInvoiceAmount).gt(poCeiling.plus(0.01))) {
+        const canOverride = await checkSessionPermission(
+          session,
+          "purchaseOrders",
+          "overrideJobBudget"
+        );
+        if (!poOverInvoiceOverride || !canOverride) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: "PO_OVER_INVOICE_BLOCKED",
+              error: `Updated invoice total (Rs. ${totalInvoiceAmount.toFixed(2)}) exceeds remaining uninvoiced balance of PO "${linkedPo.poNumber}" (Rs. ${remainingPoBalance.toFixed(2)} remaining).`,
+            },
+            { status: 422 }
+          );
+        }
+      }
     }
 
     // 5. Upload new attachments to Supabase Storage in dedicated "supplier-invoices" bucket
@@ -607,22 +711,40 @@ export async function PUT(
 
         if (item.id && existingItemIds.includes(item.id)) {
           // Update existing item
+          const validPoItemId =
+            linkedPo && item.purchaseOrderItemId && validPoItemIds.has(item.purchaseOrderItemId)
+              ? item.purchaseOrderItemId
+              : null;
           savedItem = await (tx.supplierInvoiceItem as any).update({
             where: { id: item.id },
             data: {
               rowNumber: i + 1,
+              purchaseOrderItemId: validPoItemId,
               description: item.description.trim(),
+              quantity:
+                item.quantity !== undefined && item.quantity !== null && Number(item.quantity) >= 0
+                  ? new Decimal(item.quantity).toFixed(4)
+                  : null,
               amount: new Decimal(item.amount).toFixed(2),
               notes: item.notes || "",
             },
           });
         } else {
           // Create new item
+          const validPoItemId =
+            linkedPo && item.purchaseOrderItemId && validPoItemIds.has(item.purchaseOrderItemId)
+              ? item.purchaseOrderItemId
+              : null;
           savedItem = await (tx.supplierInvoiceItem as any).create({
             data: {
               invoiceId: id,
+              purchaseOrderItemId: validPoItemId,
               rowNumber: i + 1,
               description: item.description.trim(),
+              quantity:
+                item.quantity !== undefined && item.quantity !== null && Number(item.quantity) >= 0
+                  ? new Decimal(item.quantity).toFixed(4)
+                  : null,
               amount: new Decimal(item.amount).toFixed(2),
               notes: item.notes || "",
             },
@@ -667,6 +789,7 @@ export async function PUT(
           invoiceNumber,
           supplierId,
           jobId,
+          purchaseOrderId: linkedPo ? linkedPo.id : null,
           invoiceDate: new Date(invoiceDate),
           totalAmount: totalInvoiceAmount.toFixed(2),
           notes,
@@ -722,6 +845,14 @@ export async function PUT(
 
       // Atomically recalculate target job finances
       const financialSnapshot = await recalculateJobFinances(jobId, tx);
+
+      // Recalculate PO invoiced progress on new & previous PO if linked/changed
+      if (linkedPo?.id) {
+        await syncPurchaseOrderInvoicedTotalsTx(linkedPo.id, tx);
+      }
+      if (existingInvoice.purchaseOrderId && existingInvoice.purchaseOrderId !== linkedPo?.id) {
+        await syncPurchaseOrderInvoicedTotalsTx(existingInvoice.purchaseOrderId, tx);
+      }
 
       // If job changed, also recalculate the previous job's finances so its costs are updated
       let previousJobSnapshot = null;
@@ -952,6 +1083,9 @@ export async function PATCH(
 
       // Recalculate Job's actual cost and gross profit atomically
       const snapshot = await recalculateJobFinances(invoice.jobId, tx);
+      if (invoice.purchaseOrderId) {
+        await syncPurchaseOrderInvoicedTotalsTx(invoice.purchaseOrderId, tx);
+      }
 
       return { updatedInvoice: updated, financialSnapshot: snapshot };
     });
@@ -1066,7 +1200,11 @@ export async function DELETE(
       });
 
       // Recalculate linked Job's costs atomically
-      return await recalculateJobFinances(invoice.jobId, tx);
+      const snap = await recalculateJobFinances(invoice.jobId, tx);
+      if (invoice.purchaseOrderId) {
+        await syncPurchaseOrderInvoicedTotalsTx(invoice.purchaseOrderId, tx);
+      }
+      return snap;
     });
 
     return NextResponse.json({

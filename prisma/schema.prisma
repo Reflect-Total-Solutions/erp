@@ -147,6 +147,20 @@ model User {
   uploadedSupplierInvoiceAttachments SupplierInvoiceAttachment[] @relation("SupplierInvoiceAttachmentUploadedBy")
   uploadedJobDocuments   JobDocument[]           @relation("JobDocumentUploadedBy")
 
+  // Purchase Order inverse relations
+  createdPurchaseOrders    PurchaseOrder[]               @relation("POCreatedBy")
+  updatedPurchaseOrders    PurchaseOrder[]               @relation("POUpdatedBy")
+  submittedPurchaseOrders  PurchaseOrder[]               @relation("POSubmittedBy")
+  approvedPurchaseOrders   PurchaseOrder[]               @relation("POApprovedBy")
+  rejectedPurchaseOrders   PurchaseOrder[]               @relation("PORejectedBy")
+  issuedPurchaseOrders     PurchaseOrder[]               @relation("POIssuedBy")
+  cancelledPurchaseOrders  PurchaseOrder[]               @relation("POCancelledBy")
+  purchaseOrderDeliveries  PurchaseOrderDelivery[]       @relation("PODeliveryCreatedBy")
+  uploadedPOAttachments    PurchaseOrderAttachment[]     @relation("POAttachmentUploadedBy")
+  poApprovalHistories      PurchaseOrderApprovalHistory[] @relation("POApprovalActor")
+  poAuditLogs              PurchaseOrderAuditLog[]       @relation("POAuditActor")
+  updatedPOSettings        PurchaseOrderSettings[]       @relation("POSettingsUpdatedBy")
+
   @@index([email, deletedAt])
   @@index([isActive, deletedAt])
   @@map("users")
@@ -172,6 +186,7 @@ model Supplier {
   createdBy     User?     @relation("SupplierCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   updatedBy     User?     @relation("SupplierUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   supplierInvoices SupplierInvoice[]
+  purchaseOrders   PurchaseOrder[]
 
   // Composite indexes for fast lookups
   @@index([code, deletedAt])
@@ -267,6 +282,7 @@ model Job {
   invoice        Invoice?
   supplierInvoices SupplierInvoice[]
   supplierInvoiceAttachments SupplierInvoiceAttachment[]
+  purchaseOrders PurchaseOrder[]
 
   @@index([jobCode, deletedAt])
   @@index([status, deletedAt])
@@ -309,6 +325,7 @@ model JobCostItem {
 
   job         Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
   category    JobCostCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  purchaseOrderItems PurchaseOrderItem[]
 
   @@index([jobId])
   @@index([categoryId])
@@ -472,6 +489,7 @@ model SupplierInvoice {
   invoiceNumber       String                      @unique @map("invoice_number")
   supplierId          String                      @map("supplier_id")
   jobId               String                      @map("job_id")
+  purchaseOrderId     String?                     @map("purchase_order_id")
   invoiceDate         DateTime                    @default(now()) @map("invoice_date")
   totalAmount         Decimal                     @default(0) @map("total_amount") @db.Decimal(18, 2)
   status              String                      @default("APPROVED") // "APPROVED" | "PAID" | "CANCELLED"
@@ -487,6 +505,7 @@ model SupplierInvoice {
 
   supplier            Supplier                    @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   job                 Job                         @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  purchaseOrder       PurchaseOrder?              @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
   createdBy           User?                       @relation("SupplierInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   updatedBy           User?                       @relation("SupplierInvoiceUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   cancelledBy         User?                       @relation("SupplierInvoiceCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
@@ -496,25 +515,30 @@ model SupplierInvoice {
 
   @@index([supplierId, deletedAt])
   @@index([jobId, deletedAt])
+  @@index([purchaseOrderId])
   @@index([invoiceNumber])
   @@index([status, deletedAt])
   @@map("supplier_invoices")
 }
 
 model SupplierInvoiceItem {
-  id          String                      @id @default(cuid())
-  invoiceId   String                      @map("invoice_id")
-  rowNumber   Int                         @default(1) @map("row_number")
-  description String
-  amount      Decimal                     @default(0) @db.Decimal(18, 2)
-  notes       String?
-  createdAt   DateTime                    @default(now()) @map("created_at")
-  updatedAt   DateTime                    @updatedAt @map("updated_at")
+  id                  String                      @id @default(cuid())
+  invoiceId           String                      @map("invoice_id")
+  purchaseOrderItemId String?                     @map("purchase_order_item_id")
+  rowNumber           Int                         @default(1) @map("row_number")
+  description         String
+  quantity            Decimal?                    @db.Decimal(18, 4)
+  amount              Decimal                     @default(0) @db.Decimal(18, 2)
+  notes               String?
+  createdAt           DateTime                    @default(now()) @map("created_at")
+  updatedAt           DateTime                    @updatedAt @map("updated_at")
 
-  invoice     SupplierInvoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  attachments SupplierInvoiceAttachment[]
+  invoice             SupplierInvoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  purchaseOrderItem   PurchaseOrderItem?          @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
+  attachments         SupplierInvoiceAttachment[]
 
   @@index([invoiceId])
+  @@index([purchaseOrderItemId])
   @@map("supplier_invoice_items")
 }
 
@@ -562,5 +586,299 @@ model SupplierInvoiceAuditLog {
 
   @@index([invoiceId, createdAt])
   @@map("supplier_invoice_audit_logs")
+}
+
+// ─── Purchase Order Management & Department Allocations ──────────────────────
+
+model Department {
+  id          String                              @id @default(cuid())
+  name        String                              @unique
+  code        String?
+  isActive    Boolean                             @default(true) @map("is_active")
+  sortOrder   Int                                 @default(0) @map("sort_order")
+  createdAt   DateTime                            @default(now()) @map("created_at")
+  updatedAt   DateTime                            @updatedAt @map("updated_at")
+
+  allocations PurchaseOrderDepartmentAllocation[]
+
+  @@index([isActive, sortOrder])
+  @@map("departments")
+}
+
+model PurchaseOrderSettings {
+  id                      String   @id @default("default")
+  companyName             String   @default("Reflect Total Solutions (Pvt) Ltd.") @map("company_name")
+  companyAddress          String   @default("13/2, Sri Dharmapala MW, Mount Lavinia, Sri Lanka.") @map("company_address")
+  companyRegNo            String?  @default("PV 00215364") @map("company_reg_no")
+  companyEmail            String?  @map("company_email")
+  companyPhone            String?  @map("company_phone")
+  defaultDeliverToName    String?  @default("Reflect Total Solutions (Pvt) Ltd.") @map("default_deliver_to_name")
+  defaultDeliverToAddress String?  @default("13/2, Sri Dharmapala MW, Mount Lavinia.") @map("default_deliver_to_address")
+  defaultDeliverToEmail   String?  @default("") @map("default_deliver_to_email")
+  poNumberPrefix          String   @default("RTS/PO") @map("po_number_prefix")
+  financialYearCode       String   @default("26/27") @map("financial_year_code")
+  poNumberPadding         Int      @default(2) @map("po_number_padding")
+  defaultSsclRate         Decimal  @default(2.56) @map("default_sscl_rate") @db.Decimal(6, 3)
+  defaultVatRate          Decimal  @default(18) @map("default_vat_rate") @db.Decimal(6, 3)
+  defaultApplySscl        Boolean  @default(true) @map("default_apply_sscl")
+  defaultApplyVat         Boolean  @default(true) @map("default_apply_vat")
+  defaultCurrency         String   @default("LKR") @map("default_currency")
+  defaultComments         String?  @map("default_comments")
+  defaultTerms            String?  @map("default_terms")
+  updatedById             String?  @map("updated_by_id")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  updatedBy               User?    @relation("POSettingsUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("purchase_order_settings")
+}
+
+model PurchaseOrderNumberSequence {
+  id           String   @id @default(cuid())
+  seriesKey    String   @unique @map("series_key")
+  lastSequence Int      @default(0) @map("last_sequence")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("purchase_order_number_sequences")
+}
+
+model PurchaseOrder {
+  id                       String                              @id @default(cuid())
+  poNumber                 String                              @unique @map("po_number")
+  jobId                    String                              @map("job_id")
+  supplierId               String                              @map("supplier_id")
+  poDate                   DateTime                            @map("po_date")
+  quotationRef             String?                             @map("quotation_ref")
+  expectedDeliveryDate     DateTime?                           @map("expected_delivery_date")
+  deliverToName            String                              @map("deliver_to_name")
+  deliverToAddress         String                              @map("deliver_to_address")
+  deliverToEmail           String?                             @map("deliver_to_email")
+  supplierNameSnapshot     String?                             @map("supplier_name_snapshot")
+  supplierAddressSnapshot  String?                             @map("supplier_address_snapshot")
+  supplierEmailSnapshot    String?                             @map("supplier_email_snapshot")
+  supplierPhoneSnapshot    String?                             @map("supplier_phone_snapshot")
+  supplierContactSnapshot  String?                             @map("supplier_contact_snapshot")
+  comments                 String?
+  terms                    String?
+  status                   String                              @default("DRAFT") // "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "ISSUED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "CANCELLED"
+  approvalStatus           String                              @default("DRAFT") @map("approval_status") // "DRAFT" | "PENDING" | "APPROVED" | "REJECTED"
+  deliveryStatus           String                              @default("NOT_DELIVERED") @map("delivery_status") // "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED"
+  subTotal                 Decimal                             @default(0) @map("sub_total") @db.Decimal(18, 2)
+  discountAmount           Decimal                             @default(0) @map("discount_amount") @db.Decimal(18, 2)
+  totalAfterDiscount       Decimal                             @default(0) @map("total_after_discount") @db.Decimal(18, 2)
+  applySscl                Boolean                             @default(true) @map("apply_sscl")
+  ssclRate                 Decimal                             @default(2.56) @map("sscl_rate") @db.Decimal(6, 3)
+  ssclAmount               Decimal                             @default(0) @map("sscl_amount") @db.Decimal(18, 2)
+  totalWithSscl            Decimal                             @default(0) @map("total_with_sscl") @db.Decimal(18, 2)
+  applyVat                 Boolean                             @default(true) @map("apply_vat")
+  vatRate                  Decimal                             @default(18) @map("vat_rate") @db.Decimal(6, 3)
+  vatAmount                Decimal                             @default(0) @map("vat_amount") @db.Decimal(18, 2)
+  grandTotal               Decimal                             @default(0) @map("grand_total") @db.Decimal(18, 2)
+  currency                 String                              @default("LKR")
+  hasDepartmentAllocation  Boolean                             @default(false) @map("has_department_allocation")
+  departmentAllocationMode String?                             @default("AMOUNT") @map("department_allocation_mode") // "AMOUNT" | "QUANTITY"
+  budgetOverrideApproved   Boolean                             @default(false) @map("budget_override_approved")
+  budgetOverrideReason     String?                             @map("budget_override_reason")
+  submittedById            String?                             @map("submitted_by_id")
+  submittedAt              DateTime?                           @map("submitted_at")
+  approvedById             String?                             @map("approved_by_id")
+  approvedAt               DateTime?                           @map("approved_at")
+  rejectedById             String?                             @map("rejected_by_id")
+  rejectedAt               DateTime?                           @map("rejected_at")
+  rejectionReason          String?                             @map("rejection_reason")
+  issuedById               String?                             @map("issued_by_id")
+  issuedAt                 DateTime?                           @map("issued_at")
+  cancelledById            String?                             @map("cancelled_by_id")
+  cancelledAt              DateTime?                           @map("cancelled_at")
+  cancellationReason       String?                             @map("cancellation_reason")
+  createdById              String?                             @map("created_by_id")
+  updatedById              String?                             @map("updated_by_id")
+  deletedAt                DateTime?                           @map("deleted_at")
+  createdAt                DateTime                            @default(now()) @map("created_at")
+  updatedAt                DateTime                            @updatedAt @map("updated_at")
+
+  job                      Job                                 @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  supplier                 Supplier                            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  createdBy                User?                               @relation("POCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy                User?                               @relation("POUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  submittedBy              User?                               @relation("POSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
+  approvedBy               User?                               @relation("POApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  rejectedBy               User?                               @relation("PORejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
+  issuedBy                 User?                               @relation("POIssuedBy", fields: [issuedById], references: [id], onDelete: SetNull)
+  cancelledBy              User?                               @relation("POCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+
+  items                    PurchaseOrderItem[]
+  departmentAllocations    PurchaseOrderDepartmentAllocation[]
+  deliveries               PurchaseOrderDelivery[]
+  attachments              PurchaseOrderAttachment[]
+  approvalHistory          PurchaseOrderApprovalHistory[]
+  auditLogs                PurchaseOrderAuditLog[]
+  supplierInvoices         SupplierInvoice[]
+
+  @@index([jobId, deletedAt])
+  @@index([supplierId, deletedAt])
+  @@index([status, deletedAt])
+  @@index([approvalStatus, deletedAt])
+  @@index([deliveryStatus, deletedAt])
+  @@index([createdById, deletedAt])
+  @@index([poDate])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id                    String                              @id @default(cuid())
+  purchaseOrderId       String                              @map("purchase_order_id")
+  rowNumber             Int                                 @default(1) @map("row_number")
+  jobCostCategoryId     String?                             @map("job_cost_category_id")
+  jobCostCategoryName   String?                             @map("job_cost_category_name")
+  jobCostItemId         String?                             @map("job_cost_item_id")
+  particular            String
+  brand                 String?
+  specifications        String?
+  quantity              Decimal                             @default(1) @db.Decimal(18, 4)
+  measure               String                              @default("Nos")
+  unitCost              Decimal                             @default(0) @map("unit_cost") @db.Decimal(18, 2)
+  totalAmount           Decimal                             @default(0) @map("total_amount") @db.Decimal(18, 2)
+  deliveredQuantity     Decimal                             @default(0) @map("delivered_quantity") @db.Decimal(18, 4)
+  remainingQuantity     Decimal                             @default(1) @map("remaining_quantity") @db.Decimal(18, 4)
+  invoicedQuantity      Decimal                             @default(0) @map("invoiced_quantity") @db.Decimal(18, 4)
+  invoicedAmount        Decimal                             @default(0) @map("invoiced_amount") @db.Decimal(18, 2)
+  isAdditionalItem      Boolean                             @default(false) @map("is_additional_item")
+  budgetOverrideReason  String?                             @map("budget_override_reason")
+  notes                 String?
+  createdAt             DateTime                            @default(now()) @map("created_at")
+  updatedAt             DateTime                            @updatedAt @map("updated_at")
+
+  purchaseOrder         PurchaseOrder                       @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  jobCostItem           JobCostItem?                        @relation(fields: [jobCostItemId], references: [id], onDelete: SetNull)
+  departmentAllocations PurchaseOrderDepartmentAllocation[]
+  deliveryItems         PurchaseOrderDeliveryItem[]
+  supplierInvoiceItems  SupplierInvoiceItem[]
+
+  @@index([purchaseOrderId, rowNumber])
+  @@index([jobCostItemId])
+  @@map("purchase_order_items")
+}
+
+model PurchaseOrderDepartmentAllocation {
+  id                  String             @id @default(cuid())
+  purchaseOrderId     String             @map("purchase_order_id")
+  purchaseOrderItemId String?            @map("purchase_order_item_id")
+  departmentId        String             @map("department_id")
+  allocatedQuantity   Decimal            @default(0) @map("allocated_quantity") @db.Decimal(18, 4)
+  allocatedAmount     Decimal            @default(0) @map("allocated_amount") @db.Decimal(18, 2)
+  percentage          Decimal            @default(0) @db.Decimal(7, 4)
+  notes               String?
+  createdAt           DateTime           @default(now()) @map("created_at")
+  updatedAt           DateTime           @updatedAt @map("updated_at")
+
+  purchaseOrder       PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  purchaseOrderItem   PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id], onDelete: Cascade)
+  department          Department         @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+
+  @@index([purchaseOrderId])
+  @@index([purchaseOrderItemId])
+  @@index([departmentId])
+  @@map("purchase_order_department_allocations")
+}
+
+model PurchaseOrderDelivery {
+  id                String                      @id @default(cuid())
+  purchaseOrderId   String                      @map("purchase_order_id")
+  deliveryReference String                      @map("delivery_reference")
+  deliveryDate      DateTime                    @map("delivery_date")
+  receivedBy        String                      @map("received_by")
+  notes             String?
+  isOverride        Boolean                     @default(false) @map("is_override")
+  overrideReason    String?                     @map("override_reason")
+  createdById       String?                     @map("created_by_id")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  purchaseOrder     PurchaseOrder               @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  createdBy         User?                       @relation("PODeliveryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  items             PurchaseOrderDeliveryItem[]
+  attachments       PurchaseOrderAttachment[]
+
+  @@index([purchaseOrderId, deliveryDate])
+  @@map("purchase_order_deliveries")
+}
+
+model PurchaseOrderDeliveryItem {
+  id                  String                @id @default(cuid())
+  deliveryId          String                @map("delivery_id")
+  purchaseOrderItemId String                @map("purchase_order_item_id")
+  deliveredQuantity   Decimal               @default(0) @map("delivered_quantity") @db.Decimal(18, 4)
+  notes               String?
+
+  delivery            PurchaseOrderDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  purchaseOrderItem   PurchaseOrderItem     @relation(fields: [purchaseOrderItemId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryId])
+  @@index([purchaseOrderItemId])
+  @@map("purchase_order_delivery_items")
+}
+
+model PurchaseOrderAttachment {
+  id               String                 @id @default(cuid())
+  purchaseOrderId  String                 @map("purchase_order_id")
+  deliveryId       String?                @map("delivery_id")
+  category         String                 @default("PO_DOCUMENT") // "PO_DOCUMENT" | "SUPPLIER_QUOTATION" | "DELIVERY_NOTE" | "OTHER"
+  fileName         String                 @map("file_name")
+  originalFileName String?                @map("original_file_name")
+  storedFileName   String?                @map("stored_file_name")
+  bucketName       String?                @default("purchase-orders") @map("bucket_name")
+  storagePath      String?                @map("storage_path")
+  fileSize         String                 @map("file_size")
+  fileType         String?                @default("application/pdf") @map("file_type")
+  mimeType         String?                @map("mime_type")
+  fileUrl          String                 @map("file_url")
+  uploadedById     String?                @map("uploaded_by_id")
+  deletedAt        DateTime?              @map("deleted_at")
+  createdAt        DateTime               @default(now()) @map("created_at")
+
+  purchaseOrder    PurchaseOrder          @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  delivery         PurchaseOrderDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  uploadedBy       User?                  @relation("POAttachmentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([purchaseOrderId, deletedAt])
+  @@index([deliveryId])
+  @@map("purchase_order_attachments")
+}
+
+model PurchaseOrderApprovalHistory {
+  id              String        @id @default(cuid())
+  purchaseOrderId String        @map("purchase_order_id")
+  userId          String?       @map("user_id")
+  action          String        // "CREATE" | "SUBMIT" | "APPROVE" | "REJECT" | "ISSUE" | "CANCEL" | "RETURN_TO_DRAFT"
+  previousStatus  String        @map("previous_status")
+  newStatus       String        @map("new_status")
+  reason          String?
+  notes           String?
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  user            User?         @relation("POApprovalActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([purchaseOrderId, createdAt])
+  @@map("purchase_order_approval_histories")
+}
+
+model PurchaseOrderAuditLog {
+  id              String        @id @default(cuid())
+  purchaseOrderId String        @map("purchase_order_id")
+  userId          String?       @map("user_id")
+  action          String        // "CREATE" | "EDIT" | "SUBMIT" | "APPROVE" | "REJECT" | "ISSUE" | "DELIVER" | "CANCEL" | "SOFT_DELETE" | "RESTORE" | "PERMANENT_DELETE" | "EXPORT"
+  reason          String?
+  previousData    Json?         @map("previous_data")
+  newData         Json?         @map("new_data")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  user            User?         @relation("POAuditActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([purchaseOrderId, createdAt])
+  @@map("purchase_order_audit_logs")
 }
 

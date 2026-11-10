@@ -19,7 +19,7 @@ import {
   initialUsersAccess,
   initialAuditLogs,
 } from "@/lib/mock-data";
-import { ERPModule, Action, hasPermission } from "@/lib/permissions";
+import { ERPModule, Action, DEFAULT_ROLE_PERMISSIONS, hasPermission } from "@/lib/permissions";
 import { formatCurrency } from "@/lib/financial";
 
 interface AdminDataContextType {
@@ -243,7 +243,23 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setRoles(parsed);
+          setRoles(
+            parsed.map((r: any) => {
+              const roleKey =
+                r.id === "role-admin"
+                  ? "admin"
+                  : r.id === "role-supervisor"
+                  ? "supervisor"
+                  : "employee";
+              return {
+                ...r,
+                permissions: {
+                  ...DEFAULT_ROLE_PERMISSIONS[roleKey],
+                  ...(r.permissions || {}),
+                },
+              };
+            })
+          );
         }
       }
     } catch {

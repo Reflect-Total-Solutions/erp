@@ -36,6 +36,7 @@ import {
   Copy,
   Loader2,
   ClipboardCheck,
+  ClipboardList,
   Eye,
   EyeOff,
   RefreshCw,
@@ -181,6 +182,12 @@ export function AccessControlView() {
         title: "Supplier Management",
         description: "Supplier profiles, contact details, assigned jobs, and vendor management",
         icon: Building2,
+      },
+      {
+        key: "purchaseOrders",
+        title: "Purchase Order Management",
+        description: "Purchase Orders, Job budget checks, approvals, deliveries, and Excel/PDF exports",
+        icon: ClipboardList,
       },
       {
         key: "approvals",
@@ -1808,6 +1815,7 @@ export function AccessControlView() {
           dashboard: LayoutDashboard,
           jobs: Briefcase,
           suppliers: Building2,
+          purchaseOrders: ClipboardList,
           approvals: CheckCircle2,
           supplierInvoices: FileText,
           profitLoss: FileSpreadsheet,

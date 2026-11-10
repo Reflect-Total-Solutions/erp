@@ -14,13 +14,21 @@ export interface JobFinancialSnapshot {
   costUtilization: number;
   isBudgetExceeded: boolean;
   activeSupplierInvoicesCount: number;
+  poCommitments?: {
+    totalCommittedPoValue: number;
+    draftPoValue: number;
+    approvedPoCount: number;
+    activePoCount: number;
+  };
   lastRecalculatedAt: string;
 }
 
 /**
  * Atomically recalculates a Job's financial overview from saved, active (non-cancelled) supplier invoices.
- * Enforces Decimal arithmetic with 2 decimal places precision.
- * Can be executed inside an existing Prisma transaction or standalone.
+ * IMPORTANT Accounting Rule:
+ *   - Purchase Orders are PROCUREMENT COMMITMENTS, NOT realized Supplier Invoice expenses.
+ *   - `totalSupplierCost`, `totalActualCost`, `grossProfit`, and `profitMargin` MUST remain based strictly
+ *     on recorded active `SupplierInvoice` records to avoid double-counting against PO commitments.
  */
 export async function recalculateJobFinances(
   jobId: string,
@@ -28,7 +36,7 @@ export async function recalculateJobFinances(
 ): Promise<JobFinancialSnapshot> {
   const client = tx || getPrisma();
 
-  // 1. Fetch Job and all active, non-cancelled supplier invoices
+  // 1. Fetch Job, active non-cancelled supplier invoices, and active purchase orders
   const job = await (client.job as any).findUnique({
     where: { id: jobId },
     select: {
@@ -56,6 +64,18 @@ export async function recalculateJobFinances(
           status: true,
         },
       },
+      purchaseOrders: {
+        where: {
+          deletedAt: null,
+          status: { notIn: ["CANCELLED", "REJECTED"] },
+        },
+        select: {
+          id: true,
+          status: true,
+          approvalStatus: true,
+          grandTotal: true,
+        },
+      },
     },
   });
 
@@ -70,6 +90,25 @@ export async function recalculateJobFinances(
   let totalSupplierCost = new Decimal(0);
   (job.supplierInvoices || []).forEach((inv: any) => {
     totalSupplierCost = totalSupplierCost.plus(new Decimal(inv.totalAmount || 0));
+  });
+
+  // 3B. Separate Purchase Order commitment summary (strictly informational, excluded from actual P&L expenses)
+  let totalCommittedPoValue = new Decimal(0);
+  let draftPoValue = new Decimal(0);
+  let approvedPoCount = 0;
+  let activePoCount = 0;
+
+  (job.purchaseOrders || []).forEach((po: any) => {
+    const val = new Decimal(po.grandTotal || 0);
+    if (po.status === "DRAFT") {
+      draftPoValue = draftPoValue.plus(val);
+    } else {
+      totalCommittedPoValue = totalCommittedPoValue.plus(val);
+      activePoCount++;
+      if (po.approvalStatus === "APPROVED" || ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(po.status)) {
+        approvedPoCount++;
+      }
+    }
   });
 
   // 4. Other Actual Costs (if any)
@@ -105,6 +144,12 @@ export async function recalculateJobFinances(
     costUtilization: Number(costUtilization.toFixed(2)),
     isBudgetExceeded,
     activeSupplierInvoicesCount: job.supplierInvoices?.length || 0,
+    poCommitments: {
+      totalCommittedPoValue: totalCommittedPoValue.toDecimalPlaces(2).toNumber(),
+      draftPoValue: draftPoValue.toDecimalPlaces(2).toNumber(),
+      approvedPoCount,
+      activePoCount,
+    },
     lastRecalculatedAt: new Date().toISOString(),
   };
 

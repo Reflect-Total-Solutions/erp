@@ -151,20 +151,35 @@ export async function POST(
         );
       }
 
-      // Strict Approval Lock: Prevent Approved Jobs with active Supplier Invoices from returning to Pending
+      // Strict Approval Lock: Prevent Approved Jobs with active Supplier Invoices or Purchase Orders from returning to Pending
       if (isCurrentlyApproved) {
-        const activeSupplierInvoices = await prisma.supplierInvoice.findMany({
-          where: {
-            jobId: id,
-            deletedAt: null,
-            status: { not: "CANCELLED" },
-          },
-          select: {
-            id: true,
-            invoiceNumber: true,
-            totalAmount: true,
-          },
-        });
+        const [activeSupplierInvoices, activePurchaseOrders] = await Promise.all([
+          prisma.supplierInvoice.findMany({
+            where: {
+              jobId: id,
+              deletedAt: null,
+              status: { not: "CANCELLED" },
+            },
+            select: {
+              id: true,
+              invoiceNumber: true,
+              totalAmount: true,
+            },
+          }),
+          prisma.purchaseOrder.findMany({
+            where: {
+              jobId: id,
+              deletedAt: null,
+              status: { notIn: ["CANCELLED", "REJECTED"] },
+            },
+            select: {
+              id: true,
+              poNumber: true,
+              status: true,
+              grandTotal: true,
+            },
+          }),
+        ]);
 
         if (activeSupplierInvoices.length > 0) {
           const supplierInvoiceCount = activeSupplierInvoices.length;
@@ -189,6 +204,26 @@ export async function POST(
             { status: 422 }
           );
         }
+
+        if (activePurchaseOrders.length > 0) {
+          return NextResponse.json(
+            {
+              success: false,
+              blocked: true,
+              error: `Cannot Move Job to Pending: ${activePurchaseOrders.length} active Purchase Order(s) (${activePurchaseOrders
+                .map((p) => p.poNumber)
+                .slice(0, 3)
+                .join(", ")}) are linked to this Job.`,
+              title: "Cannot Move Job to Pending",
+              message: `Active Purchase Orders exist for this Job. Cancel or remove those Purchase Orders before reverting approval.`,
+              jobNumber: job.jobCode || "NO-CODE",
+              jobTitle: job.name,
+              activePoCount: activePurchaseOrders.length,
+              statusChange: "BLOCKED",
+            },
+            { status: 422 }
+          );
+        }
       }
     }
 
@@ -206,16 +241,30 @@ export async function POST(
     // Atomic transaction: update status, record approval history, preserve existing invoice & concurrency check
     const result = await prisma.$transaction(async (tx) => {
       if (action === "MOVE_TO_PENDING" && isCurrentlyApproved) {
-        const activeInvoiceCount = await tx.supplierInvoice.count({
-          where: {
-            jobId: id,
-            deletedAt: null,
-            status: { not: "CANCELLED" },
-          },
-        });
+        const [activeInvoiceCount, activePoCount] = await Promise.all([
+          tx.supplierInvoice.count({
+            where: {
+              jobId: id,
+              deletedAt: null,
+              status: { not: "CANCELLED" },
+            },
+          }),
+          tx.purchaseOrder.count({
+            where: {
+              jobId: id,
+              deletedAt: null,
+              status: { notIn: ["CANCELLED", "REJECTED"] },
+            },
+          }),
+        ]);
         if (activeInvoiceCount > 0) {
           throw new Error(
             "Cannot Move Job to Pending: Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval."
+          );
+        }
+        if (activePoCount > 0) {
+          throw new Error(
+            "Cannot Move Job to Pending: Active Purchase Orders exist for this Job."
           );
         }
       }

@@ -11,6 +11,7 @@ export const DEFAULT_STORAGE_BUCKET =
   process.env.SUPABASE_STORAGE_BUCKET || "erp-documents";
 
 export const SUPPLIER_INVOICES_BUCKET = "supplier-invoices";
+export const PURCHASE_ORDERS_BUCKET = "purchase-orders";
 
 let adminClientInstance: SupabaseClient | null = null;
 let publicClientInstance: SupabaseClient | null = null;
@@ -184,6 +185,104 @@ export async function uploadSupplierInvoiceAttachment({
       fileSize: "0 KB",
       mimeType: contentType,
       error: err?.message || "Unknown error during attachment upload",
+    };
+  }
+}
+
+/**
+ * Uploads a Purchase Order attachment or delivery note to Supabase Storage:
+ * purchase-orders / [JOB-CODE] / [PO-NUMBER] / [CATEGORY] / [TIMESTAMP-RAND_FILENAME]
+ */
+export async function uploadPurchaseOrderAttachment({
+  buffer,
+  originalName,
+  jobCode,
+  poNumber,
+  category = "PO_DOCUMENT",
+  contentType,
+  bucket = PURCHASE_ORDERS_BUCKET,
+}: {
+  buffer: Buffer | Uint8Array | ArrayBuffer;
+  originalName: string;
+  jobCode: string;
+  poNumber: string;
+  category?: string;
+  contentType: string;
+  bucket?: string;
+}): Promise<UploadResult> {
+  try {
+    await ensureStorageBucket(bucket, false);
+    const admin = getSupabaseAdmin();
+
+    const cleanJobCode = (jobCode || "JOB").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cleanPoNumber = (poNumber || "PO").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cleanCategory = (category || "PO_DOCUMENT").replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    const cleanOriginalName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const uniquePrefix = `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const storedFileName = `${uniquePrefix}_${cleanOriginalName}`;
+
+    const storagePath = `${cleanJobCode}/${cleanPoNumber}/${cleanCategory}/${storedFileName}`;
+
+    const byteLength = buffer instanceof Buffer ? buffer.length : (buffer as ArrayBuffer).byteLength;
+    const sizeKB = Math.round(byteLength / 1024);
+    const formattedSize =
+      sizeKB > 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${sizeKB || 1} KB`;
+
+    const { error: uploadError } = await admin.storage
+      .from(bucket)
+      .upload(storagePath, buffer, {
+        contentType: contentType || "application/octet-stream",
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.error("Supabase PO Storage upload error:", uploadError);
+      return {
+        success: false,
+        fileUrl: "",
+        storagePath: "",
+        bucketName: bucket,
+        fileName: cleanOriginalName,
+        storedFileName: "",
+        originalFileName: cleanOriginalName,
+        fileSize: formattedSize,
+        mimeType: contentType,
+        error: uploadError.message,
+      };
+    }
+
+    const { data: signedData } = await admin.storage
+      .from(bucket)
+      .createSignedUrl(storagePath, 3600);
+
+    const signedUrl = signedData?.signedUrl || "";
+
+    return {
+      success: true,
+      fileUrl: signedUrl,
+      signedUrl,
+      storagePath,
+      bucketName: bucket,
+      fileName: cleanOriginalName,
+      storedFileName,
+      originalFileName: cleanOriginalName,
+      fileSize: formattedSize,
+      mimeType: contentType,
+    };
+  } catch (err: any) {
+    console.error("uploadPurchaseOrderAttachment exception:", err);
+    return {
+      success: false,
+      fileUrl: "",
+      storagePath: "",
+      bucketName: bucket,
+      fileName: originalName,
+      storedFileName: "",
+      originalFileName: originalName,
+      fileSize: "0 KB",
+      mimeType: contentType,
+      error: err?.message || "Unknown error during PO attachment upload",
     };
   }
 }

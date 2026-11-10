@@ -25,6 +25,7 @@ import {
   CheckCheck,
   XCircle,
   FileText,
+  ShoppingCart,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
@@ -243,6 +244,16 @@ export function DashboardView() {
               <UserPlus className="h-3.5 w-3.5 text-slate-500" />
               <span>New Supplier</span>
             </button>
+          )}
+
+          {can("purchaseOrders", "create") && (
+            <Link
+              href="/admin/purchase-orders/create"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors"
+            >
+              <ShoppingCart className="h-3.5 w-3.5 text-indigo-600" />
+              <span>Create PO</span>
+            </Link>
           )}
 
           {can("invoices", "create") && (
@@ -637,6 +648,83 @@ export function DashboardView() {
                 }))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Purchase Order Procurement Summary Strip (Planned Commitments, separate from Actual Cost & Profit) */}
+      {can("purchaseOrders", "view") && dashboardStats?.poStats && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="p-2 rounded-lg bg-indigo-50 text-indigo-600">
+                <ShoppingCart className="h-4 w-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Purchase Orders &amp; Procurement Commitments</h2>
+                <p className="text-[11px] text-slate-500">
+                  Planned supplier commitments (separate from actual Supplier Invoice costs &amp; Gross Profit)
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs">
+              <Link
+                href="/admin/purchase-orders/tracking"
+                className="font-semibold text-slate-600 hover:text-indigo-700"
+              >
+                Delivery Tracking
+              </Link>
+              <Link
+                href="/admin/purchase-orders"
+                className="font-semibold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1"
+              >
+                <span>Open PO Dashboard</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <span className="text-[11px] text-slate-500 block">Total Purchase Orders</span>
+              <span className="text-lg font-bold text-slate-900 mt-0.5 block">
+                {dashboardStats.poStats.totalPurchaseOrders}
+              </span>
+            </div>
+
+            <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-amber-800">Pending PO Approvals</span>
+                {dashboardStats.poStats.pendingPoApprovals > 0 && (
+                  <Link
+                    href="/admin/approvals?tab=purchase-orders"
+                    className="text-[10px] font-bold text-indigo-700 hover:underline"
+                  >
+                    Review →
+                  </Link>
+                )}
+              </div>
+              <span className="text-lg font-bold text-amber-700 mt-0.5 block">
+                {dashboardStats.poStats.pendingPoApprovals}
+              </span>
+            </div>
+
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+              <span className="text-[11px] text-indigo-900 block">Committed PO Value</span>
+              <span className="text-lg font-bold font-mono text-indigo-800 mt-0.5 block truncate">
+                {can("purchaseOrders", "viewFinancials") && dashboardStats.canViewFinancials !== false
+                  ? formatCurrency(dashboardStats.poStats.committedPoValue, { showCurrencyPrefix: true })
+                  : "Restricted"}
+              </span>
+            </div>
+
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
+              <span className="text-[11px] text-emerald-900 block">Open PO Deliveries</span>
+              <span className="text-lg font-bold text-emerald-700 mt-0.5 block">
+                {dashboardStats.poStats.openPoDeliveries}
+              </span>
+            </div>
           </div>
         </div>
       )}

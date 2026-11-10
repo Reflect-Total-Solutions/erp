@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { Modal } from "@/components/admin/ui/modal";
 import { formatCurrency } from "@/lib/financial";
 import { SupplierInvoice } from "@/types/admin";
@@ -25,6 +26,7 @@ import {
   Trash2,
   Image as ImageIcon,
   Edit,
+  ShoppingCart,
 } from "lucide-react";
 import { getFileCategory, FileCategory } from "@/lib/file-validation";
 import {
@@ -275,6 +277,21 @@ export function ViewSupplierInvoiceModal({
                 <Calendar className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                 <span>Invoice Date: <strong>{invoice.invoiceDate}</strong></span>
               </div>
+
+              {invoice.purchaseOrderId && (
+                <div className="flex items-center gap-1.5 pt-0.5">
+                  <ShoppingCart className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                  <span>Linked PO:</span>
+                  <Link
+                    href={`/admin/purchase-orders/${invoice.purchaseOrderId}`}
+                    onClick={onClose}
+                    className="inline-flex items-center gap-1 font-mono font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2 py-0.5 rounded transition-colors"
+                  >
+                    <span>{invoice.purchaseOrderNumber || "View PO"}</span>
+                    <ExternalLink className="h-2.5 w-2.5" />
+                  </Link>
+                </div>
+              )}
             </div>
           </div>
 
@@ -367,6 +384,20 @@ export function ViewSupplierInvoiceModal({
                         </td>
                         <td className="py-3 px-3">
                           <p className="font-semibold text-slate-900">{item.description}</p>
+                          {(item.quantity != null || item.purchaseOrderItemId) && (
+                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                              {item.purchaseOrderItemId && (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                  PO Line Item
+                                </span>
+                              )}
+                              {item.quantity != null && (
+                                <span className="text-[10px] font-mono text-slate-500">
+                                  Qty: {item.quantity}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {item.notes && (
                             <p className="text-[11px] text-slate-400 mt-0.5">{item.notes}</p>
                           )}

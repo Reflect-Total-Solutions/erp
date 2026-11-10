@@ -1,11 +1,23 @@
-import { ApprovalsView } from "@/components/admin/views/approvals-view";
 import type { Metadata } from "next";
+import { Suspense } from "react";
+import { ApprovalsView } from "@/components/admin/views/approvals-view";
 
 export const metadata: Metadata = {
-  title: "Job Approvals & Authorization — Reflect Total Solutions ERP",
-  description: "Review, authorize, or reject quotation jobs and manage project sign-offs.",
+  title: "Approvals Center (Jobs & Purchase Orders) — Reflect Total Solutions ERP",
+  description:
+    "Review, authorize, reject, or manage pending project quotations and Purchase Orders in a unified approval queue.",
 };
 
 export default function ApprovalsPage() {
-  return <ApprovalsView />;
+  return (
+    <Suspense
+      fallback={
+        <div className="p-8 text-center text-xs text-slate-500">
+          Loading Approval Center...
+        </div>
+      }
+    >
+      <ApprovalsView />
+    </Suspense>
+  );
 }

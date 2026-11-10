@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [suppliers, total] = await Promise.all([
+    const [suppliers, total, poCounts] = await Promise.all([
       prisma.supplier.findMany({
         where,
         include: {
@@ -65,7 +65,15 @@ export async function GET(req: NextRequest) {
         take: limit,
       }),
       prisma.supplier.count({ where }),
+      prisma.purchaseOrder.groupBy({
+        by: ["supplierId"],
+        where: { deletedAt: null },
+        _count: { id: true },
+      }),
     ]);
+
+    const poCountMap = new Map<string, number>();
+    poCounts.forEach((g) => poCountMap.set(g.supplierId, g._count.id));
 
     return NextResponse.json({
       success: true,
@@ -78,6 +86,7 @@ export async function GET(req: NextRequest) {
         email: s.email,
         address: s.address,
         isActive: s.isActive,
+        purchaseOrderCount: poCountMap.get(s.id) || 0,
         isDeleted: s.deletedAt !== null,
         deletedAt: s.deletedAt ? s.deletedAt.toISOString() : undefined,
         createdAt: s.createdAt.toISOString().split("T")[0],

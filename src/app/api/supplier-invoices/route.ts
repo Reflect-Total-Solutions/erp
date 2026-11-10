@@ -12,6 +12,8 @@ import { validateAttachmentBuffer, MAX_ATTACHMENT_SIZE_BYTES } from "@/lib/file-
 import { recalculateJobFinances } from "@/lib/financial-recalculation";
 import { checkSessionPermission } from "@/lib/permissions";
 import { buildRecordVisibilityFilter } from "@/lib/data-visibility";
+import { PO_ELIGIBLE_FOR_INVOICE_STATUSES } from "@/lib/po-financial";
+import { syncPurchaseOrderInvoicedTotalsTx } from "@/lib/po-helpers";
 
 // GET /api/supplier-invoices
 export async function GET(req: NextRequest) {
@@ -126,6 +128,14 @@ export async function GET(req: NextRequest) {
               totalCost: true,
             },
           },
+          purchaseOrder: {
+            select: {
+              id: true,
+              poNumber: true,
+              status: true,
+              grandTotal: true,
+            },
+          },
           items: {
             orderBy: { rowNumber: "asc" },
             include: {
@@ -210,6 +220,8 @@ export async function GET(req: NextRequest) {
       jobId: inv.jobId,
       jobCode: inv.job?.jobCode || "NO-CODE",
       jobName: inv.job?.name || "General Job",
+      purchaseOrderId: inv.purchaseOrderId || null,
+      purchaseOrderNumber: inv.purchaseOrder?.poNumber || null,
       clientName: inv.job?.clientName || "Valued Client",
       invoiceDate: inv.invoiceDate ? new Date(inv.invoiceDate).toISOString().split("T")[0] : "",
       totalAmount: Number(inv.totalAmount || 0),
@@ -226,7 +238,9 @@ export async function GET(req: NextRequest) {
       items: (inv.items || []).map((item: any) => ({
         id: item.id,
         rowNumber: item.rowNumber,
+        purchaseOrderItemId: item.purchaseOrderItemId || null,
         description: item.description,
+        quantity: item.quantity != null ? Number(item.quantity) : undefined,
         amount: Number(item.amount || 0),
         notes: item.notes || "",
         attachments: item.attachments || [],
@@ -302,10 +316,19 @@ export async function POST(req: NextRequest) {
     const contentType = req.headers.get("content-type") || "";
     let supplierId = "";
     let jobId = "";
+    let purchaseOrderId: string | null = null;
     let invoiceNumber = "";
     let invoiceDate = new Date().toISOString().split("T")[0];
     let notes = "";
-    let parsedItems: Array<{ description: string; amount: number; fileIndex?: number; notes?: string }> = [];
+    let poOverInvoiceOverride = false;
+    let parsedItems: Array<{
+      description: string;
+      amount: number;
+      fileIndex?: number;
+      notes?: string;
+      purchaseOrderItemId?: string | null;
+      quantity?: number | null;
+    }> = [];
     interface RowAttachmentUpload {
       itemIndex: number;
       file: File;
@@ -316,9 +339,11 @@ export async function POST(req: NextRequest) {
       const formData = await req.formData();
       supplierId = (formData.get("supplierId") as string) || "";
       jobId = (formData.get("jobId") as string) || "";
+      purchaseOrderId = ((formData.get("purchaseOrderId") as string) || "").trim() || null;
       invoiceNumber = (formData.get("invoiceNumber") as string)?.trim() || "";
       invoiceDate = (formData.get("invoiceDate") as string) || invoiceDate;
       notes = (formData.get("notes") as string) || "";
+      poOverInvoiceOverride = formData.get("poOverInvoiceOverride") === "true";
 
       const rawItems = formData.get("items") as string;
       if (rawItems) {
@@ -369,9 +394,11 @@ export async function POST(req: NextRequest) {
       const body = await req.json();
       supplierId = body.supplierId || "";
       jobId = body.jobId || "";
+      purchaseOrderId = typeof body.purchaseOrderId === "string" && body.purchaseOrderId.trim() ? body.purchaseOrderId.trim() : null;
       invoiceNumber = body.invoiceNumber?.trim() || "";
       invoiceDate = body.invoiceDate || invoiceDate;
       notes = body.notes || "";
+      poOverInvoiceOverride = Boolean(body.poOverInvoiceOverride);
       parsedItems = Array.isArray(body.items) ? body.items : [];
     }
 
@@ -452,6 +479,76 @@ export async function POST(req: NextRequest) {
         );
       }
       totalInvoiceAmount = totalInvoiceAmount.plus(amt);
+    }
+
+    // 4B. Optional Purchase Order Linking Validation
+    let linkedPo: any = null;
+    const validPoItemIds = new Set<string>();
+    if (purchaseOrderId) {
+      linkedPo = await (db.purchaseOrder as any).findFirst({
+        where: { id: purchaseOrderId, deletedAt: null },
+        include: {
+          items: { select: { id: true } },
+          supplierInvoices: {
+            where: { deletedAt: null, status: { not: "CANCELLED" } },
+            select: { id: true, totalAmount: true },
+          },
+        },
+      });
+
+      if (!linkedPo) {
+        return NextResponse.json(
+          { success: false, error: "Selected Purchase Order not found." },
+          { status: 404 }
+        );
+      }
+
+      if (!PO_ELIGIBLE_FOR_INVOICE_STATUSES.includes(String(linkedPo.status || "").toUpperCase())) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Purchase Order "${linkedPo.poNumber}" (${linkedPo.status}) must be Approved, Issued, or Delivered before linking to a Supplier Invoice.`,
+          },
+          { status: 422 }
+        );
+      }
+
+      if (linkedPo.jobId !== jobId || linkedPo.supplierId !== supplierId) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Selected Job/Supplier does not match Purchase Order "${linkedPo.poNumber}".`,
+          },
+          { status: 422 }
+        );
+      }
+
+      (linkedPo.items || []).forEach((it: any) => validPoItemIds.add(it.id));
+
+      const alreadyInvoiced = (linkedPo.supplierInvoices || []).reduce(
+        (sum: Decimal, inv: any) => sum.plus(new Decimal(inv.totalAmount || 0)),
+        new Decimal(0)
+      );
+      const poCeiling = new Decimal(linkedPo.grandTotal || 0);
+      const remainingPoBalance = Decimal.max(0, poCeiling.minus(alreadyInvoiced));
+
+      if (alreadyInvoiced.plus(totalInvoiceAmount).gt(poCeiling.plus(0.01))) {
+        const canOverride = await checkSessionPermission(
+          session,
+          "purchaseOrders",
+          "overrideJobBudget"
+        );
+        if (!poOverInvoiceOverride || !canOverride) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: "PO_OVER_INVOICE_BLOCKED",
+              error: `Invoice total (Rs. ${totalInvoiceAmount.toFixed(2)}) exceeds remaining uninvoiced balance of PO "${linkedPo.poNumber}" (Rs. ${remainingPoBalance.toFixed(2)} remaining of Rs. ${poCeiling.toFixed(2)}).`,
+            },
+            { status: 422 }
+          );
+        }
+      }
     }
 
     // 5. Generate unique invoice number if not provided
@@ -543,6 +640,7 @@ export async function POST(req: NextRequest) {
           invoiceNumber,
           supplierId,
           jobId,
+          purchaseOrderId: linkedPo ? linkedPo.id : null,
           invoiceDate: new Date(invoiceDate),
           totalAmount: totalInvoiceAmount.toFixed(2),
           status: "APPROVED",
@@ -554,11 +652,20 @@ export async function POST(req: NextRequest) {
       // Create each row item and link all attachments for that row
       for (let i = 0; i < parsedItems.length; i++) {
         const item = parsedItems[i];
+        const validPoItemId =
+          linkedPo && item.purchaseOrderItemId && validPoItemIds.has(item.purchaseOrderItemId)
+            ? item.purchaseOrderItemId
+            : null;
         const createdItem = await (tx.supplierInvoiceItem as any).create({
           data: {
             invoiceId: createdInvoice.id,
+            purchaseOrderItemId: validPoItemId,
             rowNumber: i + 1,
             description: item.description.trim(),
+            quantity:
+              item.quantity !== undefined && item.quantity !== null && Number(item.quantity) >= 0
+                ? new Decimal(item.quantity).toFixed(4)
+                : null,
             amount: new Decimal(item.amount).toFixed(2),
             notes: item.notes || "",
           },
@@ -608,12 +715,18 @@ export async function POST(req: NextRequest) {
             supplierName: supplier.name,
             jobId,
             jobCode: job.jobCode,
+            purchaseOrderId: linkedPo ? linkedPo.id : null,
+            purchaseOrderNumber: linkedPo ? linkedPo.poNumber : null,
             totalAmount: totalInvoiceAmount.toFixed(2),
             itemCount: parsedItems.length,
             attachmentsCount: uploadedAttachments.length,
           },
         },
       });
+
+      if (linkedPo) {
+        await syncPurchaseOrderInvoicedTotalsTx(linkedPo.id, tx);
+      }
 
       // Recalculate Job's actual costs and budget atomically within the transaction
       const financialSnapshot = await recalculateJobFinances(job.id, tx);

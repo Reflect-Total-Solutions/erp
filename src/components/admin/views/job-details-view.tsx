@@ -33,6 +33,7 @@ import {
   CheckCircle2,
   FileArchive,
   ExternalLink,
+  ShoppingCart,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
@@ -44,6 +45,7 @@ import { ViewSupplierInvoiceModal } from "@/components/admin/modals/view-supplie
 import { Invoice, InvoiceStatus, Job, JobCostCategory, JobCostItem, JobCostSummary, SupplierInvoice } from "@/types/admin";
 import { downloadProcessedQuotationExcel } from "@/lib/excel-generator";
 import { formatCurrency } from "@/lib/financial";
+import { isJobEligibleForPo } from "@/lib/po-financial";
 import { downloadSingleInvoiceZip } from "@/lib/bulk-download";
 import {
   exportJobDetailedReportToCsv,
@@ -76,6 +78,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
     deleteInvoice,
     updateInvoice,
     refreshJobs,
+    can,
   } = useAdminData();
 
   const job = getJobById(jobId);
@@ -85,8 +88,15 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
   const [selectedSupplierInvoiceId, setSelectedSupplierInvoiceId] = useState<string | null>(null);
   const [supplierInvSearch, setSupplierInvSearch] = useState("");
 
-  // Active Tab: breakdown (quotation), excel, suppliers, invoices
-  const [activeTab, setActiveTab] = useState<"breakdown" | "excel" | "suppliers" | "invoices">("breakdown");
+  // Active Tab: breakdown (quotation), excel, suppliers, invoices, purchase-orders
+  const [activeTab, setActiveTab] = useState<
+    "breakdown" | "excel" | "suppliers" | "invoices" | "purchase-orders"
+  >("breakdown");
+
+  const canViewPos = can("purchaseOrders", "view");
+  const canCreatePo = can("purchaseOrders", "create");
+  const canDownloadPoExcel =
+    can("purchaseOrders", "downloadExcel") || can("purchaseOrders", "download");
 
   // Fetch complete job with dynamic cost categories and items from PostgreSQL
   const fetchFullJob = React.useCallback(async () => {
@@ -103,7 +113,10 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
   }, [jobId]);
 
   React.useEffect(() => {
-    fetchFullJob();
+    const timer = setTimeout(() => {
+      void fetchFullJob();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [fetchFullJob]);
 
   const currentJob = liveJob || job;
@@ -793,6 +806,104 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
             />
           </div>
         </div>
+
+        {/* Purchase Order Commitments Strip (Separate from Actual Supplier Cost / Gross Profit) */}
+        {canViewPos && (
+          <div className="pt-3 border-t border-slate-100 space-y-2.5">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShoppingCart className="h-3.5 w-3.5 text-indigo-600" />
+                <span className="text-[11px] font-bold text-slate-800 uppercase tracking-wider">
+                  Purchase Order Commitments (Planned Procurement)
+                </span>
+                <span className="text-[10px] font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.2 rounded-full">
+                  Commitments Only — P&amp;L driven strictly by Supplier Invoices
+                </span>
+              </div>
+
+              {canCreatePo &&
+                isJobEligibleForPo(
+                  currentJob.status,
+                  currentJob.deletedAt || (currentJob.isDeleted ? "deleted" : null)
+                ) && (
+                  <Link
+                    href={`/admin/purchase-orders/create?jobId=${currentJob.id}`}
+                    className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors shrink-0"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>Create Purchase Order</span>
+                  </Link>
+                )}
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+              <div className="p-2.5 rounded-lg bg-indigo-50/50 border border-indigo-100">
+                <span className="text-[10px] font-medium text-slate-500 block">
+                  Committed PO Value
+                </span>
+                <span className="text-sm font-bold font-mono text-indigo-800">
+                  {formatCurrency(currentJob.poSummary?.totalCommittedPoValue || 0, {
+                    showCurrencyPrefix: true,
+                  })}
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  {currentJob.poSummary?.activePoCount || 0} active committed PO
+                  {(currentJob.poSummary?.activePoCount || 0) === 1 ? "" : "s"}
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/80">
+                <span className="text-[10px] font-medium text-slate-500 block">
+                  Draft POs
+                </span>
+                <span className="text-sm font-bold font-mono text-slate-700">
+                  {formatCurrency(currentJob.poSummary?.draftPoValue || 0, {
+                    showCurrencyPrefix: true,
+                  })}
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  Uncommitted drafts
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/80">
+                <span className="text-[10px] font-medium text-slate-500 block">
+                  Approved &amp; Issued POs
+                </span>
+                <span className="text-sm font-bold font-mono text-emerald-700">
+                  {currentJob.poSummary?.approvedPoCount || 0} PO
+                  {(currentJob.poSummary?.approvedPoCount || 0) === 1 ? "" : "s"}
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  Ready for delivery / billing
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/80">
+                <span className="text-[10px] font-medium text-slate-500 block">
+                  Remaining Uncommitted Budget
+                </span>
+                <span
+                  className={`text-sm font-bold font-mono ${
+                    (currentJob.poSummary?.remainingUncommittedBudget ??
+                      financialOverview.approvedJobValue) < 0
+                      ? "text-rose-600"
+                      : "text-emerald-700"
+                  }`}
+                >
+                  {formatCurrency(
+                    currentJob.poSummary?.remainingUncommittedBudget ??
+                      financialOverview.approvedJobValue,
+                    { showCurrencyPrefix: true }
+                  )}
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  Job value minus PO commitments
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Navigation Tabs */}
@@ -846,6 +957,21 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
           >
             4. Supplier Invoices & Actual Expenses ({(currentJob.supplierInvoices || []).length})
           </button>
+
+          {canViewPos && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("purchase-orders")}
+              className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                activeTab === "purchase-orders"
+                  ? "border-[#2563EB] text-[#2563EB]"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <ShoppingCart className="h-3.5 w-3.5" />
+              <span>5. Purchase Orders ({(currentJob.purchaseOrders || []).length})</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1492,6 +1618,176 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                               >
                                 <Download className="h-4 w-4" />
                               </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ================= TAB 5: PURCHASE ORDERS FOR THIS JOB ================= */}
+      {activeTab === "purchase-orders" && canViewPos && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <ShoppingCart className="h-4 w-4 text-indigo-600" />
+                <span>Job Purchase Orders</span>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                  {(currentJob.purchaseOrders || []).length} PO
+                  {(currentJob.purchaseOrders || []).length === 1 ? "" : "s"}
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Purchase orders created against this job&apos;s budgeted cost items. Profit &amp; Loss uses actual Supplier Invoices, not PO totals.
+              </p>
+            </div>
+
+            {canCreatePo && (
+              isJobEligibleForPo(
+                currentJob.status,
+                currentJob.deletedAt || (currentJob.isDeleted ? "deleted" : null)
+              ) ? (
+                <Link
+                  href={`/admin/purchase-orders/create?jobId=${currentJob.id}`}
+                  className="inline-flex items-center gap-1.5 h-8 rounded-lg bg-[#2563EB] px-3.5 text-xs font-semibold text-white hover:bg-[#1d4ed8] shadow-2xs transition-colors shrink-0"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Create Purchase Order</span>
+                </Link>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-800">
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                  <span>Job must be Approved &amp; Active to create a PO</span>
+                </span>
+              )
+            )}
+          </div>
+
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
+            {(currentJob.purchaseOrders || []).length === 0 ? (
+              <div className="p-10 text-center space-y-2.5 text-slate-400">
+                <ShoppingCart className="h-10 w-10 text-slate-300 mx-auto" />
+                <p className="text-sm font-semibold text-slate-700">
+                  No Purchase Orders Created Yet
+                </p>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  {isJobEligibleForPo(
+                    currentJob.status,
+                    currentJob.deletedAt || (currentJob.isDeleted ? "deleted" : null)
+                  )
+                    ? "Create a Purchase Order to issue official procurement requests using this job's extracted cost items."
+                    : "Purchase Orders can be created once this Job quotation is Approved."}
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
+                    <tr>
+                      <th className="px-4 py-3">PO Number</th>
+                      <th className="px-4 py-3">Supplier</th>
+                      <th className="px-4 py-3">PO Date</th>
+                      <th className="px-4 py-3">Exp. Delivery</th>
+                      <th className="px-4 py-3 text-center">Items</th>
+                      <th className="px-4 py-3 text-right">PO Total</th>
+                      <th className="px-4 py-3 text-right">Invoiced</th>
+                      <th className="px-4 py-3 text-center">Status</th>
+                      <th className="px-4 py-3">Created By</th>
+                      <th className="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(currentJob.purchaseOrders || []).map((po) => {
+                      const currencyPrefix =
+                        po.currency === "LKR" ? "Rs. " : `${po.currency || "LKR"} `;
+                      const poInvoiced = Number(po.invoicedTotal || 0);
+                      return (
+                        <tr key={po.id} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="px-4 py-3 font-mono font-bold text-blue-700">
+                            <Link
+                              href={`/admin/purchase-orders/${po.id}`}
+                              className="inline-flex items-center gap-1 hover:underline"
+                            >
+                              <span>{po.poNumber}</span>
+                              <ExternalLink className="h-3 w-3 opacity-60" />
+                            </Link>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="font-semibold text-slate-900">
+                              {po.supplierName || "—"}
+                            </div>
+                            {po.supplierCode && (
+                              <span className="font-mono text-[10px] text-slate-400">
+                                {po.supplierCode}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-mono text-slate-600 whitespace-nowrap">
+                            {po.poDate}
+                          </td>
+                          <td className="px-4 py-3 font-mono text-slate-500 whitespace-nowrap">
+                            {po.expectedDeliveryDate || "—"}
+                          </td>
+                          <td className="px-4 py-3 text-center font-mono text-slate-700">
+                            {po.itemCount ?? po.items?.length ?? 0}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">
+                            {formatCurrency(po.grandTotal, {
+                              showCurrencyPrefix: true,
+                              currencySymbol: currencyPrefix,
+                            })}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-emerald-700 font-semibold">
+                            {poInvoiced > 0
+                              ? formatCurrency(poInvoiced, {
+                                  showCurrencyPrefix: true,
+                                  currencySymbol: currencyPrefix,
+                                })
+                              : "—"}
+                          </td>
+                          <td className="px-4 py-3 text-center whitespace-nowrap">
+                            <div className="flex flex-col items-center gap-1">
+                              <StatusBadge status={po.status} />
+                              {po.deliveryStatus && po.deliveryStatus !== "NOT_DELIVERED" && (
+                                <StatusBadge status={po.deliveryStatus} />
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            <span className="block font-medium text-slate-800">
+                              {po.createdByName || "Admin"}
+                            </span>
+                            {po.approvedByName && (
+                              <span className="block text-[10px] text-emerald-700">
+                                Appr: {po.approvedByName}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1">
+                              <Link
+                                href={`/admin/purchase-orders/${po.id}`}
+                                className="p-1.5 rounded text-slate-500 hover:text-blue-600 hover:bg-slate-100"
+                                title="Inspect Purchase Order Details"
+                              >
+                                <Eye className="h-4 w-4" />
+                              </Link>
+                              {canDownloadPoExcel && (
+                                <a
+                                  href={`/api/purchase-orders/${po.id}/export/excel`}
+                                  className="p-1.5 rounded text-slate-500 hover:text-emerald-600 hover:bg-emerald-50"
+                                  title="Download PO Excel Workbook"
+                                >
+                                  <FileSpreadsheet className="h-4 w-4" />
+                                </a>
+                              )}
                             </div>
                           </td>
                         </tr>

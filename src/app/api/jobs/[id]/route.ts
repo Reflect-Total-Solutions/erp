@@ -8,6 +8,7 @@ import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
 import { canUserAccessRecord } from "@/lib/data-visibility";
 import { cleanupOrphanedStorageFiles } from "@/lib/supabase";
+import { PO_ACTIVE_COMMITMENT_STATUSES } from "@/lib/po-financial";
 
 // GET /api/jobs/[id]
 export async function GET(
@@ -77,6 +78,34 @@ export async function GET(
             },
             attachments: true,
             createdBy: { select: { id: true, name: true, email: true } },
+          },
+        },
+        purchaseOrders: {
+          where: { deletedAt: null },
+          orderBy: { createdAt: "desc" },
+          include: {
+            supplier: { select: { id: true, code: true, name: true, phone: true, email: true } },
+            items: {
+              orderBy: { rowNumber: "asc" },
+              select: {
+                id: true,
+                particular: true,
+                quantity: true,
+                measure: true,
+                unitCost: true,
+                totalAmount: true,
+                deliveredQuantity: true,
+                remainingQuantity: true,
+                invoicedQuantity: true,
+                invoicedAmount: true,
+              },
+            },
+            createdBy: { select: { id: true, name: true, email: true } },
+            approvedBy: { select: { id: true, name: true, email: true } },
+            supplierInvoices: {
+              where: { deletedAt: null, status: { not: "CANCELLED" } },
+              select: { id: true, invoiceNumber: true, totalAmount: true },
+            },
           },
         },
       },
@@ -296,6 +325,62 @@ export async function GET(
           supplierInvoicesCount: activeInvoices.length,
         };
       })(),
+      purchaseOrders: (job.purchaseOrders || []).map((po: any) => {
+        const invoicedTotal = (po.supplierInvoices || []).reduce(
+          (s: number, inv: any) => s + Number(inv.totalAmount || 0),
+          0
+        );
+        return {
+          id: po.id,
+          poNumber: po.poNumber,
+          poDate: po.poDate ? new Date(po.poDate).toISOString().split("T")[0] : "",
+          expectedDeliveryDate: po.expectedDeliveryDate
+            ? new Date(po.expectedDeliveryDate).toISOString().split("T")[0]
+            : null,
+          supplierId: po.supplierId,
+          supplierCode: po.supplier?.code || "",
+          supplierName: po.supplierNameSnapshot || po.supplier?.name || "Unknown Supplier",
+          status: po.status,
+          approvalStatus: po.approvalStatus,
+          deliveryStatus: po.deliveryStatus,
+          grandTotal: Number(po.grandTotal || 0),
+          invoicedTotal,
+          currency: po.currency || "LKR",
+          itemCount: (po.items || []).length,
+          createdByName: po.createdBy?.name || "System Admin",
+          approvedByName: po.approvedBy?.name || null,
+          createdAt: po.createdAt ? new Date(po.createdAt).toISOString().split("T")[0] : "",
+        };
+      }),
+      poSummary: (() => {
+        const approvedJobValue = Number(job.grandTotal || job.totalCost || 0);
+        const pos = job.purchaseOrders || [];
+        const draftPos = pos.filter((p: any) => p.status === "DRAFT");
+        const activeCommittedPos = pos.filter((p: any) =>
+          PO_ACTIVE_COMMITMENT_STATUSES.includes(String(p.status || "").toUpperCase())
+        );
+        const approvedPos = pos.filter((p: any) =>
+          ["APPROVED", "ISSUED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(
+            String(p.status || "").toUpperCase()
+          )
+        );
+        const totalCommittedPoValue = activeCommittedPos.reduce(
+          (sum: number, p: any) => sum + Number(p.grandTotal || 0),
+          0
+        );
+        const draftPoValue = draftPos.reduce(
+          (sum: number, p: any) => sum + Number(p.grandTotal || 0),
+          0
+        );
+        return {
+          totalCommittedPoValue,
+          draftPoValue,
+          approvedPoCount: approvedPos.length,
+          activePoCount: activeCommittedPos.length,
+          totalPoCount: pos.length,
+          remainingUncommittedBudget: approvedJobValue - totalCommittedPoValue,
+        };
+      })(),
     };
 
     return NextResponse.json({
@@ -415,20 +500,34 @@ export async function PUT(
         status.toLowerCase().includes("draft") ||
         status.toLowerCase().includes("review");
 
-      // Strict Approval Lock: Prevent Approved Jobs with active Supplier Invoices from returning to Pending
+      // Strict Approval Lock: Prevent Approved Jobs with active Supplier Invoices or Purchase Orders from returning to Pending
       if (isCurrentlyApproved && isTargetPending) {
-        const activeSupplierInvoices = await prisma.supplierInvoice.findMany({
-          where: {
-            jobId: id,
-            deletedAt: null,
-            status: { not: "CANCELLED" },
-          },
-          select: {
-            id: true,
-            invoiceNumber: true,
-            totalAmount: true,
-          },
-        });
+        const [activeSupplierInvoices, activePurchaseOrders] = await Promise.all([
+          prisma.supplierInvoice.findMany({
+            where: {
+              jobId: id,
+              deletedAt: null,
+              status: { not: "CANCELLED" },
+            },
+            select: {
+              id: true,
+              invoiceNumber: true,
+              totalAmount: true,
+            },
+          }),
+          prisma.purchaseOrder.findMany({
+            where: {
+              jobId: id,
+              deletedAt: null,
+              status: { notIn: ["CANCELLED", "REJECTED"] },
+            },
+            select: {
+              id: true,
+              poNumber: true,
+              status: true,
+            },
+          }),
+        ]);
 
         if (activeSupplierInvoices.length > 0) {
           const supplierInvoiceCount = activeSupplierInvoices.length;
@@ -448,6 +547,26 @@ export async function PUT(
               jobTitle: existing.name,
               supplierInvoiceCount,
               totalSupplierInvoiceAmount,
+              statusChange: "BLOCKED",
+            },
+            { status: 422 }
+          );
+        }
+
+        if (activePurchaseOrders.length > 0) {
+          return NextResponse.json(
+            {
+              success: false,
+              blocked: true,
+              error: `Cannot Move Job to Pending: ${activePurchaseOrders.length} active Purchase Order(s) (${activePurchaseOrders
+                .map((p) => p.poNumber)
+                .slice(0, 3)
+                .join(", ")}) exist for this Job.`,
+              title: "Cannot Move Job to Pending",
+              message: "Active Purchase Orders exist for this Job. Cancel or delete them before moving back to Pending.",
+              jobNumber: existing.jobCode || "NO-CODE",
+              jobTitle: existing.name,
+              activePoCount: activePurchaseOrders.length,
               statusChange: "BLOCKED",
             },
             { status: 422 }
@@ -479,16 +598,30 @@ export async function PUT(
           status.toLowerCase().includes("review");
 
         if (isCurrentlyApproved && isTargetPending) {
-          const activeCount = await tx.supplierInvoice.count({
-            where: {
-              jobId: id,
-              deletedAt: null,
-              status: { not: "CANCELLED" },
-            },
-          });
+          const [activeCount, activePoCount] = await Promise.all([
+            tx.supplierInvoice.count({
+              where: {
+                jobId: id,
+                deletedAt: null,
+                status: { not: "CANCELLED" },
+              },
+            }),
+            tx.purchaseOrder.count({
+              where: {
+                jobId: id,
+                deletedAt: null,
+                status: { notIn: ["CANCELLED", "REJECTED"] },
+              },
+            }),
+          ]);
           if (activeCount > 0) {
             throw new Error(
               "Cannot Move Job to Pending: Supplier invoices have already been recorded for this Job. The Job cannot be moved back to Pending Approval."
+            );
+          }
+          if (activePoCount > 0) {
+            throw new Error(
+              "Cannot Move Job to Pending: Active Purchase Orders exist for this Job."
             );
           }
         }
@@ -685,8 +818,8 @@ export async function DELETE(
       }
 
       // 1. Strict Financial Dependency Protection (Section 2 & 5)
-      // Block permanent deletion if Job has active supplier invoices or customer invoices
-      const [activeSupplierInvoices, customerInvoice] = await Promise.all([
+      // Block permanent deletion if Job has active supplier invoices, customer invoices, or Purchase Orders
+      const [activeSupplierInvoices, customerInvoice, linkedPurchaseOrders] = await Promise.all([
         prisma.supplierInvoice.findMany({
           where: {
             jobId: id,
@@ -699,9 +832,13 @@ export async function DELETE(
           where: { jobId: id },
           select: { id: true, invoiceNumber: true, grandTotal: true, status: true },
         }),
+        prisma.purchaseOrder.findMany({
+          where: { jobId: id },
+          select: { id: true, poNumber: true, status: true, deletedAt: true },
+        }),
       ]);
 
-      if (activeSupplierInvoices.length > 0 || customerInvoice) {
+      if (activeSupplierInvoices.length > 0 || customerInvoice || linkedPurchaseOrders.length > 0) {
         const reasons: string[] = [];
         if (activeSupplierInvoices.length > 0) {
           reasons.push(
@@ -714,17 +851,26 @@ export async function DELETE(
         if (customerInvoice) {
           reasons.push(`Customer Invoice "${customerInvoice.invoiceNumber}" (${customerInvoice.status})`);
         }
+        if (linkedPurchaseOrders.length > 0) {
+          reasons.push(
+            `${linkedPurchaseOrders.length} Purchase Order(s) (${linkedPurchaseOrders
+              .map((p) => p.poNumber)
+              .slice(0, 3)
+              .join(", ")})`
+          );
+        }
 
         return NextResponse.json(
           {
             success: false,
             blocked: true,
-            error: `Cannot Permanently Delete Job: This Job has linked financial records (${reasons.join(
+            error: `Cannot Permanently Delete Job: This Job has linked procurement/financial records (${reasons.join(
               " and "
-            )}). Accounting and financial audit history must be preserved.`,
+            )}). Accounting and audit history must be preserved.`,
             financialDependencies: {
               supplierInvoicesCount: activeSupplierInvoices.length,
               customerInvoiceNumber: customerInvoice?.invoiceNumber || null,
+              purchaseOrdersCount: linkedPurchaseOrders.length,
             },
           },
           { status: 422 }

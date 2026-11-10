@@ -51,11 +51,29 @@ export function StatusBadge({ status }: { status: JobStatus | InvoiceStatus | Ex
   if (norm === "pending_approval" || norm === "pending approval") {
     return <Badge variant="warning">Pending Approval</Badge>;
   }
+  if (norm === "pending") {
+    return <Badge variant="warning">Pending</Badge>;
+  }
   if (norm === "approved") {
     return <Badge variant="success">Approved</Badge>;
   }
-  if (norm === "rejected" || norm === "cancelled") {
+  if (norm === "issued") {
+    return <Badge variant="default">Issued</Badge>;
+  }
+  if (norm === "partially_delivered" || norm === "partially delivered") {
+    return <Badge variant="info">Partially Delivered</Badge>;
+  }
+  if (norm === "delivered") {
+    return <Badge variant="success">Delivered</Badge>;
+  }
+  if (norm === "not_delivered" || norm === "not delivered") {
+    return <Badge variant="neutral">Not Delivered</Badge>;
+  }
+  if (norm === "rejected") {
     return <Badge variant="danger">Rejected</Badge>;
+  }
+  if (norm === "cancelled") {
+    return <Badge variant="danger">Cancelled</Badge>;
   }
   if (norm === "draft") {
     return <Badge variant="neutral">Draft</Badge>;

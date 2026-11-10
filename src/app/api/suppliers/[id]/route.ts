@@ -282,6 +282,28 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
         );
       }
 
+      // Protect suppliers linked to Purchase Orders or Supplier Invoices from permanent purge
+      const [poCount, invoiceCount] = await Promise.all([
+        prisma.purchaseOrder.count({ where: { supplierId: id } }),
+        prisma.supplierInvoice.count({ where: { supplierId: id } }),
+      ]);
+
+      if (poCount > 0 || invoiceCount > 0) {
+        const deps: string[] = [];
+        if (poCount > 0) deps.push(`${poCount} Purchase Order(s)`);
+        if (invoiceCount > 0) deps.push(`${invoiceCount} Supplier Invoice(s)`);
+        return NextResponse.json(
+          {
+            success: false,
+            blocked: true,
+            error: `Cannot Permanently Delete Supplier "${existing.name}": Supplier has linked ${deps.join(
+              " and "
+            )}. Financial and procurement records must be preserved.`,
+          },
+          { status: 422 }
+        );
+      }
+
       // Permanent Purge
       await prisma.supplier.delete({
         where: { id },

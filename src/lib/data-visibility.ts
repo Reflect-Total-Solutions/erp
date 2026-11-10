@@ -239,9 +239,9 @@ export async function canUserAccessRecord(
     return { allowed: true };
   }
 
-  // For EDIT / DELETE / CANCEL:
-  // Employees can ONLY edit or delete their own records
-  if (["edit", "delete", "cancel", "restore", "permanentDelete"].includes(action)) {
+  // For EDIT / DELETE / CANCEL / SUBMIT / RECORD DELIVERY:
+  // Employees can ONLY modify records within their own scope
+  if (["edit", "delete", "cancel", "restore", "permanentDelete", "submit", "trackDelivery"].includes(action)) {
     if (isAdmin) {
       return { allowed: true };
     }
