@@ -178,6 +178,7 @@ export interface Job {
   supplierInvoiceCount?: number;
   supplierInvoiceTotal?: number;
   invoiceStatusSummary?: string;
+  additionalExpenses?: JobAdditionalExpense[];
   purchaseOrders?: PurchaseOrder[];
   purchaseOrderCount?: number;
   poSummary?: {
@@ -191,16 +192,140 @@ export interface Job {
   };
   financialOverview?: {
     approvedJobValue: number;
+    originalEstimatedJobCost: number;
     totalSupplierCost: number;
+    additionalExpensesTotal: number;
     otherCosts: number;
     totalActualCost: number;
+    costDifference: number;
+    costSaving: number;
+    costOverrun: number;
     remainingBudget: number;
     grossProfit: number;
-    profitMargin: number;
+    profitMargin: number | null;
     costUtilization: number;
     isBudgetExceeded: boolean;
     supplierInvoicesCount: number;
+    additionalExpensesCount?: number;
+    supplierPaidAmount: number;
+    supplierOutstandingBalance: number;
   };
+  costComparison?: {
+    rows: JobCostComparisonRow[];
+    unlinkedItems: JobUnlinkedInvoiceItemRow[];
+    totals: {
+      originalJobCost: number;
+      actualInvoiceCost: number;
+      costDifference: number;
+      costSaving: number;
+      costOverrun: number;
+      invoicedAmount: number;
+      paidAllocatedAmount: number;
+      outstandingInvoiceAmount: number;
+      unlinkedActualCost: number;
+    };
+  };
+  financialPermissions?: {
+    canViewFinancialSummary: boolean;
+    canViewOriginalCosts: boolean;
+    canViewActualSupplierCosts: boolean;
+    canCreateAdditionalExpense: boolean;
+    canEditAdditionalExpense: boolean;
+    canCancelAdditionalExpense: boolean;
+  };
+}
+
+export interface JobCostComparisonRow {
+  jobCostItemId: string;
+  categoryId?: string | null;
+  categoryName: string;
+  itemNumber?: number | null;
+  description: string;
+  rcNrc?: string | null;
+  originalQuantity: number;
+  originalRate: number;
+  originalJobCost: number;
+  actualInvoiceCost: number;
+  costDifference: number; // originalJobCost - actualInvoiceCost
+  costSaving: number;     // max(costDifference, 0)
+  costOverrun: number;    // max(-costDifference, 0)
+  varianceStatus: "SAVING" | "OVERRUN" | "ON_BUDGET" | "UNINVOICED";
+  invoicedAmount: number;
+  paidAllocatedAmount: number;
+  outstandingInvoiceAmount: number;
+  invoiceCount: number;
+  linkedInvoices: Array<{
+    invoiceId: string;
+    invoiceNumber: string;
+    supplierId: string;
+    supplierName: string;
+    invoiceDate: string;
+    itemAmount: number;
+    paidAllocatedAmount: number;
+    outstandingAllocatedAmount: number;
+  }>;
+}
+
+export interface JobUnlinkedInvoiceItemRow {
+  invoiceItemId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  supplierId: string;
+  supplierName: string;
+  invoiceDate: string;
+  description: string;
+  amount: number;
+  paidAllocatedAmount: number;
+  outstandingAllocatedAmount: number;
+  isAdditionalItem: boolean;
+}
+
+export interface JobAdditionalExpenseAuditLog {
+  id: string;
+  expenseId: string;
+  jobId: string;
+  userId?: string | null;
+  userName?: string | null;
+  action: "CREATE" | "EDIT" | "CANCEL" | string;
+  reason?: string | null;
+  previousData?: any;
+  newData?: any;
+  createdAt: string;
+}
+
+export interface JobAdditionalExpense {
+  id: string;
+  jobId: string;
+  expenseDate: string;
+  category: string;
+  description: string;
+  amount: number;
+  supplierId?: string | null;
+  supplierName?: string | null;
+  supplierCode?: string | null;
+  payeeName?: string | null;
+  paymentReference?: string | null;
+  linkedSupplierInvoiceId?: string | null;
+  attachmentName?: string | null;
+  attachmentOriginalName?: string | null;
+  attachmentBucket?: string | null;
+  attachmentStoragePath?: string | null;
+  attachmentSize?: string | null;
+  attachmentMimeType?: string | null;
+  attachmentSignedUrl?: string | null;
+  notes?: string | null;
+  status: "ACTIVE" | "CANCELLED" | string;
+  cancellationReason?: string | null;
+  cancelledAt?: string | null;
+  cancelledById?: string | null;
+  cancelledByName?: string | null;
+  createdById?: string | null;
+  createdByName?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
+  auditLogs?: JobAdditionalExpenseAuditLog[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Supplier {
@@ -218,6 +343,12 @@ export interface Supplier {
   updatedById?: string | null;
   updatedByName?: string | null;
   purchaseOrderCount?: number;
+  invoiceCount?: number;
+  totalBilled?: number;
+  totalPaid?: number;
+  outstandingBalance?: number;
+  overdueInvoiceCount?: number;
+  overdueBalance?: number;
   isDeleted?: boolean;
   deletedAt?: string;
 }
@@ -289,11 +420,25 @@ export interface ModulePermission {
   issue?: boolean;
   moveToPending?: boolean;
   cancel?: boolean;
+  reverse?: boolean;
+  downloadReceipt?: boolean;
+  exportReports?: boolean;
+  viewOutstanding?: boolean;
+  viewOverdue?: boolean;
+  manageNotifications?: boolean;
+  overrideDueDate?: boolean;
   manageAttachments?: boolean;
   viewFinancials?: boolean;
+  viewFinancialSummary?: boolean;
+  viewOriginalCosts?: boolean;
+  viewActualSupplierCosts?: boolean;
+  createAdditionalExpense?: boolean;
+  editAdditionalExpense?: boolean;
+  cancelAdditionalExpense?: boolean;
   managePermissions?: boolean;
   viewHistory?: boolean;
   overrideJobBudget?: boolean;
+  manualEntry?: boolean;
   manageDepartmentAllocation?: boolean;
   manageSettings?: boolean;
   [key: string]: boolean | undefined;
@@ -361,14 +506,42 @@ export interface SupplierInvoiceAttachment {
   createdAt: string;
 }
 
+export interface JobCostItemInvoiceInfo {
+  id: string;
+  jobId: string;
+  categoryId?: string | null;
+  categoryName: string;
+  itemNumber?: number | null;
+  description: string;
+  rcNrc?: string | null;
+  quantity: number;
+  unit: string;
+  rate: number;
+  originalAmount: number;
+  invoicedAmount: number;
+  invoicedQuantity: number;
+  remainingAmount: number;
+  activeInvoiceCount: number;
+  invoiceNumbers: string[];
+  invoicedStatus: "UNINVOICED" | "PARTIAL" | "FULLY_INVOICED" | "OVER_INVOICED";
+}
+
 export interface SupplierInvoiceItem {
   id: string;
   invoiceId: string;
   purchaseOrderItemId?: string | null;
+  jobCostCategoryId?: string | null;
+  jobCostCategoryName?: string | null;
+  jobCostItemId?: string | null;
   rowNumber: number;
   description: string;
+  originalJobAmount?: number | null;
   quantity?: number | null;
+  unit?: string | null;
+  unitRate?: number | null;
   amount: number;
+  isAdditionalItem?: boolean;
+  budgetOverrideReason?: string | null;
   notes?: string | null;
   attachments?: SupplierInvoiceAttachment[];
   createdAt: string;
@@ -383,6 +556,115 @@ export interface SupplierInvoiceAuditLog {
   reason?: string | null;
   previousData?: any;
   newData?: any;
+  createdAt: string;
+}
+
+export type SupplierPaymentStatus =
+  | "UNPAID"
+  | "PARTIALLY_PAID"
+  | "PAID"
+  | "OVERDUE"
+  | "CANCELLED"
+  | string;
+
+export interface SupplierPaymentCountdown {
+  label: string;
+  daysDelta: number;
+  isOverdue: boolean;
+  isDueToday: boolean;
+  severity: "neutral" | "upcoming" | "warning" | "overdue" | "paid" | "cancelled";
+}
+
+export interface SupplierPaymentAuditLog {
+  id: string;
+  paymentId?: string | null;
+  invoiceId?: string | null;
+  userId?: string | null;
+  userName?: string | null;
+  action: "CREATE" | "EDIT" | "REVERSE" | "DUE_DATE_CHANGE" | string;
+  reason?: string | null;
+  previousData?: any;
+  newData?: any;
+  createdAt: string;
+}
+
+export interface SupplierPayment {
+  id: string;
+  paymentNumber: string;
+  supplierInvoiceId: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  paymentDueDate?: string | null;
+  invoiceTotalAmount?: number;
+  invoicePaidAmount?: number;
+  supplierId: string;
+  supplierName?: string;
+  supplierCode?: string;
+  jobId: string;
+  jobCode?: string;
+  jobName?: string;
+  paymentDate: string;
+  amount: number;
+  paymentMethod: "Bank Transfer" | "Cash" | "Cheque" | "Online Transfer" | "Other" | string;
+  referenceNumber?: string | null;
+  bankAccountName?: string | null;
+  notes?: string | null;
+  attachmentName?: string | null;
+  attachmentOriginalName?: string | null;
+  attachmentBucket?: string | null;
+  attachmentStoragePath?: string | null;
+  attachmentSize?: string | null;
+  attachmentMimeType?: string | null;
+  attachmentSignedUrl?: string | null;
+  idempotencyKey?: string | null;
+  status: "SUCCESS" | "REVERSED" | string;
+  createdById?: string | null;
+  createdByName?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
+  reversedAt?: string | null;
+  reversedById?: string | null;
+  reversedByName?: string | null;
+  reversalReason?: string | null;
+  correctionReason?: string | null;
+  auditLogs?: SupplierPaymentAuditLog[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupplierPaymentSettings {
+  id: string;
+  timezone: string;
+  upcomingReminderDays: number[];
+  notifyOnDueToday: boolean;
+  notifyDailyOverdue: boolean;
+  notifyOnPartialPayment: boolean;
+  notifyOnFullPayment: boolean;
+  emailRemindersEnabled: boolean;
+  updatedAt?: string;
+}
+
+export interface ErpNotification {
+  id: string;
+  userId: string;
+  category: string;
+  type:
+    | "UPCOMING_DUE_REMINDER"
+    | "DUE_TODAY"
+    | "OVERDUE"
+    | "PARTIAL_PAYMENT_RECORDED"
+    | "FULL_PAYMENT_COMPLETED"
+    | string;
+  title: string;
+  message: string;
+  linkUrl?: string | null;
+  supplierInvoiceId?: string | null;
+  supplierId?: string | null;
+  supplierPaymentId?: string | null;
+  scheduledDateKey?: string | null;
+  metadata?: any;
+  isRead: boolean;
+  readAt?: string | null;
   createdAt: string;
 }
 
@@ -402,9 +684,25 @@ export interface SupplierInvoice {
   purchaseOrderNumber?: string | null;
   purchaseOrder?: any;
   invoiceDate: string;
+  paymentDueDate?: string | null;
+  paymentTerms?: string | null;
+  creditPeriodDays?: number | null;
+  paymentStatus?: SupplierPaymentStatus;
+  paidAmount?: number;
+  outstandingBalance?: number;
+  lastPaymentDate?: string | null;
+  isPartiallyPaid?: boolean;
+  isOverdue?: boolean;
+  countdown?: SupplierPaymentCountdown | null;
+  paymentCount?: number;
   totalAmount: number;
   status: "APPROVED" | "PAID" | "CANCELLED" | string;
   notes?: string | null;
+  budgetOverrideUsed?: boolean;
+  budgetOverrideReason?: string | null;
+  approvedJobValue?: number;
+  totalJobSupplierCost?: number;
+  remainingJobBudget?: number;
   cancellationReason?: string | null;
   cancelledAt?: string | null;
   cancelledById?: string | null;
@@ -417,6 +715,8 @@ export interface SupplierInvoice {
   items?: SupplierInvoiceItem[];
   attachments?: SupplierInvoiceAttachment[];
   auditLogs?: SupplierInvoiceAuditLog[];
+  payments?: SupplierPayment[];
+  paymentAuditLogs?: SupplierPaymentAuditLog[];
   createdAt: string;
   updatedAt: string;
 }
@@ -651,13 +951,21 @@ export interface JobProfitLossSummary {
   status: string;
   jobDate: string;
   approvedJobValue: number;
+  originalEstimatedCost: number;
   totalSupplierCost: number;
+  additionalExpenses: number;
   otherCosts: number;
   totalActualCost: number;
+  costDifference: number;
+  costSaving: number;
+  costOverrun: number;
   grossProfit: number;
-  profitMargin: number;
-  financialStatus: "High Margin" | "Healthy" | "Low Margin" | "Over Budget";
+  profitMargin: number | null;
+  financialStatus: "High Margin" | "Healthy" | "Low Margin" | "Over Budget" | "N/A";
   supplierInvoicesCount: number;
+  additionalExpensesCount?: number;
+  supplierPaidAmount?: number;
+  supplierOutstandingBalance?: number;
   createdByName?: string;
   createdById?: string;
 }
@@ -670,6 +978,7 @@ export interface DashboardStats {
   totalSuppliers: number;
   totalSupplierInvoices: number;
   totalSupplierInvoiceAmount: number;
+  totalAdditionalExpenses?: number;
   jobsWithSupplierInvoices: number;
   jobsWithoutSupplierInvoices: number;
   totalActualJobCosts: number;

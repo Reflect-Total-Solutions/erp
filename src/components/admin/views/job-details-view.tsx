@@ -14,12 +14,9 @@ import {
   FileText,
   Search,
   DollarSign,
-  Users,
   X,
   Image as ImageIcon,
   Download,
-  CheckSquare,
-  Square,
   Loader2,
   Layers,
   Printer,
@@ -30,10 +27,12 @@ import {
   TrendingUp,
   TrendingDown,
   AlertTriangle,
-  CheckCircle2,
-  FileArchive,
   ExternalLink,
   ShoppingCart,
+  Receipt,
+  CreditCard,
+  BarChart3,
+  Lock,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { StatusBadge } from "@/components/admin/ui/badge";
@@ -41,18 +40,25 @@ import { Modal } from "@/components/admin/ui/modal";
 import { BulkInvoiceUploadModal } from "@/components/admin/modals/bulk-invoice-upload-modal";
 import { EditJobCostsModal } from "@/components/admin/modals/edit-job-costs-modal";
 import { CreateSupplierInvoiceModal } from "@/components/admin/modals/create-supplier-invoice-modal";
+import { EditSupplierInvoiceModal } from "@/components/admin/modals/edit-supplier-invoice-modal";
 import { ViewSupplierInvoiceModal } from "@/components/admin/modals/view-supplier-invoice-modal";
-import { Invoice, InvoiceStatus, Job, JobCostCategory, JobCostItem, JobCostSummary, SupplierInvoice } from "@/types/admin";
+import {
+  AttachmentPreviewModal,
+  PreviewableAttachment,
+} from "@/components/admin/modals/attachment-preview-modal";
+import {
+  JobAdditionalExpensesTab,
+  JobPaymentSummaryTab,
+  JobProfitLossTab,
+} from "@/components/admin/jobs/job-financial-tabs";
+import { computeJobFinancialAnalysis } from "@/lib/job-financial-analysis";
+import { Invoice, InvoiceStatus, Job, SupplierInvoice } from "@/types/admin";
 import { downloadProcessedQuotationExcel } from "@/lib/excel-generator";
 import { formatCurrency } from "@/lib/financial";
 import { isJobEligibleForPo } from "@/lib/po-financial";
 import { downloadSingleInvoiceZip } from "@/lib/bulk-download";
 import {
-  exportJobDetailedReportToCsv,
-  exportInvoicesToCsv,
-  downloadMockInvoiceFile,
   downloadMockExcelFile,
-  downloadSingleAttachment,
   downloadAllJobExcelFiles,
 } from "@/lib/export-utils";
 
@@ -85,18 +91,52 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
   const [liveJob, setLiveJob] = useState<Job | null>(null);
   const [isEditCostModalOpen, setIsEditCostModalOpen] = useState(false);
   const [isCreateSupplierInvModalOpen, setIsCreateSupplierInvModalOpen] = useState(false);
-  const [selectedSupplierInvoiceId, setSelectedSupplierInvoiceId] = useState<string | null>(null);
+  const [selectedSupplierInvoiceModal, setSelectedSupplierInvoiceModal] = useState<{
+    id: string;
+    initialTab: "items" | "history" | "payments";
+  } | null>(null);
+  const [editingSupplierInvoice, setEditingSupplierInvoice] =
+    useState<SupplierInvoice | null>(null);
+  const [previewAttachment, setPreviewAttachment] =
+    useState<PreviewableAttachment | null>(null);
   const [supplierInvSearch, setSupplierInvSearch] = useState("");
 
-  // Active Tab: breakdown (quotation), excel, suppliers, invoices, purchase-orders
+  // Active Tab: breakdown (Cost Budget), invoices, additional-expenses, profit-loss, payment-summary, excel, suppliers, purchase-orders
   const [activeTab, setActiveTab] = useState<
-    "breakdown" | "excel" | "suppliers" | "invoices" | "purchase-orders"
+    | "breakdown"
+    | "invoices"
+    | "additional-expenses"
+    | "profit-loss"
+    | "payment-summary"
+    | "excel"
+    | "suppliers"
+    | "purchase-orders"
   >("breakdown");
 
   const canViewPos = can("purchaseOrders", "view");
   const canCreatePo = can("purchaseOrders", "create");
   const canDownloadPoExcel =
     can("purchaseOrders", "downloadExcel") || can("purchaseOrders", "download");
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const timer = setTimeout(() => {
+      const tabParam = new URLSearchParams(window.location.search).get("tab");
+      if (
+        tabParam === "breakdown" ||
+        tabParam === "invoices" ||
+        tabParam === "additional-expenses" ||
+        tabParam === "profit-loss" ||
+        tabParam === "payment-summary" ||
+        tabParam === "excel" ||
+        tabParam === "suppliers" ||
+        tabParam === "purchase-orders"
+      ) {
+        setActiveTab(tabParam);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Fetch complete job with dynamic cost categories and items from PostgreSQL
   const fetchFullJob = React.useCallback(async () => {
@@ -121,30 +161,62 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
 
   const currentJob = liveJob || job;
 
+  const financialPermissions = useMemo(
+    () => ({
+      canViewFinancialSummary:
+        currentJob?.financialPermissions?.canViewFinancialSummary ??
+        can("jobs", "viewFinancialSummary"),
+      canViewOriginalCosts:
+        currentJob?.financialPermissions?.canViewOriginalCosts ??
+        can("jobs", "viewOriginalCosts"),
+      canViewActualSupplierCosts:
+        currentJob?.financialPermissions?.canViewActualSupplierCosts ??
+        can("jobs", "viewActualSupplierCosts"),
+      canCreateAdditionalExpense:
+        currentJob?.financialPermissions?.canCreateAdditionalExpense ??
+        can("jobs", "createAdditionalExpense"),
+      canEditAdditionalExpense:
+        currentJob?.financialPermissions?.canEditAdditionalExpense ??
+        can("jobs", "editAdditionalExpense"),
+      canCancelAdditionalExpense:
+        currentJob?.financialPermissions?.canCancelAdditionalExpense ??
+        can("jobs", "cancelAdditionalExpense"),
+    }),
+    [currentJob?.financialPermissions, can]
+  );
+
   const financialOverview = useMemo(() => {
     if (currentJob?.financialOverview) {
       return currentJob.financialOverview;
     }
-    const approvedVal = Number(currentJob?.grandTotal || currentJob?.totalCost || 0);
-    const activeInvs = (currentJob?.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED");
-    const totalSupCost = activeInvs.reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0);
-    const remaining = approvedVal - totalSupCost;
-    const grossProfit = approvedVal - totalSupCost;
-    const profitMargin = approvedVal > 0 ? (grossProfit / approvedVal) * 100 : 0;
-    const costUtil = approvedVal > 0 ? (totalSupCost / approvedVal) * 100 : 0;
-    return {
-      approvedJobValue: approvedVal,
-      totalSupplierCost: totalSupCost,
-      otherCosts: 0,
-      totalActualCost: totalSupCost,
-      remainingBudget: remaining,
-      grossProfit,
-      profitMargin,
-      costUtilization: costUtil,
-      isBudgetExceeded: totalSupCost > approvedVal,
-      supplierInvoicesCount: activeInvs.length,
-    };
+    const approvedVal =
+      Number(currentJob?.grandTotal || 0) > 0
+        ? currentJob?.grandTotal || 0
+        : currentJob?.totalCost || 0;
+    return computeJobFinancialAnalysis({
+      approvedJobRevenue: approvedVal,
+      fallbackTotalCost: currentJob?.totalCost || 0,
+      costItems: currentJob?.costItems || [],
+      supplierInvoices: currentJob?.supplierInvoices || [],
+      additionalExpenses: currentJob?.additionalExpenses || [],
+    }).overview;
   }, [currentJob]);
+
+  const activeAdditionalExpensesCount = useMemo(
+    () =>
+      (currentJob?.additionalExpenses || []).filter(
+        (e) => e.status === "ACTIVE" && !e.linkedSupplierInvoiceId
+      ).length,
+    [currentJob?.additionalExpenses]
+  );
+
+  const totalPaymentsLedgerCount = useMemo(() => {
+    let count = 0;
+    for (const inv of currentJob?.supplierInvoices || []) {
+      count += (inv.payments || []).length;
+    }
+    return count;
+  }, [currentJob?.supplierInvoices]);
 
   // Modal states
   const [isBulkInvoiceOpen, setIsBulkInvoiceOpen] = useState(false);
@@ -627,14 +699,16 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
               <span>Print / PDF</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setIsEditCostModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 px-3 py-2 text-xs font-semibold hover:bg-blue-100 transition-colors shadow-2xs"
-            >
-              <Edit2 className="h-3.5 w-3.5" />
-              <span>Edit Quotation & Costs</span>
-            </button>
+            {can("jobs", "edit") && financialPermissions.canViewOriginalCosts && (
+              <button
+                type="button"
+                onClick={() => setIsEditCostModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 px-3 py-2 text-xs font-semibold hover:bg-blue-100 transition-colors shadow-2xs"
+              >
+                <Edit2 className="h-3.5 w-3.5" />
+                <span>Edit Quotation & Costs</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -652,13 +726,18 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
           <div>
             <span className="text-slate-400 block text-[11px]">Quotation Grand Total</span>
             <span className="font-bold text-blue-700 text-base">
-              {formatCurrency(summaryData.grandTotal || totalValue, { showCurrencyPrefix: true })}
+              {formatCurrency(
+                summaryData.grandTotal || financialOverview.approvedJobValue || totalValue,
+                { showCurrencyPrefix: true }
+              )}
             </span>
           </div>
           <div>
             <span className="text-slate-400 block text-[11px]">Cost Items Extracted</span>
             <span className="font-bold text-slate-900 text-base">
-              {totalCostItemsCount} items ({categoriesToRender.length} categories)
+              {financialPermissions.canViewOriginalCosts
+                ? `${totalCostItemsCount} items (${categoriesToRender.length} categories)`
+                : "Restricted"}
             </span>
           </div>
           <div>
@@ -666,146 +745,342 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
             <span className="font-bold text-slate-900 text-base">{jobSuppliers.length}</span>
           </div>
           <div>
-            <span className="text-slate-400 block text-[11px]">Vendor Invoices Value</span>
+            <span className="text-slate-400 block text-[11px]">Actual Supplier Invoices</span>
             <span className="font-bold text-slate-900 text-base">
-              {formatCurrency(totalValue, { showCurrencyPrefix: true })}
+              {financialPermissions.canViewActualSupplierCosts
+                ? formatCurrency(financialOverview.totalSupplierCost, {
+                    showCurrencyPrefix: true,
+                  })
+                : "Restricted"}
             </span>
           </div>
         </div>
       </div>
 
       {/* Financial Overview & Budget Utilization Card */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
-        {/* Warning if budget exceeded */}
-        {financialOverview.isBudgetExceeded && (
-          <div className="flex items-start gap-3 p-3.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-800">
-            <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
-            <div className="text-xs space-y-0.5">
-              <span className="font-bold text-rose-900 block">
-                Budget Exceeded: Supplier Expenses Exceed Approved Quotation
-              </span>
-              <p className="text-rose-700">
-                Total supplier costs of <strong>{formatCurrency(financialOverview.totalSupplierCost, { showCurrencyPrefix: true })}</strong> exceed
-                the approved job value of <strong>{formatCurrency(financialOverview.approvedJobValue, { showCurrencyPrefix: true })}</strong> by{" "}
-                <strong className="font-bold underline">{formatCurrency(Math.abs(financialOverview.remainingBudget), { showCurrencyPrefix: true })}</strong>.
-                Budget utilization is at <strong>{financialOverview.costUtilization.toFixed(1)}%</strong>.
-              </p>
+      {!financialPermissions.canViewFinancialSummary ? (
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs flex items-center gap-3 text-xs text-slate-600">
+          <div className="h-9 w-9 rounded-lg bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
+            <Lock className="h-4 w-4" />
+          </div>
+          <div>
+            <span className="font-bold text-slate-800 block">
+              Financial Summary &amp; Profit Analysis Restricted
+            </span>
+            <span className="text-[11px] text-slate-500">
+              Your assigned role does not have permission to view Job cost variances, expenses, or Profit &amp; Loss metrics.
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+          {/* Warning if total actual expenses exceed approved quotation revenue */}
+          {financialOverview.isBudgetExceeded && (
+            <div className="flex items-start gap-3 p-3.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-800">
+              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+              <div className="text-xs space-y-0.5">
+                <span className="font-bold text-rose-900 block">
+                  Revenue Deficit: Total Actual Expenses Exceed Approved Quotation
+                </span>
+                <p className="text-rose-700">
+                  Total actual expenses of{" "}
+                  <strong>
+                    {formatCurrency(financialOverview.totalActualCost, {
+                      showCurrencyPrefix: true,
+                    })}
+                  </strong>{" "}
+                  exceed the approved job revenue of{" "}
+                  <strong>
+                    {formatCurrency(financialOverview.approvedJobValue, {
+                      showCurrencyPrefix: true,
+                    })}
+                  </strong>{" "}
+                  by{" "}
+                  <strong className="font-bold underline">
+                    {formatCurrency(Math.abs(financialOverview.remainingBudget), {
+                      showCurrencyPrefix: true,
+                    })}
+                  </strong>
+                  . Utilization is at{" "}
+                  <strong>{financialOverview.costUtilization.toFixed(1)}%</strong>.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Secondary warning if Supplier Invoice cost exceeds Original Job Cost */}
+          {!financialOverview.isBudgetExceeded &&
+            financialPermissions.canViewOriginalCosts &&
+            financialPermissions.canViewActualSupplierCosts &&
+            financialOverview.costOverrun > 0 && (
+              <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-xs">
+                <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold">Cost Overrun Notice:</span>{" "}
+                  Actual Supplier Invoice costs exceed Original Estimated Job Costs by{" "}
+                  <strong className="font-mono">
+                    {formatCurrency(financialOverview.costOverrun, {
+                      showCurrencyPrefix: true,
+                    })}
+                  </strong>
+                  . Check the Profit &amp; Loss tab for item-level variances.
+                </div>
+              </div>
+            )}
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 pb-3">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-blue-600" />
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                Job Costing, Expenses &amp; Profitability Overview
+              </h3>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {financialPermissions.canCreateAdditionalExpense && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("additional-expenses")}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition-colors cursor-pointer"
+                >
+                  <Receipt className="h-3.5 w-3.5" />
+                  <span>Additional Expenses ({activeAdditionalExpensesCount})</span>
+                </button>
+              )}
+              {can("supplierInvoices", "create") && (
+                <button
+                  type="button"
+                  onClick={() => setIsCreateSupplierInvModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors cursor-pointer shrink-0"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Record Supplier Invoice</span>
+                </button>
+              )}
             </div>
           </div>
-        )}
 
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="h-4 w-4 text-blue-600" />
-            <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-              Financial Overview & Budget Utilization
-            </h3>
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsCreateSupplierInvModalOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors shrink-0"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span>Record Supplier Invoice</span>
-          </button>
-        </div>
+          {/* 8 Financial KPI Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Approved Job Revenue
+              </span>
+              <span className="text-base font-bold text-slate-900 font-mono block mt-1">
+                {formatCurrency(financialOverview.approvedJobValue, {
+                  showCurrencyPrefix: true,
+                })}
+              </span>
+              <span className="text-[10px] text-slate-400">Approved Quotation</span>
+            </div>
 
-        {/* Financial KPI Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
-            <span className="text-[11px] font-medium text-slate-500 block">Approved Job Value</span>
-            <span className="text-base font-bold text-slate-900 font-mono block mt-1">
-              {formatCurrency(financialOverview.approvedJobValue, { showCurrencyPrefix: true })}
-            </span>
-            <span className="text-[10px] text-slate-400">Approved Quotation</span>
-          </div>
-
-          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
-            <span className="text-[11px] font-medium text-slate-500 block">Supplier Invoices Cost</span>
-            <span className="text-base font-bold text-blue-700 font-mono block mt-1">
-              {formatCurrency(financialOverview.totalSupplierCost, { showCurrencyPrefix: true })}
-            </span>
-            <span className="text-[10px] text-slate-400">
-              {financialOverview.supplierInvoicesCount} active invoice{financialOverview.supplierInvoicesCount !== 1 ? "s" : ""}
-            </span>
-          </div>
-
-          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
-            <span className="text-[11px] font-medium text-slate-500 block">Remaining Budget</span>
-            <span
-              className={`text-base font-bold font-mono block mt-1 ${
-                financialOverview.remainingBudget < 0 ? "text-rose-600" : "text-emerald-700"
-              }`}
-            >
-              {formatCurrency(financialOverview.remainingBudget, { showCurrencyPrefix: true })}
-            </span>
-            <span className="text-[10px] text-slate-400">
-              {financialOverview.remainingBudget >= 0 ? "Available balance" : "Over-budget deficit"}
-            </span>
-          </div>
-
-          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
-            <span className="text-[11px] font-medium text-slate-500 block">Gross Profit</span>
-            <span
-              className={`text-base font-bold font-mono block mt-1 ${
-                financialOverview.grossProfit < 0 ? "text-rose-600" : "text-emerald-700"
-              }`}
-            >
-              {formatCurrency(financialOverview.grossProfit, { showCurrencyPrefix: true })}
-            </span>
-            <span className="text-[10px] text-slate-400">Value minus supplier costs</span>
-          </div>
-
-          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
-            <span className="text-[11px] font-medium text-slate-500 block">Profit Margin</span>
-            <div className="flex items-center gap-1.5 mt-1">
-              {financialOverview.profitMargin >= 20 ? (
-                <TrendingUp className="h-4 w-4 text-emerald-600" />
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Original Est. Job Cost
+              </span>
+              {financialPermissions.canViewOriginalCosts ? (
+                <>
+                  <span className="text-base font-bold text-slate-900 font-mono block mt-1">
+                    {formatCurrency(financialOverview.originalEstimatedJobCost, {
+                      showCurrencyPrefix: true,
+                    })}
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    Preserved Excel baseline
+                  </span>
+                </>
               ) : (
-                <TrendingDown className="h-4 w-4 text-rose-500" />
+                <span className="text-xs font-semibold text-slate-400 mt-1.5 flex items-center gap-1">
+                  <Lock className="h-3 w-3" /> Restricted
+                </span>
               )}
+            </div>
+
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Actual Supplier Invoices
+              </span>
+              {financialPermissions.canViewActualSupplierCosts ? (
+                <>
+                  <span className="text-base font-bold text-blue-700 font-mono block mt-1">
+                    {formatCurrency(financialOverview.totalSupplierCost, {
+                      showCurrencyPrefix: true,
+                    })}
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    {financialOverview.supplierInvoicesCount} active invoice
+                    {financialOverview.supplierInvoicesCount !== 1 ? "s" : ""}
+                  </span>
+                </>
+              ) : (
+                <span className="text-xs font-semibold text-slate-400 mt-1.5 flex items-center gap-1">
+                  <Lock className="h-3 w-3" /> Restricted
+                </span>
+              )}
+            </div>
+
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Additional Job Expenses
+              </span>
+              <span className="text-base font-bold text-amber-700 font-mono block mt-1">
+                {formatCurrency(financialOverview.additionalExpensesTotal || 0, {
+                  showCurrencyPrefix: true,
+                })}
+              </span>
+              <span className="text-[10px] text-slate-400">
+                {financialOverview.additionalExpensesCount ??
+                  activeAdditionalExpensesCount}{" "}
+                active non-invoice cost
+                {(financialOverview.additionalExpensesCount ??
+                  activeAdditionalExpensesCount) === 1
+                  ? ""
+                  : "s"}
+              </span>
+            </div>
+
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Total Actual Expenses
+              </span>
+              <span className="text-base font-bold text-slate-900 font-mono block mt-1">
+                {formatCurrency(financialOverview.totalActualCost, {
+                  showCurrencyPrefix: true,
+                })}
+              </span>
+              <span className="text-[10px] text-slate-400">
+                Supplier Invoices + Additional Exp.
+              </span>
+            </div>
+
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Budget Variance (Cost Saving)
+              </span>
+              {!financialPermissions.canViewOriginalCosts ||
+              !financialPermissions.canViewActualSupplierCosts ? (
+                <span className="text-xs font-semibold text-slate-400 mt-1.5 flex items-center gap-1">
+                  <Lock className="h-3 w-3" /> Restricted
+                </span>
+              ) : financialOverview.costDifference > 0 ? (
+                <>
+                  <span className="text-base font-bold font-mono text-emerald-700 block mt-1">
+                    +{formatCurrency(financialOverview.costSaving, { showCurrencyPrefix: true })}
+                  </span>
+                  <span className="text-[10px] text-emerald-600 font-medium">
+                    Saving vs Orig. Job Cost
+                  </span>
+                </>
+              ) : financialOverview.costDifference < 0 ? (
+                <>
+                  <span className="text-base font-bold font-mono text-rose-600 block mt-1">
+                    -{formatCurrency(financialOverview.costOverrun, { showCurrencyPrefix: true })}
+                  </span>
+                  <span className="text-[10px] text-rose-600 font-medium">
+                    Cost Overrun vs Orig. Cost
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-base font-bold font-mono text-slate-700 block mt-1">
+                    Rs. 0.00
+                  </span>
+                  <span className="text-[10px] text-slate-400">On Original Budget</span>
+                </>
+              )}
+            </div>
+
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Gross Profit
+              </span>
               <span
-                className={`text-base font-bold font-mono ${
-                  financialOverview.profitMargin >= 30
-                    ? "text-emerald-600"
-                    : financialOverview.profitMargin >= 10
-                    ? "text-slate-900"
-                    : "text-rose-600"
+                className={`text-base font-bold font-mono block mt-1 ${
+                  financialOverview.grossProfit < 0
+                    ? "text-rose-600"
+                    : "text-emerald-700"
                 }`}
               >
-                {financialOverview.profitMargin.toFixed(1)}%
+                {formatCurrency(financialOverview.grossProfit, {
+                  showCurrencyPrefix: true,
+                })}
+              </span>
+              <span className="text-[10px] text-slate-400">
+                Revenue − Total Actual Exp.
               </span>
             </div>
-            <span className="text-[10px] text-slate-400">Margin ratio</span>
-          </div>
-        </div>
 
-        {/* Budget Utilization Progress Bar */}
-        <div className="space-y-1.5 pt-1">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-600 font-medium">
-              Budget Utilization: <strong className="text-slate-900">{financialOverview.costUtilization.toFixed(1)}%</strong>
-            </span>
-            <span className="text-[11px] text-slate-400">
-              {financialOverview.totalSupplierCost <= financialOverview.approvedJobValue
-                ? `${formatCurrency(financialOverview.remainingBudget, { showCurrencyPrefix: true })} remaining`
-                : `${formatCurrency(Math.abs(financialOverview.remainingBudget), { showCurrencyPrefix: true })} over budget`}
-            </span>
+            <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80">
+              <span className="text-[11px] font-medium text-slate-500 block">
+                Profit Margin &amp; Payables
+              </span>
+              <div className="flex items-center gap-1.5 mt-1">
+                {financialOverview.profitMargin === null ? (
+                  <span className="text-base font-bold font-mono text-slate-500">
+                    N/A
+                  </span>
+                ) : (
+                  <>
+                    {financialOverview.profitMargin >= 20 ? (
+                      <TrendingUp className="h-4 w-4 text-emerald-600" />
+                    ) : (
+                      <TrendingDown className="h-4 w-4 text-rose-500" />
+                    )}
+                    <span
+                      className={`text-base font-bold font-mono ${
+                        financialOverview.profitMargin >= 30
+                          ? "text-emerald-600"
+                          : financialOverview.profitMargin >= 10
+                          ? "text-slate-900"
+                          : "text-rose-600"
+                      }`}
+                    >
+                      {Number(financialOverview.profitMargin).toFixed(2)}%
+                    </span>
+                  </>
+                )}
+              </div>
+              <span className="text-[10px] text-slate-400 block truncate">
+                {financialPermissions.canViewActualSupplierCosts
+                  ? `Paid ${formatCurrency(financialOverview.supplierPaidAmount)} • Due ${formatCurrency(financialOverview.supplierOutstandingBalance)}`
+                  : "Margin ratio"}
+              </span>
+            </div>
           </div>
-          <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all duration-500 rounded-full ${
-                financialOverview.costUtilization > 100
-                  ? "bg-rose-500"
-                  : financialOverview.costUtilization > 80
-                  ? "bg-amber-500"
-                  : "bg-emerald-500"
-              }`}
-              style={{ width: `${Math.min(financialOverview.costUtilization, 100)}%` }}
-            />
+
+          {/* Budget Utilization Progress Bar */}
+          <div className="space-y-1.5 pt-1">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-600 font-medium">
+                Actual Expense Utilization:{" "}
+                <strong className="text-slate-900">
+                  {financialOverview.costUtilization.toFixed(1)}%
+                </strong>
+              </span>
+              <span className="text-[11px] text-slate-400">
+                {financialOverview.totalActualCost <= financialOverview.approvedJobValue
+                  ? `${formatCurrency(financialOverview.remainingBudget, {
+                      showCurrencyPrefix: true,
+                    })} revenue buffer remaining`
+                  : `${formatCurrency(Math.abs(financialOverview.remainingBudget), {
+                      showCurrencyPrefix: true,
+                    })} over approved revenue`}
+              </span>
+            </div>
+            <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className={`h-full transition-all duration-500 rounded-full ${
+                  financialOverview.costUtilization > 100
+                    ? "bg-rose-500"
+                    : financialOverview.costUtilization > 80
+                    ? "bg-amber-500"
+                    : "bg-emerald-500"
+                }`}
+                style={{
+                  width: `${Math.min(financialOverview.costUtilization, 100)}%`,
+                }}
+              />
+            </div>
           </div>
-        </div>
 
         {/* Purchase Order Commitments Strip (Separate from Actual Supplier Cost / Gross Profit) */}
         {canViewPos && (
@@ -904,7 +1179,8 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
             </div>
           </div>
         )}
-      </div>
+        </div>
+      )}
 
       {/* Navigation Tabs */}
       <div className="border-b border-slate-200">
@@ -919,7 +1195,66 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
             }`}
           >
             <FileSpreadsheet className="h-3.5 w-3.5" />
-            <span>1. Quotation & Cost Breakdown ({totalCostItemsCount})</span>
+            <span>A. Cost Budget ({totalCostItemsCount})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("invoices")}
+            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer ${
+              activeTab === "invoices"
+                ? "border-[#2563EB] text-[#2563EB]"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            <span>B. Supplier Invoices ({(currentJob.supplierInvoices || []).length})</span>
+          </button>
+
+          {(financialPermissions.canViewFinancialSummary ||
+            financialPermissions.canCreateAdditionalExpense ||
+            financialPermissions.canEditAdditionalExpense ||
+            financialPermissions.canCancelAdditionalExpense) && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("additional-expenses")}
+              className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                activeTab === "additional-expenses"
+                  ? "border-[#2563EB] text-[#2563EB]"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Receipt className="h-3.5 w-3.5" />
+              <span>C. Additional Expenses ({activeAdditionalExpensesCount})</span>
+            </button>
+          )}
+
+          {financialPermissions.canViewFinancialSummary && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("profit-loss")}
+              className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                activeTab === "profit-loss"
+                  ? "border-[#2563EB] text-[#2563EB]"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              <span>D. Profit &amp; Loss</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("payment-summary")}
+            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer ${
+              activeTab === "payment-summary"
+                ? "border-[#2563EB] text-[#2563EB]"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <CreditCard className="h-3.5 w-3.5" />
+            <span>E. Payment Summary ({totalPaymentsLedgerCount})</span>
           </button>
 
           <button
@@ -931,7 +1266,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                 : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
           >
-            2. Attached Documents ({jobExcelFiles.length})
+            Documents ({jobExcelFiles.length})
           </button>
 
           <button
@@ -943,19 +1278,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                 : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
           >
-            3. Assigned Suppliers ({jobSuppliers.length})
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("invoices")}
-            className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors shrink-0 cursor-pointer ${
-              activeTab === "invoices"
-                ? "border-[#2563EB] text-[#2563EB]"
-                : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            4. Supplier Invoices & Actual Expenses ({(currentJob.supplierInvoices || []).length})
+            Suppliers ({jobSuppliers.length})
           </button>
 
           {canViewPos && (
@@ -969,14 +1292,25 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
               }`}
             >
               <ShoppingCart className="h-3.5 w-3.5" />
-              <span>5. Purchase Orders ({(currentJob.purchaseOrders || []).length})</span>
+              <span>Purchase Orders ({(currentJob.purchaseOrders || []).length})</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* ================= TAB 0: QUOTATION & DYNAMIC COST BREAKDOWN ================= */}
+      {/* ================= TAB A: COST BUDGET (QUOTATION & DYNAMIC COST BREAKDOWN) ================= */}
       {activeTab === "breakdown" && (
+        !financialPermissions.canViewOriginalCosts ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-8 text-center space-y-2 shadow-2xs">
+            <Lock className="h-9 w-9 text-slate-400 mx-auto" />
+            <h3 className="text-sm font-bold text-slate-900">
+              Original Cost Breakdown Restricted
+            </h3>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              Your role does not have permission to view original estimated job cost line items.
+            </p>
+          </div>
+        ) : (
         <div className="space-y-5">
           {/* Detailed Quotation Document Box */}
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
@@ -984,17 +1318,19 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
               <div className="flex items-center gap-2">
                 <FileSpreadsheet className="h-4 w-4 text-blue-600" />
                 <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                  Detailed Cost Breakdown Schedule
+                  Detailed Cost Breakdown Schedule (Original Saved Budget)
                 </h3>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsEditCostModalOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
-              >
-                <Edit2 className="h-3 w-3 text-slate-500" />
-                <span>Edit Costs</span>
-              </button>
+              {can("jobs", "edit") && (
+                <button
+                  type="button"
+                  onClick={() => setIsEditCostModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+                >
+                  <Edit2 className="h-3 w-3 text-slate-500" />
+                  <span>Edit Costs</span>
+                </button>
+              )}
             </div>
 
             <div className="overflow-x-auto">
@@ -1165,6 +1501,7 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
             </div>
           </div>
         </div>
+        )
       )}
 
       {/* ================= TAB 1: EXCEL UPLOAD ================= */}
@@ -1423,20 +1760,20 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
         </div>
       )}
 
-      {/* ================= TAB 4: SUPPLIER INVOICES & ACTUAL EXPENSES ================= */}
+      {/* ================= TAB B: SUPPLIER INVOICES ================= */}
       {activeTab === "invoices" && (
         <div className="space-y-5">
           {/* Section Header & Action Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
             <div>
               <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <span>Supplier Invoices & Actual Incurred Expenses</span>
+                <span>Supplier Invoices &amp; Payable Tracking</span>
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
                   {(currentJob.supplierInvoices || []).length} recorded
                 </span>
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Record actual supplier bills and PDF quotation attachments against this job without altering the approved quotation.
+                Actual supplier bills linked to saved job cost lines, payment due dates, settled amounts, and outstanding balances.
               </p>
             </div>
 
@@ -1452,183 +1789,350 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
                 />
               </div>
 
-              <button
-                type="button"
-                onClick={() => setIsCreateSupplierInvModalOpen(true)}
-                className="inline-flex items-center gap-1.5 h-8 rounded-lg bg-blue-600 px-3.5 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>Record Supplier Invoice</span>
-              </button>
+              {can("supplierInvoices", "create") && (
+                <button
+                  type="button"
+                  onClick={() => setIsCreateSupplierInvModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 h-8 rounded-lg bg-blue-600 px-3.5 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Record Supplier Invoice</span>
+                </button>
+              )}
 
               <button
                 type="button"
                 onClick={() => setIsBulkInvoiceOpen(true)}
-                className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors"
+                className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors cursor-pointer"
                 title="Bulk upload legacy photos or receipts"
               >
                 <Upload className="h-3.5 w-3.5 text-slate-500" />
-                <span>Upload Photos / Vouchers</span>
+                <span>Upload Vouchers</span>
               </button>
             </div>
           </div>
 
           {/* Supplier Invoices Table */}
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
-            {filteredSupplierInvoices.length === 0 ? (
-              <div className="p-10 text-center space-y-3">
-                <div className="h-12 w-12 rounded-full bg-blue-50 text-blue-600 mx-auto flex items-center justify-center">
-                  <FileText className="h-6 w-6" />
-                </div>
-                <div className="space-y-1">
-                  <h4 className="text-sm font-semibold text-slate-800">
-                    {supplierInvSearch ? "No matching supplier invoices found" : "No supplier invoices recorded for this job yet"}
-                  </h4>
-                  <p className="text-xs text-slate-500 max-w-md mx-auto">
-                    {supplierInvSearch
-                      ? `No invoices match "${supplierInvSearch}". Try clearing your search term.`
-                      : "Attach actual supplier invoices, multiple PDF quotation vouchers, and itemized descriptions to track cost utilization and profitability."}
-                  </p>
-                </div>
-                {!supplierInvSearch && (
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => setIsCreateSupplierInvModalOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors"
-                    >
-                      <Plus className="h-4 w-4" />
-                      <span>Record First Supplier Invoice</span>
-                    </button>
+          {!financialPermissions.canViewActualSupplierCosts && !can("supplierInvoices", "view") ? (
+            <div className="bg-white rounded-xl border border-slate-200 p-8 text-center space-y-2 shadow-2xs">
+              <Lock className="h-9 w-9 text-slate-400 mx-auto" />
+              <h4 className="text-sm font-bold text-slate-900">Supplier Invoices Restricted</h4>
+              <p className="text-xs text-slate-500">
+                Your role does not permit viewing supplier invoice costs.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
+              {filteredSupplierInvoices.length === 0 ? (
+                <div className="p-10 text-center space-y-3">
+                  <div className="h-12 w-12 rounded-full bg-blue-50 text-blue-600 mx-auto flex items-center justify-center">
+                    <FileText className="h-6 w-6" />
                   </div>
-                )}
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
-                    <tr>
-                      <th className="px-5 py-3">Invoice Number</th>
-                      <th className="px-4 py-3">Supplier</th>
-                      <th className="px-4 py-3">Invoice Date</th>
-                      <th className="px-4 py-3">Items / Vouchers</th>
-                      <th className="px-4 py-3">Attachments</th>
-                      <th className="px-4 py-3 text-right">Incurred Cost (Rs.)</th>
-                      <th className="px-4 py-3 text-center">Status</th>
-                      <th className="px-4 py-3">Recorded By</th>
-                      <th className="px-5 py-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredSupplierInvoices.map((inv) => {
-                      const isCancelled = inv.status === "CANCELLED";
-                      const totalAttachmentsCount =
-                        (inv.attachments?.length || 0) +
-                        (inv.items || []).reduce((sum, item) => sum + (item.attachments?.length || 0), 0);
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-semibold text-slate-800">
+                      {supplierInvSearch
+                        ? "No matching supplier invoices found"
+                        : "No supplier invoices recorded for this job yet"}
+                    </h4>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                      {supplierInvSearch
+                        ? `No invoices match "${supplierInvSearch}". Try clearing your search term.`
+                        : "Record actual supplier invoices against this job's saved Excel cost lines to track cost savings, payables, and Job P&L."}
+                    </p>
+                  </div>
+                  {!supplierInvSearch && can("supplierInvoices", "create") && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setIsCreateSupplierInvModalOpen(true)}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700 shadow-2xs transition-colors"
+                      >
+                        <Plus className="h-4 w-4" />
+                        <span>Record First Supplier Invoice</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
+                      <tr>
+                        <th className="px-4 py-3">Invoice #</th>
+                        <th className="px-3.5 py-3">Supplier</th>
+                        <th className="px-3.5 py-3">Dates &amp; Due Countdown</th>
+                        <th className="px-3.5 py-3">Items</th>
+                        <th className="px-3.5 py-3 text-right">Invoice Total</th>
+                        <th className="px-3.5 py-3 text-right">Paid</th>
+                        <th className="px-3.5 py-3 text-right">Outstanding</th>
+                        <th className="px-3.5 py-3 text-center">Pay Status</th>
+                        <th className="px-4 py-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredSupplierInvoices.map((inv) => {
+                        const isCancelled = inv.status === "CANCELLED";
+                        const totalAttachmentsCount =
+                          (inv.attachments?.length || 0) +
+                          (inv.items || []).reduce(
+                            (sum, item) => sum + (item.attachments?.length || 0),
+                            0
+                          );
+                        const paidAmt = Number(inv.paidAmount ?? 0);
+                        const outstandingAmt = Number(
+                          inv.outstandingBalance ??
+                            Math.max(0, Number(inv.totalAmount || 0) - paidAmt)
+                        );
+                        const payStatus = inv.paymentStatus || inv.status;
 
-                      return (
-                        <tr
-                          key={inv.id}
-                          className={`hover:bg-slate-50/70 transition-colors ${
-                            isCancelled ? "bg-slate-50/60 opacity-60" : ""
-                          }`}
-                        >
-                          <td className="px-5 py-3 font-mono font-bold text-slate-900">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedSupplierInvoiceId(inv.id)}
-                              className="text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 text-left"
-                            >
-                              <span>{inv.invoiceNumber}</span>
-                              <ExternalLink className="h-3 w-3 opacity-60" />
-                            </button>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="font-semibold text-slate-900">{inv.supplierName || "—"}</div>
-                            {inv.supplierCode && (
-                              <span className="text-[10px] font-mono font-medium text-slate-400">
-                                {inv.supplierCode}
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600 font-mono whitespace-nowrap">
-                            {inv.invoiceDate}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="text-slate-800 font-medium">
-                              {(inv.items || []).length} item{(inv.items || []).length !== 1 ? "s" : ""}
-                            </div>
-                            {inv.items && inv.items.length > 0 && (
-                              <div className="text-[11px] text-slate-500 truncate max-w-xs" title={inv.items.map((i) => i.description).join(", ")}>
-                                {inv.items.map((i) => i.description).join(", ")}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            {totalAttachmentsCount > 0 ? (
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-semibold">
-                                  <FileText className="h-3 w-3" />
-                                  <span>{totalAttachmentsCount} File{totalAttachmentsCount !== 1 ? "s" : ""}</span>
+                        return (
+                          <tr
+                            key={inv.id}
+                            className={`hover:bg-slate-50/70 transition-colors ${
+                              isCancelled ? "bg-slate-50/60 opacity-60" : ""
+                            }`}
+                          >
+                            <td className="px-4 py-3 font-mono font-bold text-slate-900">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSelectedSupplierInvoiceModal({
+                                    id: inv.id,
+                                    initialTab: "items",
+                                  })
+                                }
+                                className="text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 text-left cursor-pointer"
+                              >
+                                <span>{inv.invoiceNumber}</span>
+                                <ExternalLink className="h-3 w-3 opacity-60" />
+                              </button>
+                              {totalAttachmentsCount > 0 && (
+                                <span className="text-[10px] font-sans font-normal text-slate-500 block mt-0.5">
+                                  {totalAttachmentsCount} attachment
+                                  {totalAttachmentsCount === 1 ? "" : "s"}
                                 </span>
-                                {(inv.attachments || []).slice(0, 1).map((att) => (
-                                  <a
-                                    key={att.id}
-                                    href={att.fileUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-[10px] text-blue-600 hover:underline truncate max-w-[100px]"
-                                    title={`Open ${att.fileName}`}
-                                  >
-                                    {att.fileName}
-                                  </a>
-                                ))}
+                              )}
+                            </td>
+
+                            <td className="px-3.5 py-3">
+                              <div className="font-semibold text-slate-900">
+                                {inv.supplierName || "—"}
                               </div>
-                            ) : (
-                              <span className="text-slate-400 text-[11px]">No PDF attached</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono font-bold">
-                            <span className={isCancelled ? "line-through text-slate-400" : "text-slate-900"}>
-                              {formatCurrency(inv.totalAmount, { showCurrencyPrefix: true })}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <StatusBadge status={inv.status} />
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">
-                            <span className="block font-medium text-slate-800">{inv.createdByName || "Admin"}</span>
-                            <span className="block text-[10px] text-slate-400 font-mono">{inv.createdAt}</span>
-                          </td>
-                          <td className="px-5 py-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedSupplierInvoiceId(inv.id)}
-                                className="p-1 rounded text-slate-400 hover:text-blue-600 hover:bg-slate-100 transition-colors"
-                                title="View invoice details and audit trail"
+                              {inv.supplierCode && (
+                                <span className="text-[10px] font-mono font-medium text-slate-400">
+                                  {inv.supplierCode}
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="px-3.5 py-3 whitespace-nowrap">
+                              <div className="font-mono text-slate-700">
+                                Inv: {inv.invoiceDate}
+                              </div>
+                              {inv.paymentDueDate && (
+                                <div className="text-[10px] font-mono text-slate-500 mt-0.5">
+                                  Due: {inv.paymentDueDate}
+                                </div>
+                              )}
+                              {!isCancelled && inv.countdown && (
+                                <span
+                                  className={`inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold ${
+                                    inv.countdown.severity === "overdue"
+                                      ? "bg-rose-100 text-rose-700"
+                                      : inv.countdown.severity === "warning"
+                                      ? "bg-amber-100 text-amber-800"
+                                      : inv.countdown.severity === "paid"
+                                      ? "bg-emerald-100 text-emerald-700"
+                                      : "bg-slate-100 text-slate-600"
+                                  }`}
+                                >
+                                  {inv.countdown.label}
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="px-3.5 py-3">
+                              <div className="text-slate-800 font-medium">
+                                {(inv.items || []).length} item
+                                {(inv.items || []).length !== 1 ? "s" : ""}
+                              </div>
+                              {inv.items && inv.items.length > 0 && (
+                                <div
+                                  className="text-[11px] text-slate-500 truncate max-w-[190px]"
+                                  title={inv.items.map((i) => i.description).join(", ")}
+                                >
+                                  {inv.items.map((i) => i.description).join(", ")}
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="px-3.5 py-3 text-right font-mono font-bold whitespace-nowrap">
+                              <span
+                                className={
+                                  isCancelled
+                                    ? "line-through text-slate-400"
+                                    : "text-slate-900"
+                                }
                               >
-                                <Eye className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => downloadSingleInvoiceZip(inv)}
-                                className="p-1 rounded text-slate-400 hover:text-emerald-600 hover:bg-slate-100 transition-colors"
-                                title="Download invoice PDFs archive (.zip)"
-                              >
-                                <Download className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                                {financialPermissions.canViewActualSupplierCosts
+                                  ? formatCurrency(inv.totalAmount, {
+                                      showCurrencyPrefix: true,
+                                    })
+                                  : "Restricted"}
+                              </span>
+                            </td>
+
+                            <td className="px-3.5 py-3 text-right font-mono text-emerald-700 font-semibold whitespace-nowrap">
+                              {financialPermissions.canViewActualSupplierCosts
+                                ? formatCurrency(paidAmt)
+                                : "—"}
+                            </td>
+
+                            <td className="px-3.5 py-3 text-right font-mono whitespace-nowrap">
+                              {financialPermissions.canViewActualSupplierCosts ? (
+                                <span
+                                  className={`font-bold ${
+                                    isCancelled
+                                      ? "text-slate-400"
+                                      : outstandingAmt > 0
+                                      ? "text-amber-700"
+                                      : "text-emerald-700"
+                                  }`}
+                                >
+                                  {formatCurrency(outstandingAmt)}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+
+                            <td className="px-3.5 py-3 text-center whitespace-nowrap">
+                              <StatusBadge status={isCancelled ? "CANCELLED" : payStatus} />
+                            </td>
+
+                            <td className="px-4 py-3 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedSupplierInvoiceModal({
+                                      id: inv.id,
+                                      initialTab: "items",
+                                    })
+                                  }
+                                  className="p-1 rounded text-slate-400 hover:text-blue-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                                  title="View invoice details & line items"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                                {!isCancelled &&
+                                  outstandingAmt > 0 &&
+                                  can("supplierPayments", "create") && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSelectedSupplierInvoiceModal({
+                                          id: inv.id,
+                                          initialTab: "payments",
+                                        })
+                                      }
+                                      className="p-1 rounded text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"
+                                      title="Record partial or full supplier payment"
+                                    >
+                                      <CreditCard className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                {!isCancelled && can("supplierInvoices", "edit") && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingSupplierInvoice(inv)}
+                                    className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
+                                    title="Edit supplier invoice"
+                                  >
+                                    <Edit2 className="h-4 w-4" />
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => downloadSingleInvoiceZip(inv)}
+                                  className="p-1 rounded text-slate-400 hover:text-emerald-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                                  title="Download invoice PDFs archive (.zip)"
+                                >
+                                  <Download className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+      )}
+
+      {/* ================= TAB C: ADDITIONAL JOB EXPENSES ================= */}
+      {activeTab === "additional-expenses" && (
+        <JobAdditionalExpensesTab
+          job={currentJob}
+          expenses={currentJob.additionalExpenses || []}
+          suppliers={suppliers}
+          permissions={{
+            canCreateAdditionalExpense:
+              financialPermissions.canCreateAdditionalExpense,
+            canEditAdditionalExpense:
+              financialPermissions.canEditAdditionalExpense,
+            canCancelAdditionalExpense:
+              financialPermissions.canCancelAdditionalExpense,
+          }}
+          onRefresh={() => {
+            void fetchFullJob();
+            refreshJobs?.();
+          }}
+          onPreviewAttachment={(att) => setPreviewAttachment(att)}
+        />
+      )}
+
+      {/* ================= TAB D: PROFIT & LOSS & COST COMPARISON ================= */}
+      {activeTab === "profit-loss" && (
+        <JobProfitLossTab
+          overview={financialOverview}
+          comparison={currentJob.costComparison}
+          permissions={{
+            canViewFinancialSummary:
+              financialPermissions.canViewFinancialSummary,
+            canViewOriginalCosts: financialPermissions.canViewOriginalCosts,
+            canViewActualSupplierCosts:
+              financialPermissions.canViewActualSupplierCosts,
+          }}
+          onOpenSupplierInvoice={(invId) =>
+            setSelectedSupplierInvoiceModal({
+              id: invId,
+              initialTab: "items",
+            })
+          }
+        />
+      )}
+
+      {/* ================= TAB E: PAYMENT SUMMARY ================= */}
+      {activeTab === "payment-summary" && (
+        <JobPaymentSummaryTab
+          job={currentJob}
+          overview={financialOverview}
+          canViewActualSupplierCosts={
+            financialPermissions.canViewActualSupplierCosts
+          }
+          onOpenSupplierInvoicePayments={(invId) =>
+            setSelectedSupplierInvoiceModal({
+              id: invId,
+              initialTab: "payments",
+            })
+          }
+          onPreviewAttachment={(att) => setPreviewAttachment(att)}
+        />
       )}
 
       {/* ================= TAB 5: PURCHASE ORDERS FOR THIS JOB ================= */}
@@ -2131,17 +2635,48 @@ export function JobDetailsView({ jobId }: JobDetailsViewProps) {
       />
 
       {/* View Supplier Invoice Modal */}
-      {selectedSupplierInvoiceId && (
+      {selectedSupplierInvoiceModal && (
         <ViewSupplierInvoiceModal
           isOpen={true}
-          onClose={() => setSelectedSupplierInvoiceId(null)}
-          invoiceId={selectedSupplierInvoiceId}
+          onClose={() => setSelectedSupplierInvoiceModal(null)}
+          invoiceId={selectedSupplierInvoiceModal.id}
+          initialTab={selectedSupplierInvoiceModal.initialTab}
+          onEditInvoice={(inv) => {
+            setSelectedSupplierInvoiceModal(null);
+            setEditingSupplierInvoice(inv);
+          }}
           onStatusChange={() => {
-            fetchFullJob();
+            void fetchFullJob();
+            refreshJobs?.();
+          }}
+          onPaymentUpdated={() => {
+            void fetchFullJob();
             refreshJobs?.();
           }}
         />
       )}
+
+      {/* Edit Supplier Invoice Modal */}
+      {editingSupplierInvoice && (
+        <EditSupplierInvoiceModal
+          isOpen={true}
+          onClose={() => setEditingSupplierInvoice(null)}
+          invoice={editingSupplierInvoice}
+          invoiceId={editingSupplierInvoice.id}
+          onSuccess={() => {
+            setEditingSupplierInvoice(null);
+            void fetchFullJob();
+            refreshJobs?.();
+          }}
+        />
+      )}
+
+      {/* Shared Attachment Preview Modal for Additional Expense & Payment Receipts */}
+      <AttachmentPreviewModal
+        isOpen={Boolean(previewAttachment)}
+        onClose={() => setPreviewAttachment(null)}
+        attachment={previewAttachment}
+      />
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import { Decimal } from "decimal.js";
+import { Decimal, roundFinancial, toDecimal } from "@/lib/financial";
 import { logAuditEvent } from "@/lib/audit";
 import { validateAttachmentBuffer, MAX_ATTACHMENT_SIZE_BYTES } from "@/lib/file-validation";
 import {
@@ -15,6 +15,34 @@ import { checkSessionPermission } from "@/lib/permissions";
 import { canUserAccessRecord } from "@/lib/data-visibility";
 import { PO_ELIGIBLE_FOR_INVOICE_STATUSES } from "@/lib/po-financial";
 import { syncPurchaseOrderInvoicedTotalsTx } from "@/lib/po-helpers";
+import {
+  canAccessJobForSupplierInvoice,
+  isJobEligibleForSupplierInvoice,
+  validateAndNormalizeSupplierInvoiceItems,
+  RawSupplierInvoiceItemInput,
+} from "@/lib/supplier-invoice-helpers";
+import {
+  addCalendarDays,
+  diffCalendarDays,
+  parseDateKeyToUtcMidnight,
+  toDateKey,
+} from "@/lib/supplier-payment-date";
+import {
+  enrichInvoiceWithPaymentSummary,
+  serializeSupplierPayment,
+  syncInvoicePaymentStateTx,
+} from "@/lib/supplier-payment-helpers";
+import { getOrCreateSupplierPaymentSettings } from "@/lib/supplier-payment-notifications";
+
+class HttpValidationError extends Error {
+  status: number;
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
 
 // GET /api/supplier-invoices/[id]
 export async function GET(
@@ -30,8 +58,9 @@ export async function GET(
       );
     }
 
-    const isAuthorized = await checkSessionPermission(session, "supplierInvoices", "view");
-    if (!isAuthorized) {
+    const canViewInvoice = await checkSessionPermission(session, "supplierInvoices", "view");
+    const canViewPayment = await checkSessionPermission(session, "supplierPayments", "view");
+    if (!canViewInvoice && !canViewPayment) {
       return NextResponse.json(
         { success: false, error: "Forbidden: You do not have permission to view this supplier invoice." },
         { status: 403 }
@@ -40,6 +69,7 @@ export async function GET(
 
     const { id } = await params;
     const db = getPrisma();
+    const paymentSettings = await getOrCreateSupplierPaymentSettings(db);
     const invoice = await (db.supplierInvoice as any).findFirst({
       where: { id, deletedAt: null },
       include: {
@@ -73,6 +103,24 @@ export async function GET(
           },
         },
         attachments: true,
+        payments: {
+          orderBy: { paymentDate: "desc" },
+          include: {
+            createdBy: { select: { id: true, name: true } },
+            updatedBy: { select: { id: true, name: true } },
+            reversedBy: { select: { id: true, name: true } },
+            auditLogs: {
+              orderBy: { createdAt: "desc" },
+              include: { user: { select: { id: true, name: true } } },
+            },
+          },
+        },
+        paymentAuditLogs: {
+          orderBy: { createdAt: "desc" },
+          include: {
+            user: { select: { id: true, name: true } },
+          },
+        },
         createdBy: {
           select: { id: true, name: true, email: true },
         },
@@ -98,8 +146,13 @@ export async function GET(
       );
     }
 
-    // Verify record visibility scope
-    const accessCheck = await canUserAccessRecord(session, "supplierInvoices", invoice.createdById, "view");
+    // Verify record visibility scope (try supplierInvoices first if allowed, otherwise supplierPayments)
+    let accessCheck = canViewInvoice
+      ? await canUserAccessRecord(session, "supplierInvoices", invoice.createdById, "view")
+      : { allowed: false, reason: "" };
+    if (!accessCheck.allowed && canViewPayment) {
+      accessCheck = await canUserAccessRecord(session, "supplierPayments", invoice.createdById, "view");
+    }
     if (!accessCheck.allowed) {
       return NextResponse.json(
         { success: false, error: accessCheck.reason || "Supplier invoice not found." },
@@ -117,12 +170,17 @@ export async function GET(
       select: { totalAmount: true },
     });
 
-    const approvedJobValue = Number(invoice.job?.grandTotal || invoice.job?.totalCost || 0);
-    const totalJobSupplierCost = allJobInvoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.totalAmount || 0),
-      0
+    const approvedJobValueDec = roundFinancial(invoice.job?.grandTotal || invoice.job?.totalCost || 0, 2);
+    const totalJobSupplierCostDec = roundFinancial(
+      allJobInvoices.reduce(
+        (sum: Decimal, inv: any) => sum.plus(toDecimal(inv.totalAmount)),
+        new Decimal(0)
+      ),
+      2
     );
-    const remainingJobBudget = approvedJobValue - totalJobSupplierCost;
+    const approvedJobValue = approvedJobValueDec.toNumber();
+    const totalJobSupplierCost = totalJobSupplierCostDec.toNumber();
+    const remainingJobBudget = roundFinancial(approvedJobValueDec.minus(totalJobSupplierCostDec), 2).toNumber();
 
     return NextResponse.json({
       success: true,
@@ -139,10 +197,36 @@ export async function GET(
         approvedJobValue,
         totalJobSupplierCost,
         remainingJobBudget,
-        invoiceDate: invoice.invoiceDate ? new Date(invoice.invoiceDate).toISOString().split("T")[0] : "",
+        invoiceDate: toDateKey(invoice.invoiceDate) || "",
+        ...enrichInvoiceWithPaymentSummary(invoice, paymentSettings.timezone),
         totalAmount: Number(invoice.totalAmount || 0),
         status: invoice.status,
         notes: invoice.notes || "",
+        payments: (invoice.payments || []).map((p: any) =>
+          serializeSupplierPayment(
+            {
+              ...p,
+              supplierInvoice: invoice,
+              supplier: invoice.supplier,
+              job: invoice.job,
+            },
+            paymentSettings.timezone
+          )
+        ),
+        paymentAuditLogs: (invoice.paymentAuditLogs || []).map((log: any) => ({
+          id: log.id,
+          paymentId: log.paymentId || null,
+          invoiceId: log.invoiceId || null,
+          userId: log.userId || null,
+          userName: log.user?.name || "System",
+          action: log.action,
+          reason: log.reason || null,
+          previousData: log.previousData,
+          newData: log.newData,
+          createdAt: new Date(log.createdAt).toISOString(),
+        })),
+        budgetOverrideUsed: Boolean(invoice.budgetOverrideUsed),
+        budgetOverrideReason: invoice.budgetOverrideReason || null,
         cancellationReason: invoice.cancellationReason || null,
         cancelledAt: invoice.cancelledAt ? new Date(invoice.cancelledAt).toISOString() : null,
         cancelledBy: invoice.cancelledBy,
@@ -156,9 +240,17 @@ export async function GET(
           id: item.id,
           rowNumber: item.rowNumber,
           purchaseOrderItemId: item.purchaseOrderItemId || null,
+          jobCostCategoryId: item.jobCostCategoryId || null,
+          jobCostCategoryName: item.jobCostCategoryName || null,
+          jobCostItemId: item.jobCostItemId || null,
           description: item.description,
+          originalJobAmount: item.originalJobAmount != null ? Number(item.originalJobAmount) : null,
           quantity: item.quantity != null ? Number(item.quantity) : undefined,
+          unit: item.unit || null,
+          unitRate: item.unitRate != null ? Number(item.unitRate) : null,
           amount: Number(item.amount || 0),
+          isAdditionalItem: Boolean(item.isAdditionalItem),
+          budgetOverrideReason: item.budgetOverrideReason || null,
           notes: item.notes || "",
           attachments: (item.attachments || []).map((att: any) => ({
             id: att.id,
@@ -295,21 +387,19 @@ export async function PUT(
     let jobId = existingInvoice.jobId;
     let purchaseOrderId: string | null = existingInvoice.purchaseOrderId || null;
     let invoiceNumber = existingInvoice.invoiceNumber;
-    let invoiceDate = existingInvoice.invoiceDate
-      ? new Date(existingInvoice.invoiceDate).toISOString().split("T")[0]
-      : new Date().toISOString().split("T")[0];
+    let invoiceDate =
+      toDateKey(existingInvoice.invoiceDate) || new Date().toISOString().split("T")[0];
+    let paymentDueDateInput =
+      toDateKey(existingInvoice.paymentDueDate) || invoiceDate;
+    let hasPaymentDueDateInput = false;
+    let paymentTerms: string | null = existingInvoice.paymentTerms ?? null;
+    let creditPeriodDaysInput: number | null =
+      existingInvoice.creditPeriodDays != null ? Number(existingInvoice.creditPeriodDays) : null;
     let notes = existingInvoice.notes || "";
     let reason = "";
+    let budgetOverrideReason = existingInvoice.budgetOverrideReason || "";
     let poOverInvoiceOverride = false;
-    let parsedItems: Array<{
-      id?: string;
-      purchaseOrderItemId?: string | null;
-      description: string;
-      quantity?: number | null;
-      amount: number | string;
-      notes?: string;
-      keepAttachmentIds?: string[];
-    }> = [];
+    let parsedItems: (RawSupplierInvoiceItemInput & { keepAttachmentIds?: string[] })[] = [];
     let deletedAttachmentIds: string[] = [];
 
     interface RowAttachmentUpload {
@@ -320,6 +410,18 @@ export async function PUT(
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
+      if (
+        String(formData.get("status") || "").toUpperCase() === "PAID" ||
+        String(formData.get("paymentStatus") || "").toUpperCase() === "PAID"
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Payment Status cannot be manually set to PAID. Please record a real payment instead.",
+          },
+          { status: 400 }
+        );
+      }
       supplierId = (formData.get("supplierId") as string) || supplierId;
       jobId = (formData.get("jobId") as string) || jobId;
       if (formData.has("purchaseOrderId")) {
@@ -327,9 +429,35 @@ export async function PUT(
         purchaseOrderId = rawPoId.trim() || null;
       }
       invoiceNumber = (formData.get("invoiceNumber") as string)?.trim() || invoiceNumber;
-      invoiceDate = (formData.get("invoiceDate") as string) || invoiceDate;
+      invoiceDate = (formData.get("invoiceDate") as string)?.trim() || invoiceDate;
+      if (formData.has("paymentDueDate")) {
+        hasPaymentDueDateInput = true;
+        paymentDueDateInput = (formData.get("paymentDueDate") as string)?.trim() || "";
+      }
+      if (formData.has("paymentTerms")) {
+        const rawTerms = (formData.get("paymentTerms") as string)?.trim();
+        paymentTerms = rawTerms ? rawTerms : null;
+      }
+      if (formData.has("creditPeriodDays")) {
+        const rawDays = (formData.get("creditPeriodDays") as string)?.trim();
+        if (rawDays === "") {
+          creditPeriodDaysInput = null;
+        } else {
+          const parsedDays = Number(rawDays);
+          if (!Number.isInteger(parsedDays) || parsedDays < 0 || parsedDays > 3650) {
+            return NextResponse.json(
+              { success: false, error: "Credit Period / Payment Within days must be an integer between 0 and 3650." },
+              { status: 400 }
+            );
+          }
+          creditPeriodDaysInput = parsedDays;
+        }
+      }
       notes = (formData.get("notes") as string) ?? notes;
       reason = (formData.get("reason") as string)?.trim() || "";
+      if (formData.has("budgetOverrideReason")) {
+        budgetOverrideReason = (formData.get("budgetOverrideReason") as string)?.trim() || "";
+      }
       poOverInvoiceOverride = formData.get("poOverInvoiceOverride") === "true";
 
       const rawItems = formData.get("items") as string;
@@ -369,6 +497,17 @@ export async function PUT(
           if (f instanceof File && f.size > 0 && !rowFiles.includes(f)) rowFiles.push(f);
         });
 
+        let subIndex = 0;
+        while (formData.has(`file_${i}_${subIndex}`) || formData.has(`files_${i}_${subIndex}`)) {
+          const subFile =
+            (formData.get(`file_${i}_${subIndex}`) as File) ||
+            (formData.get(`files_${i}_${subIndex}`) as File);
+          if (subFile instanceof File && subFile.size > 0 && !rowFiles.includes(subFile)) {
+            rowFiles.push(subFile);
+          }
+          subIndex++;
+        }
+
         rowFiles.forEach((file) => {
           filesToUpload.push({ itemIndex: i, file });
         });
@@ -376,6 +515,18 @@ export async function PUT(
     } else {
       // JSON payload
       const body = await req.json();
+      if (
+        String(body.status || "").toUpperCase() === "PAID" ||
+        String(body.paymentStatus || "").toUpperCase() === "PAID"
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Payment Status cannot be manually set to PAID. Please record a real payment instead.",
+          },
+          { status: 400 }
+        );
+      }
       supplierId = body.supplierId || supplierId;
       jobId = body.jobId || jobId;
       if (Object.prototype.hasOwnProperty.call(body, "purchaseOrderId")) {
@@ -385,12 +536,86 @@ export async function PUT(
             : null;
       }
       invoiceNumber = body.invoiceNumber?.trim() || invoiceNumber;
-      invoiceDate = body.invoiceDate || invoiceDate;
+      invoiceDate = body.invoiceDate ? String(body.invoiceDate).trim() : invoiceDate;
+      if (Object.prototype.hasOwnProperty.call(body, "paymentDueDate")) {
+        hasPaymentDueDateInput = true;
+        paymentDueDateInput = body.paymentDueDate ? String(body.paymentDueDate).trim() : "";
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "paymentTerms")) {
+        paymentTerms =
+          typeof body.paymentTerms === "string" && body.paymentTerms.trim()
+            ? body.paymentTerms.trim()
+            : null;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "creditPeriodDays")) {
+        if (body.creditPeriodDays === null || body.creditPeriodDays === "") {
+          creditPeriodDaysInput = null;
+        } else {
+          const parsedDays = Number(body.creditPeriodDays);
+          if (!Number.isInteger(parsedDays) || parsedDays < 0 || parsedDays > 3650) {
+            return NextResponse.json(
+              { success: false, error: "Credit Period / Payment Within days must be an integer between 0 and 3650." },
+              { status: 400 }
+            );
+          }
+          creditPeriodDaysInput = parsedDays;
+        }
+      }
       notes = body.notes ?? notes;
       reason = body.reason?.trim() || "";
+      if (Object.prototype.hasOwnProperty.call(body, "budgetOverrideReason")) {
+        budgetOverrideReason =
+          typeof body.budgetOverrideReason === "string" ? body.budgetOverrideReason.trim() : "";
+      }
       poOverInvoiceOverride = Boolean(body.poOverInvoiceOverride);
       parsedItems = Array.isArray(body.items) ? body.items : [];
       deletedAttachmentIds = Array.isArray(body.deletedAttachmentIds) ? body.deletedAttachmentIds : [];
+    }
+
+    // Validate Invoice Date & Payment Due Date
+    const invoiceDateKey = toDateKey(invoiceDate);
+    const parsedInvoiceDateObj = parseDateKeyToUtcMidnight(invoiceDateKey);
+    if (!invoiceDateKey || !parsedInvoiceDateObj) {
+      return NextResponse.json(
+        { success: false, error: "Please provide a valid Invoice Date (YYYY-MM-DD)." },
+        { status: 400 }
+      );
+    }
+
+    let dueDateKey: string | null = null;
+    if (hasPaymentDueDateInput && paymentDueDateInput) {
+      dueDateKey = toDateKey(paymentDueDateInput);
+      if (!dueDateKey || !parseDateKeyToUtcMidnight(dueDateKey)) {
+        return NextResponse.json(
+          { success: false, error: "Please provide a valid Payment Due Date (YYYY-MM-DD)." },
+          { status: 400 }
+        );
+      }
+    } else if (hasPaymentDueDateInput && !paymentDueDateInput && creditPeriodDaysInput !== null) {
+      dueDateKey = addCalendarDays(invoiceDateKey, creditPeriodDaysInput);
+    } else if (!hasPaymentDueDateInput && creditPeriodDaysInput !== null && existingInvoice.paymentDueDate == null) {
+      dueDateKey = addCalendarDays(invoiceDateKey, creditPeriodDaysInput);
+    } else {
+      dueDateKey = toDateKey(existingInvoice.paymentDueDate) || invoiceDateKey;
+    }
+
+    const parsedDueDateObj = parseDateKeyToUtcMidnight(dueDateKey)!;
+    const prevDueDateKey =
+      toDateKey(existingInvoice.paymentDueDate) || toDateKey(existingInvoice.invoiceDate);
+    if (diffCalendarDays(invoiceDateKey, dueDateKey!) < 0) {
+      const canOverrideDueDate =
+        (await checkSessionPermission(session, "supplierInvoices", "overrideDueDate")) ||
+        (await checkSessionPermission(session, "supplierPayments", "overrideDueDate"));
+      if (!canOverrideDueDate) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "DUE_DATE_BEFORE_INVOICE_DATE",
+            error: `Payment Due Date (${dueDateKey}) cannot be earlier than Invoice Date (${invoiceDateKey}) unless an authorized administrator overrides it.`,
+          },
+          { status: 422 }
+        );
+      }
     }
 
     // Mandatory edit reason verification
@@ -436,7 +661,7 @@ export async function PUT(
       }
     }
 
-    // 2. Validate Job if changed (must be APPROVED)
+    // 2. Validate Job if changed (must be visible & APPROVED)
     let targetJob = existingInvoice.job;
     if (isJobChanged) {
       targetJob = await (db.job as any).findFirst({
@@ -448,19 +673,21 @@ export async function PUT(
           { status: 404 }
         );
       }
-      const jobStatusUpper = (targetJob.status || "").toUpperCase();
-      const isApprovedJob =
-        jobStatusUpper === "APPROVED" ||
-        jobStatusUpper === "ACTIVE" ||
-        jobStatusUpper === "INVOICED";
+      const canAccessTargetJob = await canAccessJobForSupplierInvoice(session, targetJob.submittedById);
+      if (!canAccessTargetJob) {
+        return NextResponse.json(
+          { success: false, error: "Target Job was not found within your authorized access scope." },
+          { status: 404 }
+        );
+      }
 
-      if (!isApprovedJob) {
+      if (!isJobEligibleForSupplierInvoice(targetJob.status, targetJob.deletedAt)) {
         return NextResponse.json(
           {
             success: false,
             error: `Invoices can only be assigned to APPROVED Jobs. Job "${targetJob.jobCode}" is currently ${targetJob.status}.`,
           },
-          { status: 400 }
+          { status: 422 }
         );
       }
     }
@@ -481,7 +708,7 @@ export async function PUT(
       }
     }
 
-    // 4. Validate Items (at least 1 row required, valid amounts)
+    // 4. Validate Items (at least 1 row required)
     if (!parsedItems || parsedItems.length === 0) {
       return NextResponse.json(
         { success: false, error: "At least one supplier invoice row item is required." },
@@ -489,26 +716,7 @@ export async function PUT(
       );
     }
 
-    let totalInvoiceAmount = new Decimal(0);
-    for (let i = 0; i < parsedItems.length; i++) {
-      const item = parsedItems[i];
-      if (!item.description || !item.description.trim()) {
-        return NextResponse.json(
-          { success: false, error: `Row ${i + 1}: Description is required.` },
-          { status: 400 }
-        );
-      }
-      const amt = new Decimal(item.amount || 0);
-      if (amt.isNaN() || amt.lte(0)) {
-        return NextResponse.json(
-          { success: false, error: `Row ${i + 1}: Invoice amount must be greater than 0.00.` },
-          { status: 400 }
-        );
-      }
-      totalInvoiceAmount = totalInvoiceAmount.plus(amt);
-    }
-
-    // 4B. Optional Purchase Order Validation on Edit
+    // 4A. Optional Purchase Order Validation on Edit
     let linkedPo: any = null;
     const validPoItemIds = new Set<string>();
     if (purchaseOrderId) {
@@ -554,7 +762,49 @@ export async function PUT(
         );
       }
       (linkedPo.items || []).forEach((it: any) => validPoItemIds.add(it.id));
+    }
 
+    // 4B. Validate and normalize cost-item links, quantities, units, rates, Decimal totals & per-line budgets
+    const [canManualEntry, canOverrideBudget] = await Promise.all([
+      checkSessionPermission(session, "supplierInvoices", "manualEntry"),
+      checkSessionPermission(session, "supplierInvoices", "overrideJobBudget"),
+    ]);
+
+    const existingLegacyItemIds = new Set<string>(
+      isJobChanged
+        ? []
+        : (existingInvoice.items || [])
+            .filter((it: any) => !it.jobCostItemId)
+            .map((it: any) => it.id)
+    );
+
+    const itemValidation = await validateAndNormalizeSupplierInvoiceItems({
+      jobId,
+      items: parsedItems,
+      excludeInvoiceId: id,
+      existingLegacyItemIds,
+      validPoItemIds: linkedPo ? validPoItemIds : undefined,
+      canManualEntry,
+      canOverrideBudget,
+      invoiceOverrideReason: budgetOverrideReason,
+      client: db,
+    });
+
+    if (!itemValidation.valid) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: itemValidation.code,
+          error: itemValidation.error || "Invalid supplier invoice line items.",
+        },
+        { status: itemValidation.status || 400 }
+      );
+    }
+
+    const totalInvoiceAmount = itemValidation.totalAmount;
+
+    // 4C. PO Ceiling Validation against authoritative Decimal total
+    if (linkedPo) {
       const otherInvoiced = (linkedPo.supplierInvoices || []).reduce(
         (sum: Decimal, inv: any) => sum.plus(new Decimal(inv.totalAmount || 0)),
         new Decimal(0)
@@ -640,11 +890,57 @@ export async function PUT(
       });
     }
 
-    // 6. Execute atomic database update and recalculation
+    // 6. Execute atomic database update and recalculation (with in-transaction re-validation)
+    const storagePathsToDeleteAfterCommit: Array<{ storagePath: string; bucketName: string }> = [];
+
     const result = await db.$transaction(async (tx) => {
-      // Delete attachments explicitly requested for deletion
+      const txValidation = await validateAndNormalizeSupplierInvoiceItems({
+        jobId,
+        items: parsedItems,
+        excludeInvoiceId: id,
+        existingLegacyItemIds,
+        validPoItemIds: linkedPo ? validPoItemIds : undefined,
+        canManualEntry,
+        canOverrideBudget,
+        invoiceOverrideReason: budgetOverrideReason,
+        client: tx,
+      });
+
+      if (!txValidation.valid) {
+        throw new HttpValidationError(
+          txValidation.status || 422,
+          txValidation.error || "Supplier invoice item validation failed inside transaction.",
+          txValidation.code
+        );
+      }
+
+      const txTotalAmount = txValidation.totalAmount;
+      const effectiveOverrideReason = txValidation.budgetOverrideUsed
+        ? budgetOverrideReason ||
+          txValidation.items.find((it) => it.budgetOverrideReason)?.budgetOverrideReason ||
+          null
+        : null;
+
+      // Guard: Cannot reduce invoice total below total active payments already recorded
+      const existingPayments = await (tx.supplierPayment as any).findMany({
+        where: { supplierInvoiceId: id },
+        select: { id: true, amount: true, status: true },
+      });
+      const activePayments = existingPayments.filter((p: any) => p.status === "SUCCESS");
+      const activePaidTotalDec = activePayments.reduce(
+        (sum: Decimal, p: any) => sum.plus(new Decimal(p.amount || 0)),
+        new Decimal(0)
+      );
+      if (txTotalAmount.lt(activePaidTotalDec)) {
+        throw new HttpValidationError(
+          422,
+          `Updated invoice total (Rs. ${txTotalAmount.toFixed(2)}) cannot be less than already-paid supplier payments (Rs. ${activePaidTotalDec.toFixed(2)}). Please reverse excess payments first.`,
+          "INVOICE_TOTAL_BELOW_PAID_AMOUNT"
+        );
+      }
+
+      // Collect and delete attachments explicitly requested for deletion
       if (deletedAttachmentIds.length > 0) {
-        // Fetch storage paths first to delete from Supabase Storage
         const attsToDelete = await (tx.supplierInvoiceAttachment as any).findMany({
           where: {
             id: { in: deletedAttachmentIds },
@@ -655,10 +951,10 @@ export async function PUT(
 
         for (const att of attsToDelete) {
           if (att.storagePath) {
-            await deleteFromSupabaseStorage(
-              att.storagePath,
-              att.bucketName || SUPPLIER_INVOICES_BUCKET
-            );
+            storagePathsToDeleteAfterCommit.push({
+              storagePath: att.storagePath,
+              bucketName: att.bucketName || SUPPLIER_INVOICES_BUCKET,
+            });
           }
         }
 
@@ -670,14 +966,18 @@ export async function PUT(
         });
       }
 
-      // Existing item IDs in database
-      const existingItemIds = existingInvoice.items.map((it: any) => it.id);
-      const incomingItemIdsWithId = parsedItems.filter((it) => it.id).map((it) => it.id as string);
+      // Existing item map & IDs in database
+      const existingItemMap = new Map<string, any>();
+      (existingInvoice.items || []).forEach((it: any) => existingItemMap.set(it.id, it));
+      const existingItemIds = Array.from(existingItemMap.keys());
+      const incomingItemIdsWithId = txValidation.items
+        .filter((it) => it.id && existingItemMap.has(it.id))
+        .map((it) => it.id as string);
 
-      // Items to delete (existed previously but omitted in updated list)
-      const itemsToDelete = existingItemIds.filter((dbId: string) => !incomingItemIdsWithId.includes(dbId));
+      // Items to delete (existed previously but omitted in updated list) BEFORE updating/creating
+      // so unique (invoiceId, jobCostItemId) constraints allow re-adding removed cost items cleanly.
+      const itemsToDelete = existingItemIds.filter((dbId) => !incomingItemIdsWithId.includes(dbId));
       if (itemsToDelete.length > 0) {
-        // Fetch attachments belonging to deleted items to purge from storage
         const itemAttsToDelete = await (tx.supplierInvoiceAttachment as any).findMany({
           where: {
             itemId: { in: itemsToDelete },
@@ -688,10 +988,10 @@ export async function PUT(
 
         for (const att of itemAttsToDelete) {
           if (att.storagePath) {
-            await deleteFromSupabaseStorage(
-              att.storagePath,
-              att.bucketName || SUPPLIER_INVOICES_BUCKET
-            );
+            storagePathsToDeleteAfterCommit.push({
+              storagePath: att.storagePath,
+              bucketName: att.bucketName || SUPPLIER_INVOICES_BUCKET,
+            });
           }
         }
 
@@ -703,50 +1003,55 @@ export async function PUT(
         });
       }
 
-      // Update or create items
+      // Clear jobCostItemId on kept rows whose cost-item link is changing, preventing swap P2002 collisions
+      const keptRowsWithChangedCostLink = txValidation.items
+        .filter((it) => {
+          if (!it.id) return false;
+          const prev = existingItemMap.get(it.id);
+          return Boolean(prev && prev.jobCostItemId && prev.jobCostItemId !== it.jobCostItemId);
+        })
+        .map((it) => it.id as string);
+
+      if (keptRowsWithChangedCostLink.length > 0) {
+        await (tx.supplierInvoiceItem as any).updateMany({
+          where: { id: { in: keptRowsWithChangedCostLink }, invoiceId: id },
+          data: { jobCostItemId: null },
+        });
+      }
+
+      // Update or create normalized items
       const savedItemRecords: any[] = [];
-      for (let i = 0; i < parsedItems.length; i++) {
-        const item = parsedItems[i];
+      for (let i = 0; i < txValidation.items.length; i++) {
+        const normItem = txValidation.items[i];
         let savedItem: any;
 
-        if (item.id && existingItemIds.includes(item.id)) {
-          // Update existing item
-          const validPoItemId =
-            linkedPo && item.purchaseOrderItemId && validPoItemIds.has(item.purchaseOrderItemId)
-              ? item.purchaseOrderItemId
-              : null;
+        const itemData = {
+          purchaseOrderItemId: normItem.purchaseOrderItemId,
+          jobCostCategoryId: normItem.jobCostCategoryId,
+          jobCostCategoryName: normItem.jobCostCategoryName,
+          jobCostItemId: normItem.jobCostItemId,
+          rowNumber: normItem.rowNumber,
+          description: normItem.description,
+          originalJobAmount: normItem.originalJobAmount,
+          quantity: normItem.quantity,
+          unit: normItem.unit,
+          unitRate: normItem.unitRate,
+          amount: normItem.amount,
+          isAdditionalItem: normItem.isAdditionalItem,
+          budgetOverrideReason: normItem.budgetOverrideReason,
+          notes: normItem.notes,
+        };
+
+        if (normItem.id && existingItemMap.has(normItem.id)) {
           savedItem = await (tx.supplierInvoiceItem as any).update({
-            where: { id: item.id },
-            data: {
-              rowNumber: i + 1,
-              purchaseOrderItemId: validPoItemId,
-              description: item.description.trim(),
-              quantity:
-                item.quantity !== undefined && item.quantity !== null && Number(item.quantity) >= 0
-                  ? new Decimal(item.quantity).toFixed(4)
-                  : null,
-              amount: new Decimal(item.amount).toFixed(2),
-              notes: item.notes || "",
-            },
+            where: { id: normItem.id },
+            data: itemData,
           });
         } else {
-          // Create new item
-          const validPoItemId =
-            linkedPo && item.purchaseOrderItemId && validPoItemIds.has(item.purchaseOrderItemId)
-              ? item.purchaseOrderItemId
-              : null;
           savedItem = await (tx.supplierInvoiceItem as any).create({
             data: {
               invoiceId: id,
-              purchaseOrderItemId: validPoItemId,
-              rowNumber: i + 1,
-              description: item.description.trim(),
-              quantity:
-                item.quantity !== undefined && item.quantity !== null && Number(item.quantity) >= 0
-                  ? new Decimal(item.quantity).toFixed(4)
-                  : null,
-              amount: new Decimal(item.amount).toFixed(2),
-              notes: item.notes || "",
+              ...itemData,
             },
           });
         }
@@ -790,13 +1095,20 @@ export async function PUT(
           supplierId,
           jobId,
           purchaseOrderId: linkedPo ? linkedPo.id : null,
-          invoiceDate: new Date(invoiceDate),
-          totalAmount: totalInvoiceAmount.toFixed(2),
+          invoiceDate: parsedInvoiceDateObj,
+          paymentDueDate: parsedDueDateObj,
+          paymentTerms,
+          creditPeriodDays: creditPeriodDaysInput,
+          totalAmount: txTotalAmount.toFixed(2),
           notes,
+          budgetOverrideUsed: txValidation.budgetOverrideUsed,
+          budgetOverrideReason: effectiveOverrideReason,
           updatedById: session.userId,
           updatedAt: new Date(),
         },
       });
+
+      const syncedState = await syncInvoicePaymentStateTx(id, tx);
 
       // Audit Log for Edit
       const previousData = {
@@ -806,13 +1118,26 @@ export async function PUT(
         jobId: existingInvoice.jobId,
         jobCode: existingInvoice.job?.jobCode,
         totalAmount: Number(existingInvoice.totalAmount),
-        invoiceDate: existingInvoice.invoiceDate,
+        invoiceDate: toDateKey(existingInvoice.invoiceDate),
+        paymentDueDate: prevDueDateKey,
+        paymentTerms: existingInvoice.paymentTerms || null,
+        creditPeriodDays: existingInvoice.creditPeriodDays ?? null,
         notes: existingInvoice.notes,
+        budgetOverrideUsed: Boolean(existingInvoice.budgetOverrideUsed),
+        budgetOverrideReason: existingInvoice.budgetOverrideReason || null,
         items: (existingInvoice.items || []).map((it: any) => ({
           id: it.id,
           rowNumber: it.rowNumber,
+          jobCostCategoryName: it.jobCostCategoryName || null,
+          jobCostItemId: it.jobCostItemId || null,
           description: it.description,
+          originalJobAmount: it.originalJobAmount != null ? Number(it.originalJobAmount) : null,
+          quantity: it.quantity != null ? Number(it.quantity) : null,
+          unit: it.unit || null,
+          unitRate: it.unitRate != null ? Number(it.unitRate) : null,
           amount: Number(it.amount),
+          isAdditionalItem: Boolean(it.isAdditionalItem),
+          budgetOverrideReason: it.budgetOverrideReason || null,
         })),
       };
 
@@ -822,13 +1147,27 @@ export async function PUT(
         supplierName: targetSupplier?.name,
         jobId,
         jobCode: targetJob?.jobCode,
-        totalAmount: totalInvoiceAmount.toFixed(2),
-        invoiceDate,
+        totalAmount: txTotalAmount.toFixed(2),
+        invoiceDate: invoiceDateKey,
+        paymentDueDate: dueDateKey,
+        paymentTerms,
+        creditPeriodDays: creditPeriodDaysInput,
+        paymentStatus: syncedState.derived.paymentStatus,
         notes,
-        items: parsedItems.map((it, idx) => ({
-          rowNumber: idx + 1,
+        budgetOverrideUsed: txValidation.budgetOverrideUsed,
+        budgetOverrideReason: effectiveOverrideReason,
+        items: txValidation.items.map((it) => ({
+          rowNumber: it.rowNumber,
+          jobCostCategoryName: it.jobCostCategoryName,
+          jobCostItemId: it.jobCostItemId,
           description: it.description,
-          amount: Number(it.amount),
+          originalJobAmount: it.originalJobAmount,
+          quantity: it.quantity,
+          unit: it.unit,
+          unitRate: it.unitRate,
+          amount: it.amount,
+          isAdditionalItem: it.isAdditionalItem,
+          budgetOverrideReason: it.budgetOverrideReason,
         })),
       };
 
@@ -842,6 +1181,28 @@ export async function PUT(
           newData,
         },
       });
+
+      // Requirement: If the invoice already has payments, changing the Due Date must be audited
+      if (dueDateKey !== prevDueDateKey && existingPayments.length > 0) {
+        await (tx.supplierPaymentAuditLog as any).create({
+          data: {
+            invoiceId: id,
+            userId: session.userId,
+            action: "DUE_DATE_CHANGE",
+            reason,
+            previousData: {
+              paymentDueDate: prevDueDateKey,
+              paymentTerms: existingInvoice.paymentTerms || null,
+              creditPeriodDays: existingInvoice.creditPeriodDays ?? null,
+            },
+            newData: {
+              paymentDueDate: dueDateKey,
+              paymentTerms,
+              creditPeriodDays: creditPeriodDaysInput,
+            },
+          },
+        });
+      }
 
       // Atomically recalculate target job finances
       const financialSnapshot = await recalculateJobFinances(jobId, tx);
@@ -860,8 +1221,13 @@ export async function PUT(
         previousJobSnapshot = await recalculateJobFinances(existingInvoice.jobId, tx);
       }
 
-      return { updatedInvoice, financialSnapshot, previousJobSnapshot };
+      return { updatedInvoice, financialSnapshot, previousJobSnapshot, txTotalAmount };
     });
+
+    // Clean up deleted attachment files from Supabase Storage only after DB commit succeeded
+    for (const delFile of storagePathsToDeleteAfterCommit) {
+      await deleteFromSupabaseStorage(delFile.storagePath, delFile.bucketName).catch(() => {});
+    }
 
     await logAuditEvent({
       userId: session.userId,
@@ -871,7 +1237,7 @@ export async function PUT(
       details: {
         invoiceNumber,
         oldAmount: Number(existingInvoice.totalAmount),
-        newAmount: totalInvoiceAmount.toNumber(),
+        newAmount: result.txTotalAmount.toNumber(),
         jobCode: targetJob?.jobCode,
         reason,
       },
@@ -887,6 +1253,35 @@ export async function PUT(
   } catch (err: any) {
     if (uploadedAttachments.length > 0) {
       await cleanupOrphanedStorageFiles(uploadedAttachments.map((a) => a.storagePath));
+    }
+    if (err instanceof HttpValidationError) {
+      return NextResponse.json(
+        { success: false, code: err.code, error: err.message },
+        { status: err.status }
+      );
+    }
+    if (err?.code === "P2002") {
+      const targetStr = Array.isArray(err?.meta?.target)
+        ? err.meta.target.join(",")
+        : String(err?.meta?.target || "");
+      if (targetStr.includes("job_cost_item_id") || targetStr.includes("invoice_id_job_cost_item_id")) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "DUPLICATE_JOB_COST_ITEM",
+            error: "Duplicate Job cost line detected in the same Supplier Invoice.",
+          },
+          { status: 422 }
+        );
+      }
+      return NextResponse.json(
+        {
+          success: false,
+          code: "DUPLICATE_RECORD",
+          error: "A Supplier Invoice with this invoice number already exists.",
+        },
+        { status: 409 }
+      );
     }
     console.error("PUT /api/supplier-invoices/[id] error:", err?.message || String(err));
     return NextResponse.json(
@@ -916,6 +1311,21 @@ export async function PATCH(
     const action = body.action || "CANCEL";
     const reason = body.reason?.trim();
     const db = getPrisma();
+
+    if (
+      String(action).toUpperCase() === "PAID" ||
+      String(action).toUpperCase() === "MARK_PAID" ||
+      String(body.status || "").toUpperCase() === "PAID" ||
+      String(body.paymentStatus || "").toUpperCase() === "PAID"
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Payment Status cannot be manually set to PAID. Please record a real Supplier Payment.",
+        },
+        { status: 400 }
+      );
+    }
 
     if (action === "CANCEL") {
       const canCancel = await checkSessionPermission(session, "supplierInvoices", "cancel");
@@ -1070,6 +1480,8 @@ export async function PATCH(
         },
       });
 
+      await syncInvoicePaymentStateTx(id, tx);
+
       await (tx.supplierInvoiceAuditLog as any).create({
         data: {
           invoiceId: id,
@@ -1181,6 +1593,7 @@ export async function DELETE(
         data: {
           deletedAt: new Date(),
           status: "CANCELLED",
+          paymentStatus: "CANCELLED",
           cancellationReason: reason,
           cancelledAt: new Date(),
           cancelledById: session.userId,

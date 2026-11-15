@@ -57,6 +57,7 @@ export async function GET() {
       totalSuppliers,
       activeSupplierInvoicesCount,
       supplierInvoicesAgg,
+      additionalExpensesAgg,
       distinctJobsWithInvoices,
       approvedJobsQuotation,
     ] = await Promise.all([
@@ -107,6 +108,20 @@ export async function GET() {
         },
       }),
 
+      // 7B. Total Additional Job Expenses (active non-invoice-linked sum, scoped)
+      (prisma as any).jobAdditionalExpense
+        ? (prisma as any).jobAdditionalExpense.aggregate({
+            where: {
+              status: "ACTIVE",
+              linkedSupplierInvoiceId: null,
+              job: baseJobWhere,
+            },
+            _sum: {
+              amount: true,
+            },
+          })
+        : Promise.resolve({ _sum: { amount: 0 } }),
+
       // 8. Distinct Jobs With Active Supplier Invoices (scoped)
       prisma.supplierInvoice.groupBy({
         by: ["jobId"],
@@ -136,7 +151,10 @@ export async function GET() {
     const totalSupplierInvoiceAmount = canViewFinancials
       ? Number(supplierInvoicesAgg._sum.totalAmount || 0)
       : 0;
-    const totalActualJobCosts = totalSupplierInvoiceAmount;
+    const totalAdditionalExpenses = canViewFinancials
+      ? Number(additionalExpensesAgg?._sum?.amount || 0)
+      : 0;
+    const totalActualJobCosts = totalSupplierInvoiceAmount + totalAdditionalExpenses;
 
     const totalApprovedJobValue = canViewFinancials
       ? Number(approvedJobsQuotation._sum.grandTotal || approvedJobsQuotation._sum.totalCost || 0)
@@ -211,6 +229,7 @@ export async function GET() {
         totalSuppliers,
         totalSupplierInvoices: activeSupplierInvoicesCount,
         totalSupplierInvoiceAmount,
+        totalAdditionalExpenses,
         jobsWithSupplierInvoices,
         jobsWithoutSupplierInvoices,
         totalActualJobCosts,

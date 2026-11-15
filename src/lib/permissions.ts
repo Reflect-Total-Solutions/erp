@@ -7,6 +7,7 @@ export type ERPModule =
   | "purchaseOrders"
   | "approvals"
   | "supplierInvoices"
+  | "supplierPayments"
   | "invoices"
   | "profitLoss"
   | "accessControl"
@@ -33,11 +34,25 @@ export type ERPAction =
   | "issue"
   | "moveToPending"
   | "cancel"
+  | "reverse"
+  | "downloadReceipt"
+  | "exportReports"
+  | "viewOutstanding"
+  | "viewOverdue"
+  | "manageNotifications"
+  | "overrideDueDate"
   | "manageAttachments"
   | "viewFinancials"
+  | "viewFinancialSummary"
+  | "viewOriginalCosts"
+  | "viewActualSupplierCosts"
+  | "createAdditionalExpense"
+  | "editAdditionalExpense"
+  | "cancelAdditionalExpense"
   | "managePermissions"
   | "viewHistory"
   | "overrideJobBudget"
+  | "manualEntry"
   | "manageDepartmentAllocation"
   | "manageSettings";
 
@@ -93,6 +108,12 @@ export const PERMISSION_MODULES: ModuleDef[] = [
       { key: "bulkDownload", label: "Bulk Download Documents", description: "Download all job quotation documents as a ZIP archive" },
       { key: "export", label: "Export Jobs", description: "Export job lists and detailed cost reports to CSV/Excel" },
       { key: "viewFinancials", label: "View Job Costs", description: "Inspect detailed production cost breakdown, rates, and supplier totals", isDangerous: true },
+      { key: "viewFinancialSummary", label: "View Job Financial Summary", description: "View job financial overview, gross profit, profit margin, and cost comparisons", isDangerous: true },
+      { key: "viewOriginalCosts", label: "View Original Job Costs", description: "View original Excel quotation cost categories, item rates, and estimated totals" },
+      { key: "viewActualSupplierCosts", label: "View Actual Supplier Costs", description: "View actual Supplier Invoice costs, savings/overruns, and outstanding vendor balances", isDangerous: true },
+      { key: "createAdditionalExpense", label: "Create Additional Expenses", description: "Record non-invoice additional expenses (transport, delivery, labour, fuel, etc.) on a Job" },
+      { key: "editAdditionalExpense", label: "Edit Additional Expenses", description: "Modify active additional expenses on a Job with full audit history" },
+      { key: "cancelAdditionalExpense", label: "Cancel Additional Expenses", description: "Cancel additional expenses with mandatory reason and recalculate Job P&L", isDangerous: true },
     ],
   },
   {
@@ -177,6 +198,32 @@ export const PERMISSION_MODULES: ModuleDef[] = [
       { key: "download", label: "Download Attachments", description: "View and download individual invoice PDF/Word/Image attachments" },
       { key: "bulkDownload", label: "Bulk Download Attachments", description: "Bulk download all invoice attachments for a Job as a ZIP archive" },
       { key: "export", label: "Export Invoice Reports", description: "Export supplier invoice breakdown reports to CSV/Excel" },
+      { key: "manualEntry", label: "Manual / Custom Invoice Entries", description: "Allow entering manual invoice descriptions when a Job has no saved cost lines or outside Job cost lines" },
+      { key: "overrideJobBudget", label: "Override Job Cost Line Budget", description: "Allow Supplier Invoice entry amounts to exceed the remaining uninvoiced balance of a Job cost line", isDangerous: true },
+      { key: "overrideDueDate", label: "Override Payment Due Date", description: "Allow setting a Payment Due Date earlier than the Invoice Date", isDangerous: true },
+    ],
+  },
+  {
+    key: "supplierPayments",
+    name: "Supplier Payments",
+    category: "Financials",
+    description: "Supplier invoice settlement, partial payments, payment due date monitoring, receipts, and payment reports.",
+    actions: [
+      { key: "view", label: "View Supplier Payments", description: "Access Supplier Payments module and payable invoice balances" },
+      { key: "viewOwn", label: "View Own Supplier Payments", description: "View payments and invoices created by the logged-in user" },
+      { key: "viewTeam", label: "View Team Supplier Payments", description: "View payments and invoices within the user's team scope" },
+      { key: "viewAll", label: "View All Supplier Payments", description: "View all supplier invoices and payments organization-wide" },
+      { key: "viewHistory", label: "View Payment History", description: "Inspect full Supplier Payment transaction ledger and audit logs" },
+      { key: "viewOutstanding", label: "View Outstanding Invoices", description: "Access unpaid, partially paid, and balance-due invoice queue" },
+      { key: "viewOverdue", label: "View Overdue Invoices & Alerts", description: "Inspect overdue payment countdowns and past-due alerts" },
+      { key: "create", label: "Record / Make Payments", description: "Submit partial or full payments against active Supplier Invoices" },
+      { key: "edit", label: "Edit Payment Details", description: "Correct recorded payment metadata/amounts with mandatory audit reason" },
+      { key: "reverse", label: "Reverse Recorded Payments", description: "Reverse a payment record safely with audit reason and recalculate balances", isDangerous: true },
+      { key: "downloadReceipt", label: "Download Payment Receipts", description: "View and download uploaded payment receipt proofs" },
+      { key: "exportReports", label: "Export Payment Reports", description: "Export Excel and print/PDF supplier payment statements" },
+      { key: "manageNotifications", label: "Manage Payment Notifications", description: "Run payment due reminder sweeps and clear notification queues" },
+      { key: "manageSettings", label: "Manage Payment Reminder Settings", description: "Configure timezone, reminder intervals, and optional email notifications", isDangerous: true },
+      { key: "overrideDueDate", label: "Override Past-Date Rules", description: "Allow due date overrides earlier than invoice date", isDangerous: true },
     ],
   },
   {
@@ -248,6 +295,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       bulkDownload: true,
       export: true,
       viewFinancials: true,
+      viewFinancialSummary: true,
+      viewOriginalCosts: true,
+      viewActualSupplierCosts: true,
+      createAdditionalExpense: true,
+      editAdditionalExpense: true,
+      cancelAdditionalExpense: true,
     },
     suppliers: {
       view: true,
@@ -308,6 +361,26 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       download: true,
       bulkDownload: true,
       export: true,
+      manualEntry: true,
+      overrideJobBudget: true,
+      overrideDueDate: true,
+    },
+    supplierPayments: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: true,
+      viewHistory: true,
+      viewOutstanding: true,
+      viewOverdue: true,
+      create: true,
+      edit: true,
+      reverse: true,
+      downloadReceipt: true,
+      exportReports: true,
+      manageNotifications: true,
+      manageSettings: true,
+      overrideDueDate: true,
     },
     invoices: {
       view: true,
@@ -357,6 +430,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       bulkDownload: true,
       export: true,
       viewFinancials: true,
+      viewFinancialSummary: true,
+      viewOriginalCosts: true,
+      viewActualSupplierCosts: true,
+      createAdditionalExpense: true,
+      editAdditionalExpense: true,
+      cancelAdditionalExpense: false,
     },
     suppliers: {
       view: true,
@@ -417,6 +496,26 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       download: true,
       bulkDownload: true,
       export: true,
+      manualEntry: true,
+      overrideJobBudget: false,
+      overrideDueDate: false,
+    },
+    supplierPayments: {
+      view: true,
+      viewOwn: true,
+      viewTeam: true,
+      viewAll: false,
+      viewHistory: true,
+      viewOutstanding: true,
+      viewOverdue: true,
+      create: true,
+      edit: true,
+      reverse: false,
+      downloadReceipt: true,
+      exportReports: true,
+      manageNotifications: true,
+      manageSettings: false,
+      overrideDueDate: false,
     },
     invoices: {
       view: true,
@@ -466,6 +565,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       bulkDownload: false,
       export: false,
       viewFinancials: false,
+      viewFinancialSummary: false,
+      viewOriginalCosts: false,
+      viewActualSupplierCosts: false,
+      createAdditionalExpense: false,
+      editAdditionalExpense: false,
+      cancelAdditionalExpense: false,
     },
     suppliers: {
       view: true,
@@ -526,6 +631,26 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionsPolicy> = {
       download: true,
       bulkDownload: false,
       export: false,
+      manualEntry: false,
+      overrideJobBudget: false,
+      overrideDueDate: false,
+    },
+    supplierPayments: {
+      view: true,
+      viewOwn: true,
+      viewTeam: false,
+      viewAll: false,
+      viewHistory: true,
+      viewOutstanding: true,
+      viewOverdue: true,
+      create: false,
+      edit: false,
+      reverse: false,
+      downloadReceipt: true,
+      exportReports: false,
+      manageNotifications: false,
+      manageSettings: false,
+      overrideDueDate: false,
     },
     invoices: {
       view: true,

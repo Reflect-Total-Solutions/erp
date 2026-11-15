@@ -168,6 +168,23 @@ async function main() {
   await ensureDefaultDepartments(prisma);
   console.log("✅ Purchase Order default settings and departments seeded");
 
+  // 6. Default Supplier Payment Settings
+  await prisma.supplierPaymentSettings.upsert({
+    where: { id: "default" },
+    update: {},
+    create: {
+      id: "default",
+      timezone: "Asia/Colombo",
+      upcomingReminderDays: [7, 3, 1],
+      notifyOnDueToday: true,
+      notifyDailyOverdue: true,
+      notifyOnPartialPayment: true,
+      notifyOnFullPayment: true,
+      emailRemindersEnabled: false,
+    },
+  });
+  console.log("✅ Supplier Payment default settings seeded");
+
   console.log("🎉 Seed finished successfully!");
 }
 

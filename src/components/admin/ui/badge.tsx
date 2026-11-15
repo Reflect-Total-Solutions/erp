@@ -66,6 +66,24 @@ export function StatusBadge({ status }: { status: JobStatus | InvoiceStatus | Ex
   if (norm === "cancelled") {
     return <Badge variant="danger">Cancelled</Badge>;
   }
+  if (norm === "unpaid") {
+    return <Badge variant="warning">Unpaid</Badge>;
+  }
+  if (norm === "partially_paid" || norm === "partially paid" || norm === "partial") {
+    return <Badge variant="info">Partially Paid</Badge>;
+  }
+  if (norm === "overdue") {
+    return <Badge variant="danger">Overdue</Badge>;
+  }
+  if (norm === "reversed") {
+    return <Badge variant="danger">Reversed</Badge>;
+  }
+  if (norm === "success") {
+    return <Badge variant="success">Completed</Badge>;
+  }
+  if (norm === "paid") {
+    return <Badge variant="success">Paid</Badge>;
+  }
   if (norm === "draft") {
     return <Badge variant="neutral">Draft</Badge>;
   }
@@ -75,7 +93,7 @@ export function StatusBadge({ status }: { status: JobStatus | InvoiceStatus | Ex
   if (norm.includes("reject")) {
     return <Badge variant="danger">{raw}</Badge>;
   }
-  if (norm === "active" || norm === "processed" || norm === "paid") {
+  if (norm === "active" || norm === "processed") {
     return <Badge variant="success">{raw}</Badge>;
   }
   if (norm.includes("pending")) {

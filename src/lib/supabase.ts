@@ -12,6 +12,8 @@ export const DEFAULT_STORAGE_BUCKET =
 
 export const SUPPLIER_INVOICES_BUCKET = "supplier-invoices";
 export const PURCHASE_ORDERS_BUCKET = "purchase-orders";
+export const SUPPLIER_PAYMENTS_BUCKET = "supplier-payments";
+export const JOB_ADDITIONAL_EXPENSES_BUCKET = "job-additional-expenses";
 
 let adminClientInstance: SupabaseClient | null = null;
 let publicClientInstance: SupabaseClient | null = null;
@@ -454,6 +456,196 @@ export async function uploadToSupabaseStorage({
       fileSize: "0 KB",
       mimeType: contentType,
       error: err?.message || "Unknown error during upload",
+    };
+  }
+}
+
+/**
+ * Uploads a Supplier Payment receipt attachment to private Supabase Storage:
+ * supplier-payments / [SUPPLIER-CODE] / [INV-NUMBER] / [PAY-NUMBER] / [TIMESTAMP-RAND_FILENAME]
+ */
+export async function uploadSupplierPaymentReceipt({
+  buffer,
+  originalName,
+  supplierCode,
+  invoiceNumber,
+  paymentNumber,
+  contentType,
+  bucket = SUPPLIER_PAYMENTS_BUCKET,
+}: {
+  buffer: Buffer | Uint8Array | ArrayBuffer;
+  originalName: string;
+  supplierCode: string;
+  invoiceNumber: string;
+  paymentNumber: string;
+  contentType: string;
+  bucket?: string;
+}): Promise<UploadResult> {
+  try {
+    await ensureStorageBucket(bucket, false);
+    const admin = getSupabaseAdmin();
+
+    const cleanSupCode = (supplierCode || "SUP").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cleanInvNumber = (invoiceNumber || "INV").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cleanPayNumber = (paymentNumber || "PAY").replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    const cleanOriginalName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const uniquePrefix = `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const storedFileName = `${uniquePrefix}_${cleanOriginalName}`;
+
+    const storagePath = `${cleanSupCode}/${cleanInvNumber}/${cleanPayNumber}/${storedFileName}`;
+
+    const byteLength =
+      buffer instanceof Buffer ? buffer.length : (buffer as ArrayBuffer).byteLength;
+    const sizeKB = Math.round(byteLength / 1024);
+    const formattedSize =
+      sizeKB > 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${sizeKB || 1} KB`;
+
+    const { error: uploadError } = await admin.storage
+      .from(bucket)
+      .upload(storagePath, buffer, {
+        contentType: contentType || "application/octet-stream",
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.error("Supabase Payment Receipt upload error:", uploadError);
+      return {
+        success: false,
+        fileUrl: "",
+        storagePath: "",
+        bucketName: bucket,
+        fileName: cleanOriginalName,
+        storedFileName: "",
+        originalFileName: cleanOriginalName,
+        fileSize: formattedSize,
+        mimeType: contentType,
+        error: uploadError.message,
+      };
+    }
+
+    const { data: signedData } = await admin.storage
+      .from(bucket)
+      .createSignedUrl(storagePath, 3600);
+
+    const signedUrl = signedData?.signedUrl || "";
+
+    return {
+      success: true,
+      fileUrl: signedUrl,
+      signedUrl,
+      storagePath,
+      bucketName: bucket,
+      fileName: cleanOriginalName,
+      storedFileName,
+      originalFileName: cleanOriginalName,
+      fileSize: formattedSize,
+      mimeType: contentType,
+    };
+  } catch (err: any) {
+    console.error("uploadSupplierPaymentReceipt exception:", err);
+    return {
+      success: false,
+      fileUrl: "",
+      storagePath: "",
+      bucketName: bucket,
+      fileName: originalName,
+      storedFileName: "",
+      originalFileName: originalName,
+      fileSize: "0 KB",
+      mimeType: contentType,
+      error: err?.message || "Unknown error during payment receipt upload",
+    };
+  }
+}
+
+/**
+ * Uploads an Additional Job Expense receipt attachment to private Supabase Storage:
+ * job-additional-expenses / [JOB-CODE] / [TIMESTAMP-RAND_FILENAME]
+ */
+export async function uploadJobAdditionalExpenseReceipt({
+  buffer,
+  originalName,
+  jobCode,
+  contentType,
+  bucket = JOB_ADDITIONAL_EXPENSES_BUCKET,
+}: {
+  buffer: Buffer | Uint8Array | ArrayBuffer;
+  originalName: string;
+  jobCode: string;
+  contentType: string;
+  bucket?: string;
+}): Promise<UploadResult> {
+  try {
+    await ensureStorageBucket(bucket, false);
+    const admin = getSupabaseAdmin();
+
+    const cleanJobCode = (jobCode || "JOB").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cleanOriginalName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const uniquePrefix = `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const storedFileName = `${uniquePrefix}_${cleanOriginalName}`;
+    const storagePath = `${cleanJobCode}/${storedFileName}`;
+
+    const byteLength =
+      buffer instanceof Buffer ? buffer.length : (buffer as ArrayBuffer).byteLength;
+    const sizeKB = Math.round(byteLength / 1024);
+    const formattedSize =
+      sizeKB > 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${sizeKB || 1} KB`;
+
+    const { error: uploadError } = await admin.storage
+      .from(bucket)
+      .upload(storagePath, buffer, {
+        contentType: contentType || "application/octet-stream",
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.error("Supabase Additional Expense Receipt upload error:", uploadError);
+      return {
+        success: false,
+        fileUrl: "",
+        storagePath: "",
+        bucketName: bucket,
+        fileName: cleanOriginalName,
+        storedFileName: "",
+        originalFileName: cleanOriginalName,
+        fileSize: formattedSize,
+        mimeType: contentType,
+        error: uploadError.message,
+      };
+    }
+
+    const { data: signedData } = await admin.storage
+      .from(bucket)
+      .createSignedUrl(storagePath, 3600);
+
+    const signedUrl = signedData?.signedUrl || "";
+
+    return {
+      success: true,
+      fileUrl: signedUrl,
+      signedUrl,
+      storagePath,
+      bucketName: bucket,
+      fileName: cleanOriginalName,
+      storedFileName,
+      originalFileName: cleanOriginalName,
+      fileSize: formattedSize,
+      mimeType: contentType,
+    };
+  } catch (err: any) {
+    console.error("uploadJobAdditionalExpenseReceipt exception:", err);
+    return {
+      success: false,
+      fileUrl: "",
+      storagePath: "",
+      bucketName: bucket,
+      fileName: originalName,
+      storedFileName: "",
+      originalFileName: originalName,
+      fileSize: "0 KB",
+      mimeType: contentType,
+      error: err?.message || "Unknown error during additional expense receipt upload",
     };
   }
 }

@@ -102,6 +102,8 @@ export function DashboardView() {
     const totalActualJobCosts =
       dashboardStats?.totalActualJobCosts ?? totalSupplierInvoiceAmount;
 
+    const totalAdditionalExpenses = dashboardStats?.totalAdditionalExpenses ?? 0;
+
     const totalApprovedJobValue =
       dashboardStats?.totalApprovedJobValue ??
       jobs
@@ -118,7 +120,7 @@ export function DashboardView() {
     const profitMargin =
       totalApprovedJobValue > 0
         ? Number(((totalRecordedGrossProfit / totalApprovedJobValue) * 100).toFixed(1))
-        : 0;
+        : null;
 
     return {
       totalJobs,
@@ -128,6 +130,7 @@ export function DashboardView() {
       totalSuppliers,
       totalSupplierInvoices,
       totalSupplierInvoiceAmount,
+      totalAdditionalExpenses,
       jobsWithSupplierInvoices,
       jobsWithoutSupplierInvoices,
       totalActualJobCosts,
@@ -294,12 +297,16 @@ export function DashboardView() {
               <DollarSign className="h-4 w-4" />
             </div>
           </div>
-          <p
-            className="text-xl font-bold text-slate-900 mt-2 truncate"
-            title={formatCurrency(stats.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
-          >
-            {formatCurrency(stats.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
-          </p>
+          {dashboardStats?.canViewFinancials === false ? (
+            <p className="text-sm font-semibold text-slate-400 mt-3">Restricted</p>
+          ) : (
+            <p
+              className="text-xl font-bold text-slate-900 mt-2 truncate"
+              title={formatCurrency(stats.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
+            >
+              {formatCurrency(stats.totalSupplierInvoiceAmount, { showCurrencyPrefix: true })}
+            </p>
+          )}
           <p className="text-[11px] text-slate-400 mt-1">Actual supplier costs</p>
         </div>
 
@@ -311,17 +318,26 @@ export function DashboardView() {
               <TrendingUp className="h-4 w-4" />
             </div>
           </div>
-          <p
-            className={`text-xl font-bold mt-2 truncate ${
-              stats.totalRecordedGrossProfit >= 0 ? "text-emerald-600" : "text-rose-600"
-            }`}
-            title={formatCurrency(stats.totalRecordedGrossProfit, { showCurrencyPrefix: true })}
-          >
-            {formatCurrency(stats.totalRecordedGrossProfit, { showCurrencyPrefix: true })}
-          </p>
-          <p className="text-[11px] text-slate-400 mt-1">
-            {stats.profitMargin}% gross margin
-          </p>
+          {dashboardStats?.canViewFinancials === false ? (
+            <>
+              <p className="text-sm font-semibold text-slate-400 mt-3">Restricted</p>
+              <p className="text-[11px] text-slate-400 mt-1">Permission required</p>
+            </>
+          ) : (
+            <>
+              <p
+                className={`text-xl font-bold mt-2 truncate ${
+                  stats.totalRecordedGrossProfit >= 0 ? "text-emerald-600" : "text-rose-600"
+                }`}
+                title={formatCurrency(stats.totalRecordedGrossProfit, { showCurrencyPrefix: true })}
+              >
+                {formatCurrency(stats.totalRecordedGrossProfit, { showCurrencyPrefix: true })}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">
+                {stats.profitMargin !== null ? `${stats.profitMargin}% gross margin` : "N/A gross margin"}
+              </p>
+            </>
+          )}
         </div>
 
         {/* Total Suppliers */}
@@ -409,13 +425,24 @@ export function DashboardView() {
             <span>Total Actual Cost</span>
             <DollarSign className="h-3.5 w-3.5 text-indigo-600" />
           </div>
-          <div className="flex items-baseline justify-between mt-1.5">
-            <span
-              className="text-sm font-bold text-slate-900 truncate"
-              title={formatCurrency(stats.totalActualJobCosts, { showCurrencyPrefix: true })}
-            >
-              {formatCurrency(stats.totalActualJobCosts, { showCurrencyPrefix: true })}
-            </span>
+          <div className="mt-1.5">
+            {dashboardStats?.canViewFinancials === false ? (
+              <span className="text-xs font-semibold text-slate-400">Restricted</span>
+            ) : (
+              <>
+                <span
+                  className="text-sm font-bold text-slate-900 truncate block"
+                  title={formatCurrency(stats.totalActualJobCosts, { showCurrencyPrefix: true })}
+                >
+                  {formatCurrency(stats.totalActualJobCosts, { showCurrencyPrefix: true })}
+                </span>
+                {stats.totalAdditionalExpenses > 0 && (
+                  <span className="text-[10px] text-slate-500 block mt-0.5 truncate">
+                    Incl. {formatCurrency(stats.totalAdditionalExpenses, { showCurrencyPrefix: true })} Add&apos;l
+                  </span>
+                )}
+              </>
+            )}
           </div>
         </div>
       </div>

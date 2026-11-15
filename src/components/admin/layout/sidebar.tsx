@@ -21,6 +21,9 @@ import {
   PlusCircle,
   CheckSquare,
   FileSpreadsheet,
+  CreditCard,
+  Clock,
+  History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAdminData } from "@/context/admin-data-context";
@@ -123,13 +126,21 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
   const isPoRoute =
     pathname.startsWith("/admin/purchase-orders") ||
     (pathname.startsWith("/admin/approvals") && currentTab === "purchase-orders");
+  const isPaymentsRoute = pathname.startsWith("/admin/supplier-payments");
 
   const routeKey = `${pathname}?${currentTab}`;
   const [poOpenNonRoute, setPoOpenNonRoute] = useState<boolean>(false);
   const [collapsedPoKey, setCollapsedPoKey] = useState<string | null>(null);
   const poMenuOpen = isPoRoute ? collapsedPoKey !== routeKey : poOpenNonRoute;
 
+  const [paymentsOpenNonRoute, setPaymentsOpenNonRoute] = useState<boolean>(false);
+  const [collapsedPaymentsKey, setCollapsedPaymentsKey] = useState<string | null>(null);
+  const paymentsMenuOpen = isPaymentsRoute
+    ? collapsedPaymentsKey !== routeKey
+    : paymentsOpenNonRoute;
+
   const canViewPurchaseOrders = can("purchaseOrders", "view");
+  const canViewSupplierPayments = can("supplierPayments", "view");
   const poSubItems = useMemo(() => {
     if (!canViewPurchaseOrders) return [];
     const list: Array<{
@@ -185,6 +196,53 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
     return list;
   }, [canViewPurchaseOrders, can, pathname, currentTab]);
 
+  const paymentsSubItems = useMemo(() => {
+    if (!canViewSupplierPayments) return [];
+    const list: Array<{
+      name: string;
+      href: string;
+      icon: React.ComponentType<{ className?: string }>;
+      isActive: boolean;
+    }> = [
+      {
+        name: "All Supplier Payments",
+        href: "/admin/supplier-payments/list",
+        icon: ClipboardList,
+        isActive:
+          pathname === "/admin/supplier-payments/list" || pathname === "/admin/supplier-payments",
+      },
+    ];
+
+    if (can("supplierPayments", "viewOutstanding") || can("supplierPayments", "view")) {
+      list.push({
+        name: "Outstanding Invoices",
+        href: "/admin/supplier-payments/outstanding",
+        icon: Clock,
+        isActive: pathname.startsWith("/admin/supplier-payments/outstanding"),
+      });
+    }
+
+    if (can("supplierPayments", "viewHistory") || can("supplierPayments", "view")) {
+      list.push({
+        name: "Payment History",
+        href: "/admin/supplier-payments/history",
+        icon: History,
+        isActive: pathname.startsWith("/admin/supplier-payments/history"),
+      });
+    }
+
+    if (can("supplierPayments", "exportReports") || can("supplierPayments", "view")) {
+      list.push({
+        name: "Payment Reports",
+        href: "/admin/supplier-payments/reports",
+        icon: FileSpreadsheet,
+        isActive: pathname.startsWith("/admin/supplier-payments/reports"),
+      });
+    }
+
+    return list;
+  }, [canViewSupplierPayments, can, pathname]);
+
   // Filter navigation items strictly based on role permission allowances.
   // When a module's access is revoked in Access Control, it disappears from the sidebar completely.
   const visibleNavItems = useMemo(() => {
@@ -219,7 +277,7 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed top-0 bottom-0 left-0 z-40 flex w-64 flex-col bg-white border-r border-slate-200 transition-transform duration-200 lg:static lg:translate-x-0",
+          "fixed top-0 bottom-0 left-0 z-40 flex w-64 flex-col bg-white border-r border-slate-200 transition-transform duration-200 lg:static lg:translate-x-0 print:hidden",
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
@@ -339,7 +397,89 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
                 </div>
               ) : null;
 
+            const paymentsActive = mounted ? isPaymentsRoute : false;
+            const paymentsGroupElement =
+              canViewSupplierPayments && paymentsSubItems.length > 0 ? (
+                <div key="supplier-payments" className="pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isPaymentsRoute) {
+                        const nextOpen = !paymentsMenuOpen;
+                        setCollapsedPaymentsKey(nextOpen ? null : routeKey);
+                        setPaymentsOpenNonRoute(nextOpen);
+                      } else {
+                        setPaymentsOpenNonRoute((prev) => !prev);
+                      }
+                    }}
+                    className={cn(
+                      "w-full flex items-center justify-between rounded-lg px-3 py-2 text-xs font-medium transition-colors cursor-pointer",
+                      paymentsActive && !paymentsMenuOpen
+                        ? "bg-[#2563EB] text-white font-semibold shadow-sm"
+                        : paymentsActive
+                        ? "bg-blue-50/90 text-blue-700 font-semibold border border-blue-200/70"
+                        : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                    )}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <CreditCard
+                        className={cn(
+                          "h-4 w-4 shrink-0",
+                          paymentsActive && !paymentsMenuOpen
+                            ? "text-white"
+                            : paymentsActive
+                            ? "text-blue-600"
+                            : "text-slate-500"
+                        )}
+                      />
+                      <span className="truncate">Supplier Payments</span>
+                    </div>
+                    {paymentsMenuOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-75" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-75" />
+                    )}
+                  </button>
+
+                  {paymentsMenuOpen && (
+                    <div className="mt-1 ml-3.5 pl-2.5 border-l border-slate-200 space-y-0.5">
+                      {paymentsSubItems.map((sub) => {
+                        const SubIcon = sub.icon;
+                        const subActive = mounted ? sub.isActive : false;
+                        return (
+                          <Link
+                            key={sub.href}
+                            href={sub.href}
+                            onClick={() => {
+                              if (typeof window !== "undefined" && window.innerWidth < 1024) {
+                                onClose();
+                              }
+                            }}
+                            className={cn(
+                              "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+                              subActive
+                                ? "bg-[#2563EB] text-white font-semibold shadow-xs"
+                                : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                            )}
+                          >
+                            <SubIcon
+                              className={cn(
+                                "h-3.5 w-3.5 shrink-0",
+                                subActive ? "text-white" : "text-slate-400"
+                              )}
+                            />
+                            <span className="truncate">{sub.name}</span>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : null;
+
             const hasSuppliers = visibleNavItems.some((i) => i.href === "/admin/suppliers");
+            const hasInvoices = visibleNavItems.some((i) => i.href === "/admin/invoices");
+            const hasApprovals = visibleNavItems.some((i) => i.href === "/admin/approvals");
             const elements: React.ReactNode[] = [];
 
             visibleNavItems.forEach((item) => {
@@ -348,6 +488,10 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
 
               if (!hasSuppliers && poGroupElement && item.href === "/admin/invoices") {
                 elements.push(poGroupElement);
+              }
+
+              if (!hasInvoices && hasApprovals && paymentsGroupElement && item.href === "/admin/approvals") {
+                elements.push(paymentsGroupElement);
               }
 
               elements.push(
@@ -376,14 +520,22 @@ export function AdminSidebar({ isOpen, onClose }: SidebarProps) {
               if (hasSuppliers && item.href === "/admin/suppliers" && poGroupElement) {
                 elements.push(poGroupElement);
               }
+
+              if (hasInvoices && item.href === "/admin/invoices" && paymentsGroupElement) {
+                elements.push(paymentsGroupElement);
+              }
             });
 
             if (
               poGroupElement &&
               !hasSuppliers &&
-              !visibleNavItems.some((i) => i.href === "/admin/invoices")
+              !hasInvoices
             ) {
               elements.push(poGroupElement);
+            }
+
+            if (paymentsGroupElement && !hasInvoices && !hasApprovals) {
+              elements.push(paymentsGroupElement);
             }
 
             return elements;

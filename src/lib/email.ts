@@ -228,3 +228,175 @@ export async function sendUserWelcomeEmail({
     };
   }
 }
+
+export interface SendSupplierPaymentReminderEmailParams {
+  toEmail: string;
+  recipientName: string;
+  reminderType: "UPCOMING_DUE_REMINDER" | "DUE_TODAY" | "OVERDUE";
+  invoiceNumber: string;
+  supplierName: string;
+  jobCode?: string;
+  dueDate: string;
+  outstandingBalanceFormatted: string;
+  countdownLabel: string;
+  invoiceLinkUrl: string;
+}
+
+/**
+ * Dispatches a Supplier Invoice Payment Reminder / Overdue alert email.
+ * Only called when `SupplierPaymentSettings.emailRemindersEnabled === true`.
+ */
+export async function sendSupplierPaymentReminderEmail(
+  params: SendSupplierPaymentReminderEmailParams
+): Promise<SendEmailResult> {
+  const {
+    toEmail,
+    recipientName,
+    reminderType,
+    invoiceNumber,
+    supplierName,
+    jobCode,
+    dueDate,
+    outstandingBalanceFormatted,
+    countdownLabel,
+    invoiceLinkUrl,
+  } = params;
+
+  const badgeColor =
+    reminderType === "OVERDUE"
+      ? "#dc2626"
+      : reminderType === "DUE_TODAY"
+      ? "#d97706"
+      : "#2563eb";
+  const badgeText =
+    reminderType === "OVERDUE"
+      ? "OVERDUE PAYMENT ALERT"
+      : reminderType === "DUE_TODAY"
+      ? "PAYMENT DUE TODAY"
+      : "UPCOMING PAYMENT REMINDER";
+
+  const subject = `[Reflect ERP] ${badgeText}: ${invoiceNumber} (${supplierName}) — ${countdownLabel}`;
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1e293b;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f8fafc;padding:24px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" style="max-width:560px;background-color:#ffffff;border-radius:14px;border:1px solid #e2e8f0;overflow:hidden;">
+          <tr>
+            <td style="background-color:#0f172a;padding:22px 28px;">
+              <div style="display:inline-block;background-color:${badgeColor};color:#ffffff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;letter-spacing:0.06em;">
+                ${badgeText}
+              </div>
+              <h1 style="margin:10px 0 0 0;color:#ffffff;font-size:18px;font-weight:700;">
+                Supplier Invoice Payment Notice
+              </h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:26px 28px;">
+              <p style="margin:0 0 14px 0;font-size:14px;color:#334155;">Hello ${recipientName || "Finance Team"},</p>
+              <p style="margin:0 0 18px 0;font-size:14px;color:#475569;line-height:1.6;">
+                This is an automated reminder regarding Supplier Invoice <strong>${invoiceNumber}</strong> for supplier <strong>${supplierName}</strong>${jobCode ? ` (Job <strong>${jobCode}</strong>)` : ""}.
+              </p>
+              <table role="presentation" width="100%" style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:20px;">
+                <tr>
+                  <td style="padding:4px 0;font-size:12px;color:#64748b;">Payment Due Date</td>
+                  <td style="padding:4px 0;font-size:13px;font-weight:700;color:#0f172a;text-align:right;">${dueDate}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;font-size:12px;color:#64748b;">Status / Countdown</td>
+                  <td style="padding:4px 0;font-size:13px;font-weight:700;color:${badgeColor};text-align:right;">${countdownLabel}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;font-size:12px;color:#64748b;">Outstanding Balance</td>
+                  <td style="padding:4px 0;font-size:15px;font-weight:800;color:#0f172a;text-align:right;">${outstandingBalanceFormatted}</td>
+                </tr>
+              </table>
+              <div style="text-align:center;margin:22px 0 8px 0;">
+                <a href="${invoiceLinkUrl}" target="_blank" style="display:inline-block;background-color:#2563eb;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;">
+                  Open Supplier Invoice &rarr;
+                </a>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#f8fafc;padding:14px 28px;border-top:1px solid #e2e8f0;font-size:11px;color:#94a3b8;text-align:center;">
+              Reflect ERP &mdash; Automated Supplier Payment Notification
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `;
+
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      const port = Number(process.env.SMTP_PORT) || 587;
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port,
+        secure: port === 465,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+
+      const info = await transporter.sendMail({
+        from: process.env.SMTP_FROM || `Reflect ERP <${process.env.SMTP_USER}>`,
+        to: toEmail,
+        subject,
+        html,
+      });
+
+      return { success: true, id: info.messageId };
+    } catch (smtpErr) {
+      return {
+        success: false,
+        error: smtpErr instanceof Error ? smtpErr.message : "SMTP reminder delivery failed.",
+      };
+    }
+  }
+
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: "No email provider configured (SMTP / RESEND_API_KEY).",
+    };
+  }
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: process.env.RESEND_FROM_EMAIL || "Reflect ERP <onboarding@resend.dev>",
+        to: [toEmail],
+        subject,
+        html,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, error: data.message || "Resend delivery failed." };
+    }
+    return { success: true, id: data.id };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Network error sending reminder email.",
+    };
+  }
+}

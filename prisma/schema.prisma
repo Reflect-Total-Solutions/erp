@@ -160,6 +160,20 @@ model User {
   poAuditLogs              PurchaseOrderAuditLog[]       @relation("POAuditActor")
   updatedPOSettings        PurchaseOrderSettings[]       @relation("POSettingsUpdatedBy")
 
+  // Supplier Payment & Notification inverse relations
+  createdSupplierPayments        SupplierPayment[]         @relation("SupplierPaymentCreatedBy")
+  updatedSupplierPayments        SupplierPayment[]         @relation("SupplierPaymentUpdatedBy")
+  reversedSupplierPayments       SupplierPayment[]         @relation("SupplierPaymentReversedBy")
+  supplierPaymentAuditLogs       SupplierPaymentAuditLog[] @relation("SupplierPaymentAuditUser")
+  updatedSupplierPaymentSettings SupplierPaymentSettings[] @relation("SupplierPaymentSettingsUpdatedBy")
+  notifications                  Notification[]            @relation("UserNotifications")
+
+  // Job Additional Expenses inverse relations
+  createdAdditionalExpenses      JobAdditionalExpense[]         @relation("JobAdditionalExpenseCreatedBy")
+  updatedAdditionalExpenses      JobAdditionalExpense[]         @relation("JobAdditionalExpenseUpdatedBy")
+  cancelledAdditionalExpenses    JobAdditionalExpense[]         @relation("JobAdditionalExpenseCancelledBy")
+  additionalExpenseAuditLogs     JobAdditionalExpenseAuditLog[] @relation("JobAdditionalExpenseAuditUser")
+
   @@index([email, deletedAt])
   @@index([isActive, deletedAt])
   @@map("users")
@@ -184,8 +198,11 @@ model Supplier {
 
   createdBy     User?     @relation("SupplierCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   updatedBy     User?     @relation("SupplierUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
-  supplierInvoices SupplierInvoice[]
-  purchaseOrders   PurchaseOrder[]
+  supplierInvoices      SupplierInvoice[]
+  purchaseOrders        PurchaseOrder[]
+  supplierPayments      SupplierPayment[]
+  notifications         Notification[]
+  additionalJobExpenses JobAdditionalExpense[]
 
   // Composite indexes for fast lookups
   @@index([code, deletedAt])
@@ -282,6 +299,8 @@ model Job {
   supplierInvoices SupplierInvoice[]
   supplierInvoiceAttachments SupplierInvoiceAttachment[]
   purchaseOrders PurchaseOrder[]
+  supplierPayments SupplierPayment[]
+  additionalExpenses JobAdditionalExpense[]
 
   @@index([jobCode, deletedAt])
   @@index([status, deletedAt])
@@ -324,7 +343,8 @@ model JobCostItem {
 
   job         Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
   category    JobCostCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-  purchaseOrderItems PurchaseOrderItem[]
+  purchaseOrderItems   PurchaseOrderItem[]
+  supplierInvoiceItems SupplierInvoiceItem[]
 
   @@index([jobId])
   @@index([categoryId])
@@ -490,9 +510,17 @@ model SupplierInvoice {
   jobId               String                      @map("job_id")
   purchaseOrderId     String?                     @map("purchase_order_id")
   invoiceDate         DateTime                    @default(now()) @map("invoice_date")
+  paymentDueDate      DateTime?                   @map("payment_due_date")
+  paymentTerms        String?                     @map("payment_terms")
+  creditPeriodDays    Int?                        @map("credit_period_days")
+  paymentStatus       String                      @default("UNPAID") @map("payment_status") // "UNPAID" | "PARTIALLY_PAID" | "PAID" | "OVERDUE" | "CANCELLED"
+  paidAmount          Decimal                     @default(0) @map("paid_amount") @db.Decimal(18, 2)
+  lastPaymentDate     DateTime?                   @map("last_payment_date")
   totalAmount         Decimal                     @default(0) @map("total_amount") @db.Decimal(18, 2)
   status              String                      @default("APPROVED") // "APPROVED" | "PAID" | "CANCELLED"
   notes               String?
+  budgetOverrideUsed   Boolean                    @default(false) @map("budget_override_used")
+  budgetOverrideReason String?                    @map("budget_override_reason")
   cancellationReason  String?                     @map("cancellation_reason")
   cancelledAt         DateTime?                   @map("cancelled_at")
   cancelledById       String?                     @map("cancelled_by_id")
@@ -511,33 +539,50 @@ model SupplierInvoice {
   items               SupplierInvoiceItem[]
   attachments         SupplierInvoiceAttachment[]
   auditLogs           SupplierInvoiceAuditLog[]
+  payments            SupplierPayment[]
+  paymentAuditLogs    SupplierPaymentAuditLog[]
+  notifications       Notification[]
+  linkedAdditionalExpenses JobAdditionalExpense[]
 
   @@index([supplierId, deletedAt])
   @@index([jobId, deletedAt])
   @@index([purchaseOrderId])
   @@index([invoiceNumber])
   @@index([status, deletedAt])
+  @@index([paymentDueDate, deletedAt])
+  @@index([paymentStatus, deletedAt])
   @@map("supplier_invoices")
 }
 
 model SupplierInvoiceItem {
-  id                  String                      @id @default(cuid())
-  invoiceId           String                      @map("invoice_id")
-  purchaseOrderItemId String?                     @map("purchase_order_item_id")
-  rowNumber           Int                         @default(1) @map("row_number")
-  description         String
-  quantity            Decimal?                    @db.Decimal(18, 4)
-  amount              Decimal                     @default(0) @db.Decimal(18, 2)
-  notes               String?
-  createdAt           DateTime                    @default(now()) @map("created_at")
-  updatedAt           DateTime                    @updatedAt @map("updated_at")
+  id                   String                      @id @default(cuid())
+  invoiceId            String                      @map("invoice_id")
+  purchaseOrderItemId  String?                     @map("purchase_order_item_id")
+  jobCostCategoryId    String?                     @map("job_cost_category_id")
+  jobCostCategoryName  String?                     @map("job_cost_category_name")
+  jobCostItemId        String?                     @map("job_cost_item_id")
+  rowNumber            Int                         @default(1) @map("row_number")
+  description          String
+  originalJobAmount    Decimal?                    @map("original_job_amount") @db.Decimal(18, 2)
+  quantity             Decimal?                    @db.Decimal(18, 4)
+  unit                 String?
+  unitRate             Decimal?                    @map("unit_rate") @db.Decimal(18, 2)
+  amount               Decimal                     @default(0) @db.Decimal(18, 2)
+  isAdditionalItem     Boolean                     @default(false) @map("is_additional_item")
+  budgetOverrideReason String?                     @map("budget_override_reason")
+  notes                String?
+  createdAt            DateTime                    @default(now()) @map("created_at")
+  updatedAt            DateTime                    @updatedAt @map("updated_at")
 
-  invoice             SupplierInvoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  purchaseOrderItem   PurchaseOrderItem?          @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
-  attachments         SupplierInvoiceAttachment[]
+  invoice              SupplierInvoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  purchaseOrderItem    PurchaseOrderItem?          @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
+  jobCostItem          JobCostItem?                @relation(fields: [jobCostItemId], references: [id], onDelete: SetNull)
+  attachments          SupplierInvoiceAttachment[]
 
   @@index([invoiceId])
   @@index([purchaseOrderItemId])
+  @@index([jobCostItemId])
+  @@unique([invoiceId, jobCostItemId])
   @@map("supplier_invoice_items")
 }
 
@@ -833,5 +878,182 @@ model PurchaseOrderAuditLog {
 
   @@index([purchaseOrderId, createdAt])
   @@map("purchase_order_audit_logs")
+}
+
+// ─── Supplier Payments, Audit Logs, Settings & Notifications ─────────────────
+
+model SupplierPayment {
+  id                     String    @id @default(cuid())
+  paymentNumber          String    @unique @map("payment_number")
+  supplierInvoiceId      String    @map("supplier_invoice_id")
+  supplierId             String    @map("supplier_id")
+  jobId                  String    @map("job_id")
+  paymentDate            DateTime  @map("payment_date")
+  amount                 Decimal   @db.Decimal(18, 2)
+  paymentMethod          String    @map("payment_method") // "Bank Transfer" | "Cash" | "Cheque" | "Online Transfer" | "Other"
+  referenceNumber        String?   @map("reference_number")
+  bankAccountName        String?   @map("bank_account_name")
+  notes                  String?
+  attachmentName         String?   @map("attachment_name")
+  attachmentOriginalName String?   @map("attachment_original_name")
+  attachmentBucket       String?   @default("supplier-payments") @map("attachment_bucket")
+  attachmentStoragePath  String?   @map("attachment_storage_path")
+  attachmentSize         String?   @map("attachment_size")
+  attachmentMimeType     String?   @map("attachment_mime_type")
+  idempotencyKey         String?   @unique @map("idempotency_key")
+  status                 String    @default("SUCCESS") // "SUCCESS" | "REVERSED"
+  createdById            String?   @map("created_by_id")
+  updatedById            String?   @map("updated_by_id")
+  reversedAt             DateTime? @map("reversed_at")
+  reversedById           String?   @map("reversed_by_id")
+  reversalReason         String?   @map("reversal_reason")
+  correctionReason       String?   @map("correction_reason")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  supplierInvoice        SupplierInvoice           @relation(fields: [supplierInvoiceId], references: [id], onDelete: Restrict)
+  supplier               Supplier                  @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  job                    Job                       @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  createdBy              User?                     @relation("SupplierPaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy              User?                     @relation("SupplierPaymentUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  reversedBy             User?                     @relation("SupplierPaymentReversedBy", fields: [reversedById], references: [id], onDelete: SetNull)
+  auditLogs              SupplierPaymentAuditLog[]
+  notifications          Notification[]
+
+  @@index([supplierInvoiceId, status])
+  @@index([supplierId, paymentDate])
+  @@index([jobId])
+  @@index([paymentDate])
+  @@index([status])
+  @@map("supplier_payments")
+}
+
+model SupplierPaymentAuditLog {
+  id           String           @id @default(cuid())
+  paymentId    String?          @map("payment_id")
+  invoiceId    String?          @map("invoice_id")
+  userId       String?          @map("user_id")
+  action       String           // "CREATE" | "EDIT" | "REVERSE" | "DUE_DATE_CHANGE"
+  reason       String?
+  previousData Json?            @map("previous_data")
+  newData      Json?            @map("new_data")
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  payment      SupplierPayment? @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice      SupplierInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  user         User?            @relation("SupplierPaymentAuditUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([paymentId, createdAt])
+  @@index([invoiceId, createdAt])
+  @@map("supplier_payment_audit_logs")
+}
+
+model SupplierPaymentSettings {
+  id                     String   @id @default("default")
+  timezone               String   @default("Asia/Colombo")
+  upcomingReminderDays   Json     @default("[7,3,1]") @map("upcoming_reminder_days")
+  notifyOnDueToday       Boolean  @default(true) @map("notify_on_due_today")
+  notifyDailyOverdue     Boolean  @default(true) @map("notify_daily_overdue")
+  notifyOnPartialPayment Boolean  @default(true) @map("notify_on_partial_payment")
+  notifyOnFullPayment    Boolean  @default(true) @map("notify_on_full_payment")
+  emailRemindersEnabled  Boolean  @default(false) @map("email_reminders_enabled")
+  updatedById            String?  @map("updated_by_id")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  updatedBy              User?    @relation("SupplierPaymentSettingsUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("supplier_payment_settings")
+}
+
+model Notification {
+  id                String           @id @default(cuid())
+  userId            String           @map("user_id")
+  category          String           @default("SUPPLIER_PAYMENT")
+  type              String           // "UPCOMING_DUE_REMINDER" | "DUE_TODAY" | "OVERDUE" | "PARTIAL_PAYMENT_RECORDED" | "FULL_PAYMENT_COMPLETED"
+  title             String
+  message           String
+  linkUrl           String?          @map("link_url")
+  supplierInvoiceId String?          @map("supplier_invoice_id")
+  supplierId        String?          @map("supplier_id")
+  supplierPaymentId String?          @map("supplier_payment_id")
+  scheduledDateKey  String?          @map("scheduled_date_key")
+  dedupKey          String?          @unique @map("dedup_key")
+  metadata          Json?
+  isRead            Boolean          @default(false) @map("is_read")
+  readAt            DateTime?        @map("read_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+
+  user              User             @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  supplierInvoice   SupplierInvoice? @relation(fields: [supplierInvoiceId], references: [id], onDelete: Cascade)
+  supplier          Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplierPayment   SupplierPayment? @relation(fields: [supplierPaymentId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@index([supplierInvoiceId, type])
+  @@map("notifications")
+}
+
+// ─── Job Additional Expenses & Audit Trail ───────────────────────────────────
+
+model JobAdditionalExpense {
+  id                      String           @id @default(cuid())
+  jobId                   String           @map("job_id")
+  expenseDate             DateTime         @map("expense_date")
+  category                String
+  description             String
+  amount                  Decimal          @db.Decimal(18, 2)
+  supplierId              String?          @map("supplier_id")
+  payeeName               String?          @map("payee_name")
+  paymentReference        String?          @map("payment_reference")
+  linkedSupplierInvoiceId String?          @map("linked_supplier_invoice_id")
+  attachmentName          String?          @map("attachment_name")
+  attachmentOriginalName  String?          @map("attachment_original_name")
+  attachmentBucket        String?          @default("job-additional-expenses") @map("attachment_bucket")
+  attachmentStoragePath   String?          @map("attachment_storage_path")
+  attachmentSize          String?          @map("attachment_size")
+  attachmentMimeType      String?          @map("attachment_mime_type")
+  notes                   String?
+  status                  String           @default("ACTIVE") // "ACTIVE" | "CANCELLED"
+  cancellationReason      String?          @map("cancellation_reason")
+  cancelledAt             DateTime?        @map("cancelled_at")
+  cancelledById           String?          @map("cancelled_by_id")
+  createdById             String?          @map("created_by_id")
+  updatedById             String?          @map("updated_by_id")
+  createdAt               DateTime         @default(now()) @map("created_at")
+  updatedAt               DateTime         @updatedAt @map("updated_at")
+
+  job                     Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  supplier                Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  linkedSupplierInvoice   SupplierInvoice? @relation(fields: [linkedSupplierInvoiceId], references: [id], onDelete: SetNull)
+  createdBy               User?            @relation("JobAdditionalExpenseCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy               User?            @relation("JobAdditionalExpenseUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  cancelledBy             User?            @relation("JobAdditionalExpenseCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  auditLogs               JobAdditionalExpenseAuditLog[]
+
+  @@index([jobId, status])
+  @@index([expenseDate])
+  @@index([supplierId])
+  @@index([linkedSupplierInvoiceId])
+  @@map("job_additional_expenses")
+}
+
+model JobAdditionalExpenseAuditLog {
+  id           String               @id @default(cuid())
+  expenseId    String               @map("expense_id")
+  jobId        String               @map("job_id")
+  userId       String?              @map("user_id")
+  action       String               // "CREATE" | "EDIT" | "CANCEL"
+  reason       String?
+  previousData Json?                @map("previous_data")
+  newData      Json?                @map("new_data")
+  createdAt    DateTime             @default(now()) @map("created_at")
+
+  expense      JobAdditionalExpense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user         User?                @relation("JobAdditionalExpenseAuditUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([expenseId, createdAt])
+  @@index([jobId, createdAt])
+  @@map("job_additional_expense_audit_logs")
 }
 

@@ -202,6 +202,12 @@ export function AccessControlView() {
         icon: FileText,
       },
       {
+        key: "supplierPayments",
+        title: "Supplier Payments",
+        description: "Partial/full supplier payments, payment due dates, alerts, and settlement reports",
+        icon: ClipboardCheck,
+      },
+      {
         key: "profitLoss",
         title: "Profit & Loss",
         description: "Comprehensive financial reporting, cost variance, and net profit margins",
@@ -1818,6 +1824,7 @@ export function AccessControlView() {
           purchaseOrders: ClipboardList,
           approvals: CheckCircle2,
           supplierInvoices: FileText,
+          supplierPayments: ClipboardCheck,
           profitLoss: FileSpreadsheet,
           accessControl: ShieldCheck,
           invoices: FileText,

@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { getPrisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { supplierUpdateSchema } from "@/lib/validations/supplier";
 import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
+import { roundMoney, toDateKey } from "@/lib/supplier-payment-date";
+import {
+  enrichInvoiceWithPaymentSummary,
+  serializeSupplierPayment,
+} from "@/lib/supplier-payment-helpers";
+import { getOrCreateSupplierPaymentSettings } from "@/lib/supplier-payment-notifications";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -30,13 +36,49 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
   const { id } = await params;
 
   try {
-    const supplier = await prisma.supplier.findUnique({
-      where: { id },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-        updatedBy: { select: { id: true, name: true, email: true } },
-      },
-    });
+    const db = getPrisma();
+    const paymentSettings = await getOrCreateSupplierPaymentSettings(db);
+    const [supplier, invoices, payments] = await Promise.all([
+      db.supplier.findUnique({
+        where: { id },
+        include: {
+          createdBy: { select: { id: true, name: true, email: true } },
+          updatedBy: { select: { id: true, name: true, email: true } },
+        },
+      }),
+      db.supplierInvoice.findMany({
+        where: { supplierId: id, deletedAt: null },
+        orderBy: { invoiceDate: "desc" },
+        include: {
+          job: { select: { id: true, jobCode: true, name: true, clientName: true } },
+          payments: {
+            where: { status: "SUCCESS" },
+            select: { id: true, amount: true, status: true, paymentDate: true },
+          },
+        },
+      }),
+      db.supplierPayment.findMany({
+        where: { supplierId: id },
+        orderBy: { paymentDate: "desc" },
+        include: {
+          supplierInvoice: {
+            select: {
+              id: true,
+              invoiceNumber: true,
+              invoiceDate: true,
+              paymentDueDate: true,
+              totalAmount: true,
+              paidAmount: true,
+              paymentStatus: true,
+            },
+          },
+          job: { select: { id: true, jobCode: true, name: true } },
+          supplier: { select: { id: true, code: true, name: true } },
+          createdBy: { select: { id: true, name: true } },
+          reversedBy: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
 
     if (!supplier) {
       return NextResponse.json(
@@ -44,6 +86,38 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         { status: 404 }
       );
     }
+
+    let totalBilled = 0;
+    let totalPaid = 0;
+    let outstandingBalance = 0;
+    let overdueInvoiceCount = 0;
+    let overdueBalance = 0;
+
+    const formattedInvoices = invoices.map((inv) => {
+      const summary = enrichInvoiceWithPaymentSummary(inv, paymentSettings.timezone);
+      if (inv.status !== "CANCELLED") {
+        totalBilled = roundMoney(totalBilled + summary.totalAmount);
+        totalPaid = roundMoney(totalPaid + summary.paidAmount);
+        outstandingBalance = roundMoney(
+          outstandingBalance + summary.outstandingBalance
+        );
+        if (summary.isOverdue) {
+          overdueInvoiceCount += 1;
+          overdueBalance = roundMoney(overdueBalance + summary.outstandingBalance);
+        }
+      }
+      return {
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        jobId: inv.jobId,
+        jobCode: inv.job?.jobCode || "—",
+        jobName: inv.job?.name || "—",
+        clientName: inv.job?.clientName || "—",
+        invoiceDate: toDateKey(inv.invoiceDate) || "",
+        status: inv.status,
+        ...summary,
+      };
+    });
 
     return NextResponse.json({
       success: true,
@@ -64,6 +138,19 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         createdByName: supplier.createdBy?.name || null,
         updatedById: supplier.updatedById || null,
         updatedByName: supplier.updatedBy?.name || null,
+        summary: {
+          invoiceCount: invoices.filter((i) => i.status !== "CANCELLED").length,
+          totalBilled,
+          totalPaid,
+          outstandingBalance,
+          overdueInvoiceCount,
+          overdueBalance,
+          paymentCount: payments.filter((p) => p.status === "SUCCESS").length,
+        },
+        invoices: formattedInvoices,
+        payments: payments.map((p) =>
+          serializeSupplierPayment(p, paymentSettings.timezone)
+        ),
       },
     });
   } catch (err) {
@@ -123,8 +210,9 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   const updates = result.data;
 
   try {
+    const db = getPrisma();
     // 2. Verify supplier exists
-    const existing = await prisma.supplier.findUnique({
+    const existing = await db.supplier.findUnique({
       where: { id },
     });
 
@@ -137,7 +225,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
 
     // 3. If updating code, verify uniqueness among other active suppliers
     if (updates.code && updates.code.toUpperCase() !== existing.code.toUpperCase()) {
-      const duplicateCode = await prisma.supplier.findFirst({
+      const duplicateCode = await db.supplier.findFirst({
         where: {
           id: { not: id },
           code: { equals: updates.code, mode: "insensitive" },
@@ -157,7 +245,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
 
     // 4. If updating email, verify uniqueness among other active suppliers
     if (updates.email && updates.email.toLowerCase() !== existing.email.toLowerCase()) {
-      const duplicateEmail = await prisma.supplier.findFirst({
+      const duplicateEmail = await db.supplier.findFirst({
         where: {
           id: { not: id },
           email: { equals: updates.email, mode: "insensitive" },
@@ -176,7 +264,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     }
 
     // 5. Update in database
-    const updated = await prisma.supplier.update({
+    const updated = await db.supplier.update({
       where: { id },
       data: {
         ...(updates.code && { code: updates.code }),
@@ -262,7 +350,8 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
   const isPermanent = searchParams.get("permanent") === "true";
 
   try {
-    const existing = await prisma.supplier.findUnique({
+    const db = getPrisma();
+    const existing = await db.supplier.findUnique({
       where: { id },
     });
 
@@ -284,8 +373,8 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
 
       // Protect suppliers linked to Purchase Orders or Supplier Invoices from permanent purge
       const [poCount, invoiceCount] = await Promise.all([
-        prisma.purchaseOrder.count({ where: { supplierId: id } }),
-        prisma.supplierInvoice.count({ where: { supplierId: id } }),
+        db.purchaseOrder.count({ where: { supplierId: id } }),
+        db.supplierInvoice.count({ where: { supplierId: id } }),
       ]);
 
       if (poCount > 0 || invoiceCount > 0) {
@@ -305,7 +394,7 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
       }
 
       // Permanent Purge
-      await prisma.supplier.delete({
+      await db.supplier.delete({
         where: { id },
       });
 
@@ -326,7 +415,7 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
     }
 
     // Default: Soft Delete (Set deletedAt timestamp and deactivate)
-    const softDeleted = await prisma.supplier.update({
+    const softDeleted = await db.supplier.update({
       where: { id },
       data: {
         deletedAt: new Date(),

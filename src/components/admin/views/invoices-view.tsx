@@ -42,6 +42,7 @@ export function InvoicesView() {
     suppliers,
     showToast,
     refreshJobs,
+    refreshSuppliers,
     can,
     currentRole,
   } = useAdminData();
@@ -70,18 +71,28 @@ export function InvoicesView() {
   // Modals for Supplier Invoices
   const [isCreateSupplierModalOpen, setIsCreateSupplierModalOpen] = useState(false);
   const [viewingSupplierInvoice, setViewingSupplierInvoice] = useState<SupplierInvoice | null>(null);
+  const [deepLinkInvoiceId, setDeepLinkInvoiceId] = useState<string | null>(null);
   const [isViewSupplierModalOpen, setIsViewSupplierModalOpen] = useState(false);
   const [editingSupplierInvoice, setEditingSupplierInvoice] = useState<SupplierInvoice | null>(null);
   const [isEditSupplierModalOpen, setIsEditSupplierModalOpen] = useState(false);
   const [isZippingBulk, setIsZippingBulk] = useState(false);
   const searchParams = useSearchParams();
   const createForJob = searchParams?.get("createForJob") || null;
+  const viewInvoiceIdParam = searchParams?.get("viewInvoiceId") || null;
 
   useEffect(() => {
     if (createForJob) {
       setIsCreateSupplierModalOpen(true);
     }
   }, [createForJob]);
+
+  useEffect(() => {
+    if (viewInvoiceIdParam) {
+      setViewingSupplierInvoice(null);
+      setDeepLinkInvoiceId(viewInvoiceIdParam);
+      setIsViewSupplierModalOpen(true);
+    }
+  }, [viewInvoiceIdParam]);
 
   // Download Loader progress state
   const [downloadProgress, setDownloadProgress] = useState<{
@@ -548,7 +559,7 @@ export function InvoicesView() {
         {/* Supplier Invoices Table */}
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
           {loadingSupplierInvoices && supplierInvoices.length === 0 ? (
-            <TableSkeleton rows={6} columns={10} />
+            <TableSkeleton rows={6} columns={12} />
           ) : (
             <>
               <div className="overflow-x-auto">
@@ -574,8 +585,10 @@ export function InvoicesView() {
                   <th className="py-3 px-3.5">Supplier Name</th>
                   <th className="py-3 px-3.5">Linked Job</th>
                   <th className="py-3 px-3.5">Invoice Date</th>
+                  <th className="py-3 px-3.5">Due Date</th>
                   <th className="py-3 px-3.5 text-center">Attachments</th>
                   <th className="py-3 px-3.5 text-right">Invoice Amount (Rs.)</th>
+                  <th className="py-3 px-3.5 text-right">Paid / Balance</th>
                   <th className="py-3 px-3.5">Created By</th>
                   <th className="py-3 px-3.5 text-center">Status</th>
                   <th className="py-3 px-3.5 text-right">Actions</th>
@@ -584,14 +597,14 @@ export function InvoicesView() {
               <tbody className="divide-y divide-slate-100">
                 {loadingSupplierInvoices ? (
                   <tr>
-                    <td colSpan={10} className="py-12 text-center text-slate-400">
+                    <td colSpan={12} className="py-12 text-center text-slate-400">
                       <Loader2 className="h-6 w-6 animate-spin text-blue-600 mx-auto mb-2" />
                       <p className="text-xs font-semibold">Loading supplier invoices...</p>
                     </td>
                   </tr>
                 ) : paginatedSupplierInvoices.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="py-12 text-center text-slate-400">
+                    <td colSpan={12} className="py-12 text-center text-slate-400">
                       <FileText className="h-10 w-10 text-slate-300 stroke-[1.5] mx-auto mb-2" />
                       <p className="text-sm font-semibold text-slate-600">No Supplier Invoices Recorded</p>
                       <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
@@ -616,6 +629,8 @@ export function InvoicesView() {
                     const totalAttCount =
                       (inv.attachments?.length || 0) +
                       (inv.items || []).reduce((sum, item) => sum + (item.attachments?.length || 0), 0);
+                    const paidAmt = Number(inv.paidAmount ?? 0);
+                    const outAmt = Number(inv.outstandingBalance ?? (isCancelled ? 0 : inv.totalAmount));
 
                     return (
                       <tr
@@ -686,6 +701,26 @@ export function InvoicesView() {
                         <td className="py-3.5 px-3.5 text-slate-600 font-mono whitespace-nowrap">
                           {inv.invoiceDate}
                         </td>
+                        <td className="py-3.5 px-3.5 whitespace-nowrap">
+                          <span
+                            className={`font-mono block ${
+                              inv.isOverdue && !isCancelled
+                                ? "text-rose-700 font-bold"
+                                : "text-slate-700"
+                            }`}
+                          >
+                            {inv.paymentDueDate || inv.invoiceDate}
+                          </span>
+                          {!isCancelled && inv.countdown?.label && (
+                            <span
+                              className={`text-[10px] block ${
+                                inv.isOverdue ? "text-rose-600 font-semibold" : "text-slate-400"
+                              }`}
+                            >
+                              {inv.countdown.label}
+                            </span>
+                          )}
+                        </td>
                         <td className="py-3.5 px-3.5 text-center">
                           {totalAttCount > 0 ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-semibold">
@@ -701,12 +736,40 @@ export function InvoicesView() {
                             {formatCurrency(inv.totalAmount, { showCurrencyPrefix: true })}
                           </span>
                         </td>
+                        <td className="py-3.5 px-3.5 text-right font-mono whitespace-nowrap">
+                          <span className="block text-[11px] text-emerald-700 font-semibold">
+                            Paid: {formatCurrency(paidAmt)}
+                          </span>
+                          <span
+                            className={`block text-[11px] font-bold ${
+                              outAmt <= 0
+                                ? "text-slate-400"
+                                : inv.isOverdue && !isCancelled
+                                ? "text-rose-700"
+                                : "text-blue-800"
+                            }`}
+                          >
+                            Bal: {formatCurrency(outAmt)}
+                          </span>
+                        </td>
                         <td className="py-3.5 px-3.5 text-slate-600">
                           <span className="block font-medium text-slate-800">{inv.createdByName || "Admin"}</span>
                           <span className="block text-[10px] text-slate-400 font-mono">{inv.createdAt}</span>
                         </td>
                         <td className="py-3.5 px-3.5 text-center whitespace-nowrap">
-                          <StatusBadge status={inv.status} />
+                          <div className="inline-flex flex-col items-center gap-1">
+                            <StatusBadge status={inv.status} />
+                            {!isCancelled && inv.paymentStatus && (
+                              <div className="flex items-center gap-1">
+                                <StatusBadge status={inv.paymentStatus} />
+                                {inv.paymentStatus === "OVERDUE" && inv.isPartiallyPaid && (
+                                  <span className="text-[9px] font-bold px-1 py-0.2 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                                    Partial
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3.5 px-3.5 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1">
@@ -798,11 +861,22 @@ export function InvoicesView() {
         onClose={() => {
           setIsViewSupplierModalOpen(false);
           setViewingSupplierInvoice(null);
+          setDeepLinkInvoiceId(null);
         }}
         invoice={viewingSupplierInvoice}
+        invoiceId={viewingSupplierInvoice ? undefined : deepLinkInvoiceId}
         onCancelInvoice={handleCancelSupplierInvoice}
+        onPaymentUpdated={() => {
+          fetchSupplierInvoices();
+          if (refreshSuppliers) void refreshSuppliers();
+        }}
         onEditInvoice={handleOpenEditSupplierInvoice}
         isAdmin={isAdmin}
+        canEdit={can("supplierInvoices", "edit")}
+        canCancel={can("supplierInvoices", "cancel")}
+        canManageAttachments={
+          can("supplierInvoices", "edit") || can("supplierInvoices", "manageAttachments")
+        }
       />
 
       {/* ========================================================================= */}

@@ -51,7 +51,18 @@ export async function GET(_req: NextRequest) {
       else if (roleName === "supervisor") mappedId = "role-supervisor";
       else if (roleName === "employee") mappedId = "role-employer";
 
-      const mergedPolicy: PermissionsPolicy = { ...baseDefault, ...(customData || {}) };
+      const mergedPolicy: PermissionsPolicy = {};
+      for (const [modKey, acts] of Object.entries(baseDefault)) {
+        mergedPolicy[modKey as ERPModule] = { ...(acts || {}) };
+      }
+      if (customData) {
+        for (const [modKey, acts] of Object.entries(customData)) {
+          mergedPolicy[modKey as ERPModule] = {
+            ...(mergedPolicy[modKey as ERPModule] || {}),
+            ...(acts || {}),
+          };
+        }
+      }
 
       // Apply relational role_permissions if populated
       if (r.permissions && r.permissions.length > 0) {

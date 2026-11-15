@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { Modal } from "@/components/admin/ui/modal";
 import { Job, JobCostCategory, JobCostItem, JobCostSummary, JobStatus } from "@/types/admin";
 import {
@@ -51,7 +51,65 @@ interface EditableItem {
   sortOrder: number;
 }
 
-export function EditJobCostsModal({
+function buildInitialCategories(job: Job): EditableCategory[] {
+  if (job.costCategories && job.costCategories.length > 0) {
+    return job.costCategories.map((c, cIdx) => ({
+      id: c.id,
+      name: c.name,
+      sortOrder: c.sortOrder || cIdx + 1,
+      subtotal: Number(c.subtotal || 0),
+      items: (c.items || []).map((i, iIdx) => ({
+        id: i.id,
+        itemNumber: i.itemNumber || iIdx + 1,
+        description: i.description || "",
+        rcNrc: (i.rcNrc as "RC" | "NRC") || "NRC",
+        quantity: Number(i.quantity || 1),
+        rate: Number(i.rate || 0),
+        totalCost: Number(i.totalCost || 0),
+        sortOrder: i.sortOrder || iIdx + 1,
+      })),
+    }));
+  }
+  if (job.costItems && job.costItems.length > 0) {
+    return [
+      {
+        name: "Production Cost",
+        sortOrder: 1,
+        subtotal: job.costItems.reduce((s, i) => s + (Number(i.totalCost) || 0), 0),
+        items: job.costItems.map((i, iIdx) => ({
+          id: i.id,
+          itemNumber: i.itemNumber || iIdx + 1,
+          description: i.description,
+          rcNrc: (i.rcNrc as "RC" | "NRC") || "NRC",
+          quantity: Number(i.quantity || 1),
+          rate: Number(i.rate || 0),
+          totalCost: Number(i.totalCost || 0),
+          sortOrder: i.sortOrder || iIdx + 1,
+        })),
+      },
+    ];
+  }
+  return [
+    {
+      name: "Production Cost",
+      sortOrder: 1,
+      subtotal: 0,
+      items: [],
+    },
+  ];
+}
+
+export function EditJobCostsModal(props: EditJobCostsModalProps) {
+  if (!props.isOpen) return null;
+  return (
+    <EditJobCostsModalInner
+      key={`${props.job.id}-${props.job.updatedAt || ""}`}
+      {...props}
+    />
+  );
+}
+
+function EditJobCostsModalInner({
   isOpen,
   onClose,
   job,
@@ -70,7 +128,9 @@ export function EditJobCostsModal({
   const [status, setStatus] = useState<JobStatus>(job.status || "Active");
 
   // Cost Categories & Items
-  const [categories, setCategories] = useState<EditableCategory[]>([]);
+  const [categories, setCategories] = useState<EditableCategory[]>(() =>
+    buildInitialCategories(job)
+  );
 
   // Cost Summary & Taxes
   const [taxType, setTaxType] = useState(job.costSummary?.taxType || "SSCL");
@@ -84,77 +144,6 @@ export function EditJobCostsModal({
 
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"info" | "categories" | "summary">("categories");
-
-  // Initialize editable state when job changes
-  useEffect(() => {
-    setName(job.name || "");
-    setJobCode(job.jobCode || "");
-    setClientName(job.clientName || "");
-    setDate(job.date || "");
-    setCommencingDate(job.commencingDate || job.date || "");
-    setHandledBy(job.handledBy || "");
-    setDescription(job.description || "");
-    setStatus(job.status || "Active");
-
-    if (job.costCategories && job.costCategories.length > 0) {
-      setCategories(
-        job.costCategories.map((c, cIdx) => ({
-          id: c.id,
-          name: c.name,
-          sortOrder: c.sortOrder || cIdx + 1,
-          subtotal: Number(c.subtotal || 0),
-          items: (c.items || []).map((i, iIdx) => ({
-            id: i.id,
-            itemNumber: i.itemNumber || iIdx + 1,
-            description: i.description || "",
-            rcNrc: (i.rcNrc as "RC" | "NRC") || "NRC",
-            quantity: Number(i.quantity || 1),
-            rate: Number(i.rate || 0),
-            totalCost: Number(i.totalCost || 0),
-            sortOrder: i.sortOrder || iIdx + 1,
-          })),
-        }))
-      );
-    } else if (job.costItems && job.costItems.length > 0) {
-      setCategories([
-        {
-          name: "Production Cost",
-          sortOrder: 1,
-          subtotal: job.costItems.reduce((s, i) => s + (Number(i.totalCost) || 0), 0),
-          items: job.costItems.map((i, iIdx) => ({
-            id: i.id,
-            itemNumber: i.itemNumber || iIdx + 1,
-            description: i.description,
-            rcNrc: (i.rcNrc as "RC" | "NRC") || "NRC",
-            quantity: Number(i.quantity || 1),
-            rate: Number(i.rate || 0),
-            totalCost: Number(i.totalCost || 0),
-            sortOrder: i.sortOrder || iIdx + 1,
-          })),
-        },
-      ]);
-    } else {
-      setCategories([
-        {
-          name: "Production Cost",
-          sortOrder: 1,
-          subtotal: 0,
-          items: [],
-        },
-      ]);
-    }
-
-    if (job.costSummary) {
-      setTaxType(job.costSummary.taxType || "SSCL");
-      setTaxRate(Number(job.costSummary.taxRate ?? 2.5));
-      setAgencyOperationFee(Number(job.costSummary.agencyOperationFee || 0));
-      setAgencyProductionFee(Number(job.costSummary.agencyProductionFee || 0));
-      setAdminCharges(Number(job.costSummary.adminCharges || 0));
-      setMonitoringCost(Number(job.costSummary.monitoringCost || 0));
-      setArtworkCharges(Number(job.costSummary.artworkCharges || 0));
-      setContingencies(Number(job.costSummary.contingencies || 0));
-    }
-  }, [job]);
 
   // ── Calculation Helpers ──────────────────────────────────────────────────
   const allItemsList = categories.flatMap((c) => c.items);
@@ -287,10 +276,12 @@ export function EditJobCostsModal({
         totalCost: itemsSubtotal,
         grandTotal,
         costCategories: categories.map((c, cIdx) => ({
+          ...(c.id ? { id: c.id } : {}),
           name: c.name,
           sortOrder: cIdx + 1,
           subtotal: sumFinancial(c.items.map((i) => i.totalCost)).toNumber(),
           items: c.items.map((i, iIdx) => ({
+            ...(i.id ? { id: i.id } : {}),
             itemNumber: iIdx + 1,
             description: i.description.trim() || "Item",
             rcNrc: i.rcNrc || "NRC",

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { getPrisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { supplierCreateSchema } from "@/lib/validations/supplier";
 import { logAuditEvent } from "@/lib/audit";
 import { checkSessionPermission } from "@/lib/permissions";
+import { computeDerivedPaymentSummary, roundMoney } from "@/lib/supplier-payment-date";
+import { getOrCreateSupplierPaymentSettings } from "@/lib/supplier-payment-notifications";
 
 // GET /api/suppliers
 // Supports ?status=active|trash|all&search=term&page=1&limit=50
@@ -53,8 +55,10 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [suppliers, total, poCounts] = await Promise.all([
-      prisma.supplier.findMany({
+    const db = getPrisma();
+    const paymentSettings = await getOrCreateSupplierPaymentSettings(db);
+    const [suppliers, total, poCounts, activeInvoices] = await Promise.all([
+      db.supplier.findMany({
         where,
         include: {
           createdBy: { select: { id: true, name: true, email: true } },
@@ -64,34 +68,112 @@ export async function GET(req: NextRequest) {
         skip,
         take: limit,
       }),
-      prisma.supplier.count({ where }),
-      prisma.purchaseOrder.groupBy({
+      db.supplier.count({ where }),
+      db.purchaseOrder.groupBy({
         by: ["supplierId"],
         where: { deletedAt: null },
         _count: { id: true },
+      }),
+      db.supplierInvoice.findMany({
+        where: { deletedAt: null, status: { not: "CANCELLED" } },
+        select: {
+          id: true,
+          supplierId: true,
+          invoiceDate: true,
+          paymentDueDate: true,
+          totalAmount: true,
+          paidAmount: true,
+          status: true,
+          payments: {
+            where: { status: "SUCCESS" },
+            select: { amount: true, status: true, paymentDate: true },
+          },
+        },
       }),
     ]);
 
     const poCountMap = new Map<string, number>();
     poCounts.forEach((g) => poCountMap.set(g.supplierId, g._count.id));
 
+    const supplierFinanceMap = new Map<
+      string,
+      {
+        invoiceCount: number;
+        totalBilled: number;
+        totalPaid: number;
+        outstandingBalance: number;
+        overdueInvoiceCount: number;
+        overdueBalance: number;
+      }
+    >();
+
+    for (const inv of activeInvoices) {
+      const derived = computeDerivedPaymentSummary({
+        totalAmount: inv.totalAmount,
+        paidAmount: inv.paidAmount,
+        dueDate: inv.paymentDueDate,
+        invoiceDate: inv.invoiceDate,
+        invoiceStatus: inv.status,
+        payments: inv.payments,
+        timezone: paymentSettings.timezone,
+      });
+
+      const current = supplierFinanceMap.get(inv.supplierId) || {
+        invoiceCount: 0,
+        totalBilled: 0,
+        totalPaid: 0,
+        outstandingBalance: 0,
+        overdueInvoiceCount: 0,
+        overdueBalance: 0,
+      };
+      current.invoiceCount += 1;
+      current.totalBilled = roundMoney(current.totalBilled + derived.totalAmount);
+      current.totalPaid = roundMoney(current.totalPaid + derived.paidAmount);
+      current.outstandingBalance = roundMoney(
+        current.outstandingBalance + derived.outstandingBalance
+      );
+      if (derived.isOverdue) {
+        current.overdueInvoiceCount += 1;
+        current.overdueBalance = roundMoney(
+          current.overdueBalance + derived.outstandingBalance
+        );
+      }
+      supplierFinanceMap.set(inv.supplierId, current);
+    }
+
     return NextResponse.json({
       success: true,
-      data: suppliers.map((s) => ({
-        id: s.id,
-        code: s.code,
-        name: s.name,
-        contactPerson: s.contactPerson,
-        phone: s.phone,
-        email: s.email,
-        address: s.address,
-        isActive: s.isActive,
-        purchaseOrderCount: poCountMap.get(s.id) || 0,
-        isDeleted: s.deletedAt !== null,
-        deletedAt: s.deletedAt ? s.deletedAt.toISOString() : undefined,
-        createdAt: s.createdAt.toISOString().split("T")[0],
-        updatedAt: s.updatedAt.toISOString(),
-      })),
+      data: suppliers.map((s) => {
+        const fin = supplierFinanceMap.get(s.id) || {
+          invoiceCount: 0,
+          totalBilled: 0,
+          totalPaid: 0,
+          outstandingBalance: 0,
+          overdueInvoiceCount: 0,
+          overdueBalance: 0,
+        };
+        return {
+          id: s.id,
+          code: s.code,
+          name: s.name,
+          contactPerson: s.contactPerson,
+          phone: s.phone,
+          email: s.email,
+          address: s.address,
+          isActive: s.isActive,
+          purchaseOrderCount: poCountMap.get(s.id) || 0,
+          invoiceCount: fin.invoiceCount,
+          totalBilled: fin.totalBilled,
+          totalPaid: fin.totalPaid,
+          outstandingBalance: fin.outstandingBalance,
+          overdueInvoiceCount: fin.overdueInvoiceCount,
+          overdueBalance: fin.overdueBalance,
+          isDeleted: s.deletedAt !== null,
+          deletedAt: s.deletedAt ? s.deletedAt.toISOString() : undefined,
+          createdAt: s.createdAt.toISOString().split("T")[0],
+          updatedAt: s.updatedAt.toISOString(),
+        };
+      }),
       pagination: {
         total,
         page,
@@ -154,8 +236,9 @@ export async function POST(req: NextRequest) {
   const { code, name, contactPerson, phone, email, address, isActive } = result.data;
 
   try {
+    const db = getPrisma();
     // 2. Uniqueness check for active supplier code
-    const existingCode = await prisma.supplier.findFirst({
+    const existingCode = await db.supplier.findFirst({
       where: {
         code: { equals: code, mode: "insensitive" },
         deletedAt: null,
@@ -172,7 +255,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Uniqueness check for active supplier email
-    const existingEmail = await prisma.supplier.findFirst({
+    const existingEmail = await db.supplier.findFirst({
       where: {
         email: { equals: email, mode: "insensitive" },
         deletedAt: null,
@@ -189,7 +272,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 4. Create Supplier in PostgreSQL database
-    const newSupplier = await prisma.supplier.create({
+    const newSupplier = await db.supplier.create({
       data: {
         code,
         name,

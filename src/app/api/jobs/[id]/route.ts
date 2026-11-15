@@ -9,6 +9,9 @@ import { checkSessionPermission } from "@/lib/permissions";
 import { canUserAccessRecord } from "@/lib/data-visibility";
 import { cleanupOrphanedStorageFiles } from "@/lib/supabase";
 import { PO_ACTIVE_COMMITMENT_STATUSES } from "@/lib/po-financial";
+import { computeJobFinancialAnalysis } from "@/lib/job-financial-analysis";
+import { recalculateJobFinances } from "@/lib/financial-recalculation";
+import { computeDerivedPaymentSummary, toDateKey } from "@/lib/supplier-payment-date";
 
 // GET /api/jobs/[id]
 export async function GET(
@@ -51,6 +54,9 @@ export async function GET(
         },
         costItems: {
           orderBy: { sortOrder: "asc" },
+          include: {
+            category: { select: { id: true, name: true } },
+          },
         },
         costSummary: true,
         submittedBy: { select: { id: true, name: true, email: true } },
@@ -77,6 +83,13 @@ export async function GET(
               include: { attachments: true },
             },
             attachments: true,
+            payments: {
+              orderBy: [{ paymentDate: "desc" }, { createdAt: "desc" }],
+              include: {
+                createdBy: { select: { id: true, name: true, email: true } },
+                reversedBy: { select: { id: true, name: true, email: true } },
+              },
+            },
             createdBy: { select: { id: true, name: true, email: true } },
           },
         },
@@ -125,13 +138,281 @@ export async function GET(
       );
     }
 
-    // Fetch assigned suppliers
-    const suppliers = await prisma.supplier.findMany({
-      where: {
-        id: { in: job.supplierIds },
-        deletedAt: null,
-      },
+    // Fetch assigned suppliers and Additional Job Expenses in parallel
+    const [
+      suppliers,
+      additionalExpenseRows,
+      canViewFinancialSummary,
+      canViewOriginalCosts,
+      canViewActualSupplierCosts,
+      canCreateAdditionalExpense,
+      canEditAdditionalExpense,
+      canCancelAdditionalExpense,
+    ] = await Promise.all([
+      prisma.supplier.findMany({
+        where: {
+          id: { in: job.supplierIds },
+          deletedAt: null,
+        },
+      }),
+      (prisma as any).jobAdditionalExpense
+        ? (prisma as any).jobAdditionalExpense.findMany({
+            where: { jobId: id },
+            orderBy: [{ expenseDate: "desc" }, { createdAt: "desc" }],
+            include: {
+              supplier: { select: { id: true, code: true, name: true } },
+              createdBy: { select: { id: true, name: true, email: true } },
+              updatedBy: { select: { id: true, name: true, email: true } },
+              cancelledBy: { select: { id: true, name: true, email: true } },
+              auditLogs: {
+                orderBy: { createdAt: "desc" },
+                include: {
+                  user: { select: { id: true, name: true, email: true } },
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      checkSessionPermission(session, "jobs", "viewFinancialSummary"),
+      checkSessionPermission(session, "jobs", "viewOriginalCosts"),
+      checkSessionPermission(session, "jobs", "viewActualSupplierCosts"),
+      checkSessionPermission(session, "jobs", "createAdditionalExpense"),
+      checkSessionPermission(session, "jobs", "editAdditionalExpense"),
+      checkSessionPermission(session, "jobs", "cancelAdditionalExpense"),
+    ]);
+
+    const approvedRevenue =
+      Number(job.grandTotal || 0) > 0
+        ? job.grandTotal
+        : job.totalCost || 0;
+
+    const analysis = computeJobFinancialAnalysis({
+      approvedJobRevenue: approvedRevenue,
+      fallbackTotalCost: job.totalCost || 0,
+      costItems: job.costItems || [],
+      supplierInvoices: job.supplierInvoices || [],
+      additionalExpenses: additionalExpenseRows || [],
     });
+
+    const formattedSupplierInvoices = (job.supplierInvoices || []).map((inv: any) => {
+      const derived = computeDerivedPaymentSummary({
+        totalAmount: inv.totalAmount,
+        dueDate: inv.paymentDueDate,
+        invoiceDate: inv.invoiceDate,
+        invoiceStatus: inv.status,
+        payments: inv.payments || [],
+      });
+
+      return {
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        supplierId: inv.supplierId,
+        supplierName: inv.supplier?.name || "Unknown Supplier",
+        supplierCode: inv.supplier?.code || "—",
+        invoiceDate: inv.invoiceDate ? new Date(inv.invoiceDate).toISOString().split("T")[0] : "",
+        paymentDueDate: derived.dueDateKey,
+        paymentTerms: inv.paymentTerms || null,
+        creditPeriodDays: inv.creditPeriodDays ?? null,
+        paymentStatus: derived.paymentStatus,
+        paidAmount: derived.paidAmount,
+        outstandingBalance: derived.outstandingBalance,
+        lastPaymentDate: derived.lastPaymentDate,
+        isPartiallyPaid: derived.isPartiallyPaid,
+        isOverdue: derived.isOverdue,
+        countdown: derived.countdown,
+        paymentCount: (inv.payments || []).filter((p: any) => p.status === "SUCCESS").length,
+        payments: (inv.payments || []).map((p: any) => ({
+          id: p.id,
+          paymentNumber: p.paymentNumber,
+          supplierInvoiceId: p.supplierInvoiceId,
+          invoiceNumber: inv.invoiceNumber,
+          supplierId: p.supplierId,
+          supplierName: inv.supplier?.name || "Unknown Supplier",
+          supplierCode: inv.supplier?.code || "—",
+          jobId: p.jobId,
+          paymentDate: toDateKey(p.paymentDate) || "",
+          amount: Number(p.amount || 0),
+          paymentMethod: p.paymentMethod,
+          referenceNumber: p.referenceNumber || null,
+          bankAccountName: p.bankAccountName || null,
+          notes: p.notes || null,
+          attachmentName: p.attachmentName || null,
+          attachmentOriginalName: p.attachmentOriginalName || null,
+          attachmentBucket: p.attachmentBucket || null,
+          attachmentStoragePath: p.attachmentStoragePath || null,
+          attachmentSize: p.attachmentSize || null,
+          attachmentMimeType: p.attachmentMimeType || null,
+          status: p.status,
+          createdById: p.createdById || null,
+          createdByName: p.createdBy?.name || null,
+          reversedAt: p.reversedAt ? new Date(p.reversedAt).toISOString() : null,
+          reversedByName: p.reversedBy?.name || null,
+          reversalReason: p.reversalReason || null,
+          correctionReason: p.correctionReason || null,
+          createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : "",
+          updatedAt: p.updatedAt ? new Date(p.updatedAt).toISOString() : "",
+        })),
+        totalAmount: Number(inv.totalAmount || 0),
+        status: inv.status,
+        notes: inv.notes || "",
+        createdByName: inv.createdBy?.name || "System Admin",
+        items: (inv.items || []).map((it: any) => ({
+          id: it.id,
+          rowNumber: it.rowNumber,
+          jobCostCategoryId: it.jobCostCategoryId || null,
+          jobCostCategoryName: it.jobCostCategoryName || null,
+          jobCostItemId: it.jobCostItemId || null,
+          description: it.description,
+          originalJobAmount: it.originalJobAmount != null ? Number(it.originalJobAmount) : null,
+          quantity: it.quantity != null ? Number(it.quantity) : undefined,
+          unit: it.unit || null,
+          unitRate: it.unitRate != null ? Number(it.unitRate) : null,
+          amount: Number(it.amount || 0),
+          isAdditionalItem: Boolean(it.isAdditionalItem),
+          budgetOverrideReason: it.budgetOverrideReason || null,
+          notes: it.notes || "",
+          attachments: it.attachments || [],
+        })),
+        attachments: inv.attachments || [],
+        createdAt: inv.createdAt ? new Date(inv.createdAt).toISOString().split("T")[0] : "",
+      };
+    });
+
+    const canSeeAdditionalExpenses =
+      canViewFinancialSummary ||
+      canCreateAdditionalExpense ||
+      canEditAdditionalExpense ||
+      canCancelAdditionalExpense;
+
+    const formattedAdditionalExpenses = canSeeAdditionalExpenses
+      ? (additionalExpenseRows || []).map((exp: any) => ({
+          id: exp.id,
+          jobId: exp.jobId,
+          expenseDate: toDateKey(exp.expenseDate) || "",
+          category: exp.category,
+          description: exp.description,
+          amount: Number(exp.amount || 0),
+          supplierId: exp.supplierId || null,
+          supplierName: exp.supplier?.name || null,
+          supplierCode: exp.supplier?.code || null,
+          payeeName: exp.payeeName || null,
+          paymentReference: exp.paymentReference || null,
+          linkedSupplierInvoiceId: exp.linkedSupplierInvoiceId || null,
+          attachmentName: exp.attachmentName || null,
+          attachmentOriginalName: exp.attachmentOriginalName || null,
+          attachmentBucket: exp.attachmentBucket || null,
+          attachmentStoragePath: exp.attachmentStoragePath || null,
+          attachmentSize: exp.attachmentSize || null,
+          attachmentMimeType: exp.attachmentMimeType || null,
+          notes: exp.notes || null,
+          status: exp.status,
+          cancellationReason: exp.cancellationReason || null,
+          cancelledAt: exp.cancelledAt ? new Date(exp.cancelledAt).toISOString() : null,
+          cancelledById: exp.cancelledById || null,
+          cancelledByName: exp.cancelledBy?.name || null,
+          createdById: exp.createdById || null,
+          createdByName: exp.createdBy?.name || null,
+          updatedById: exp.updatedById || null,
+          updatedByName: exp.updatedBy?.name || null,
+          auditLogs: (exp.auditLogs || []).map((log: any) => ({
+            id: log.id,
+            expenseId: log.expenseId,
+            jobId: log.jobId,
+            userId: log.userId || null,
+            userName: log.user?.name || "System",
+            action: log.action,
+            reason: log.reason || null,
+            previousData: log.previousData,
+            newData: log.newData,
+            createdAt: log.createdAt ? new Date(log.createdAt).toISOString() : "",
+          })),
+          createdAt: exp.createdAt ? new Date(exp.createdAt).toISOString() : "",
+          updatedAt: exp.updatedAt ? new Date(exp.updatedAt).toISOString() : "",
+        }))
+      : [];
+
+    const redactedOverview = canViewFinancialSummary
+      ? {
+          ...analysis.overview,
+          originalEstimatedJobCost: canViewOriginalCosts
+            ? analysis.overview.originalEstimatedJobCost
+            : 0,
+          totalSupplierCost: canViewActualSupplierCosts
+            ? analysis.overview.totalSupplierCost
+            : 0,
+          costDifference:
+            canViewOriginalCosts && canViewActualSupplierCosts
+              ? analysis.overview.costDifference
+              : 0,
+          costSaving:
+            canViewOriginalCosts && canViewActualSupplierCosts
+              ? analysis.overview.costSaving
+              : 0,
+          costOverrun:
+            canViewOriginalCosts && canViewActualSupplierCosts
+              ? analysis.overview.costOverrun
+              : 0,
+        }
+      : undefined;
+
+    const redactedComparison = canViewFinancialSummary
+      ? {
+          rows: analysis.comparison.rows.map((r) => ({
+            ...r,
+            originalQuantity: canViewOriginalCosts ? r.originalQuantity : 0,
+            originalRate: canViewOriginalCosts ? r.originalRate : 0,
+            originalJobCost: canViewOriginalCosts ? r.originalJobCost : 0,
+            actualInvoiceCost: canViewActualSupplierCosts ? r.actualInvoiceCost : 0,
+            invoicedAmount: canViewActualSupplierCosts ? r.invoicedAmount : 0,
+            costDifference:
+              canViewOriginalCosts && canViewActualSupplierCosts ? r.costDifference : 0,
+            costSaving:
+              canViewOriginalCosts && canViewActualSupplierCosts ? r.costSaving : 0,
+            costOverrun:
+              canViewOriginalCosts && canViewActualSupplierCosts ? r.costOverrun : 0,
+            paidAllocatedAmount: canViewActualSupplierCosts ? r.paidAllocatedAmount : 0,
+            outstandingInvoiceAmount: canViewActualSupplierCosts
+              ? r.outstandingInvoiceAmount
+              : 0,
+            linkedInvoices: canViewActualSupplierCosts ? r.linkedInvoices : [],
+          })),
+          unlinkedItems: canViewActualSupplierCosts
+            ? analysis.comparison.unlinkedItems
+            : [],
+          totals: {
+            originalJobCost: canViewOriginalCosts
+              ? analysis.comparison.totals.originalJobCost
+              : 0,
+            actualInvoiceCost: canViewActualSupplierCosts
+              ? analysis.comparison.totals.actualInvoiceCost
+              : 0,
+            costDifference:
+              canViewOriginalCosts && canViewActualSupplierCosts
+                ? analysis.comparison.totals.costDifference
+                : 0,
+            costSaving:
+              canViewOriginalCosts && canViewActualSupplierCosts
+                ? analysis.comparison.totals.costSaving
+                : 0,
+            costOverrun:
+              canViewOriginalCosts && canViewActualSupplierCosts
+                ? analysis.comparison.totals.costOverrun
+                : 0,
+            invoicedAmount: canViewActualSupplierCosts
+              ? analysis.comparison.totals.invoicedAmount
+              : 0,
+            paidAllocatedAmount: canViewActualSupplierCosts
+              ? analysis.comparison.totals.paidAllocatedAmount
+              : 0,
+            outstandingInvoiceAmount: canViewActualSupplierCosts
+              ? analysis.comparison.totals.outstandingInvoiceAmount
+              : 0,
+            unlinkedActualCost: canViewActualSupplierCosts
+              ? analysis.comparison.totals.unlinkedActualCost
+              : 0,
+          },
+        }
+      : undefined;
 
     const formattedJob = {
       id: job.id,
@@ -145,7 +426,7 @@ export async function GET(
       remarks: job.remarks || "",
       status: job.status,
       supplierIds: job.supplierIds,
-      totalCost: job.totalCost || 0,
+      totalCost: canViewOriginalCosts ? job.totalCost || 0 : 0,
       grandTotal: job.grandTotal || 0,
       createdAt: job.createdAt.toISOString().split("T")[0],
       createdDateTime: job.createdAt.toISOString(),
@@ -206,58 +487,65 @@ export async function GET(
           }
         : null,
       suppliers,
-      costCategories: job.costCategories.map((c) => ({
-        id: c.id,
-        jobId: c.jobId,
-        name: c.name,
-        sortOrder: c.sortOrder,
-        subtotal: c.subtotal,
-        items: c.items.map((i) => ({
-          id: i.id,
-          jobId: i.jobId,
-          categoryId: i.categoryId,
-          itemNumber: i.itemNumber,
-          description: i.description,
-          rcNrc: i.rcNrc,
-          quantity: i.quantity,
-          rate: i.rate,
-          totalCost: i.totalCost,
-          sortOrder: i.sortOrder,
-          notes: i.notes,
-        })),
-      })),
-      costItems: job.costItems.map((i) => ({
-        id: i.id,
-        jobId: i.jobId,
-        categoryId: i.categoryId,
-        itemNumber: i.itemNumber,
-        description: i.description,
-        rcNrc: i.rcNrc,
-        quantity: i.quantity,
-        rate: i.rate,
-        totalCost: i.totalCost,
-        sortOrder: i.sortOrder,
-        notes: i.notes,
-      })),
-      costSummary: job.costSummary ? {
-        id: job.costSummary.id,
-        jobId: job.costSummary.jobId,
-        productionCost: job.costSummary.productionCost,
-        runningCost: job.costSummary.runningCost,
-        agencyOperationFee: job.costSummary.agencyOperationFee,
-        agencyProductionFee: job.costSummary.agencyProductionFee,
-        adminCharges: job.costSummary.adminCharges,
-        monitoringCost: job.costSummary.monitoringCost,
-        artworkCharges: job.costSummary.artworkCharges,
-        contingencies: job.costSummary.contingencies,
-        subTotal: job.costSummary.subTotal,
-        totalBeforeTax: job.costSummary.totalBeforeTax,
-        taxType: job.costSummary.taxType || "SSCL",
-        taxRate: job.costSummary.taxRate || 2.5,
-        taxAmount: job.costSummary.taxAmount,
-        grandTotal: job.costSummary.grandTotal,
-        rawSummaryData: job.costSummary.rawSummaryData,
-      } : null,
+      costCategories: canViewOriginalCosts
+        ? job.costCategories.map((c) => ({
+            id: c.id,
+            jobId: c.jobId,
+            name: c.name,
+            sortOrder: c.sortOrder,
+            subtotal: c.subtotal,
+            items: c.items.map((i) => ({
+              id: i.id,
+              jobId: i.jobId,
+              categoryId: i.categoryId,
+              itemNumber: i.itemNumber,
+              description: i.description,
+              rcNrc: i.rcNrc,
+              quantity: i.quantity,
+              rate: i.rate,
+              totalCost: i.totalCost,
+              sortOrder: i.sortOrder,
+              notes: i.notes,
+            })),
+          }))
+        : [],
+      costItems: canViewOriginalCosts
+        ? job.costItems.map((i) => ({
+            id: i.id,
+            jobId: i.jobId,
+            categoryId: i.categoryId,
+            itemNumber: i.itemNumber,
+            description: i.description,
+            rcNrc: i.rcNrc,
+            quantity: i.quantity,
+            rate: i.rate,
+            totalCost: i.totalCost,
+            sortOrder: i.sortOrder,
+            notes: i.notes,
+          }))
+        : [],
+      costSummary:
+        canViewOriginalCosts && job.costSummary
+          ? {
+              id: job.costSummary.id,
+              jobId: job.costSummary.jobId,
+              productionCost: job.costSummary.productionCost,
+              runningCost: job.costSummary.runningCost,
+              agencyOperationFee: job.costSummary.agencyOperationFee,
+              agencyProductionFee: job.costSummary.agencyProductionFee,
+              adminCharges: job.costSummary.adminCharges,
+              monitoringCost: job.costSummary.monitoringCost,
+              artworkCharges: job.costSummary.artworkCharges,
+              contingencies: job.costSummary.contingencies,
+              subTotal: job.costSummary.subTotal,
+              totalBeforeTax: job.costSummary.totalBeforeTax,
+              taxType: job.costSummary.taxType || "SSCL",
+              taxRate: job.costSummary.taxRate || 2.5,
+              taxAmount: job.costSummary.taxAmount,
+              grandTotal: job.costSummary.grandTotal,
+              rawSummaryData: job.costSummary.rawSummaryData,
+            }
+          : null,
       documents: job.documents.map((d) => ({
         id: d.id,
         jobId: d.jobId,
@@ -271,58 +559,32 @@ export async function GET(
         status: d.status,
         uploadDateTime: d.createdAt.toISOString(),
       })),
-      supplierInvoices: (job.supplierInvoices || []).map((inv: any) => ({
-        id: inv.id,
-        invoiceNumber: inv.invoiceNumber,
-        supplierId: inv.supplierId,
-        supplierName: inv.supplier?.name || "Unknown Supplier",
-        supplierCode: inv.supplier?.code || "—",
-        invoiceDate: inv.invoiceDate ? new Date(inv.invoiceDate).toISOString().split("T")[0] : "",
-        totalAmount: Number(inv.totalAmount || 0),
-        status: inv.status,
-        notes: inv.notes || "",
-        createdByName: inv.createdBy?.name || "System Admin",
-        items: (inv.items || []).map((it: any) => ({
-          id: it.id,
-          rowNumber: it.rowNumber,
-          description: it.description,
-          amount: Number(it.amount || 0),
-          notes: it.notes || "",
-          attachments: it.attachments || [],
-        })),
-        attachments: inv.attachments || [],
-        createdAt: inv.createdAt ? new Date(inv.createdAt).toISOString().split("T")[0] : "",
-      })),
+      supplierInvoices: formattedSupplierInvoices,
+      additionalExpenses: formattedAdditionalExpenses,
       supplierInvoiceCount: (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").length,
-      supplierInvoiceTotal: (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED").reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0),
+      supplierInvoiceTotal: canViewActualSupplierCosts
+        ? (job.supplierInvoices || [])
+            .filter((i: any) => i.status !== "CANCELLED")
+            .reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0)
+        : 0,
       invoiceStatusSummary: (() => {
         const active = (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED");
         if (active.length === 0) return (job.supplierInvoices || []).length > 0 ? "Cancelled" : "No Invoices";
-        if (active.every((i: any) => i.status === "PAID")) return "Paid";
-        if (active.some((i: any) => i.status === "PAID")) return "Partially Paid";
+        if (active.every((i: any) => i.paymentStatus === "PAID" || i.status === "PAID")) return "Paid";
+        if (active.some((i: any) => i.paymentStatus === "PARTIALLY_PAID" || i.paymentStatus === "PAID")) return "Partially Paid";
+        if (formattedSupplierInvoices.some((i: any) => i.status !== "CANCELLED" && i.isOverdue)) return "Overdue";
         return "Approved";
       })(),
-      financialOverview: (() => {
-        const approvedJobValue = Number(job.grandTotal || job.totalCost || 0);
-        const activeInvoices = (job.supplierInvoices || []).filter((i: any) => i.status !== "CANCELLED");
-        const totalSupplierCost = activeInvoices.reduce((sum: number, i: any) => sum + Number(i.totalAmount || 0), 0);
-        const remainingBudget = approvedJobValue - totalSupplierCost;
-        const grossProfit = approvedJobValue - totalSupplierCost;
-        const profitMargin = approvedJobValue > 0 ? Number(((grossProfit / approvedJobValue) * 100).toFixed(2)) : 0;
-        const costUtilization = approvedJobValue > 0 ? Number(((totalSupplierCost / approvedJobValue) * 100).toFixed(2)) : 0;
-        return {
-          approvedJobValue,
-          totalSupplierCost,
-          otherCosts: 0,
-          totalActualCost: totalSupplierCost,
-          remainingBudget,
-          grossProfit,
-          profitMargin,
-          costUtilization,
-          isBudgetExceeded: totalSupplierCost > approvedJobValue,
-          supplierInvoicesCount: activeInvoices.length,
-        };
-      })(),
+      financialOverview: redactedOverview,
+      costComparison: redactedComparison,
+      financialPermissions: {
+        canViewFinancialSummary,
+        canViewOriginalCosts,
+        canViewActualSupplierCosts,
+        canCreateAdditionalExpense,
+        canEditAdditionalExpense,
+        canCancelAdditionalExpense,
+      },
       purchaseOrders: (job.purchaseOrders || []).map((po: any) => {
         const invoicedTotal = (po.supplierInvoices || []).reduce(
           (s: number, inv: any) => s + Number(inv.totalAmount || 0),
@@ -644,39 +906,131 @@ export async function PUT(
         },
       });
 
-      // 2. If categories provided, replace and recreate
+      // 2. If categories provided, preserve existing category & JobCostItem IDs in-place
+      // so SupplierInvoiceItem.jobCostItemId & PurchaseOrderItem.jobCostItemId links are never orphaned.
       if (costCategories !== undefined) {
-        await tx.jobCostItem.deleteMany({ where: { jobId: id } });
-        await tx.jobCostCategory.deleteMany({ where: { jobId: id } });
+        const [existingCats, existingItems] = await Promise.all([
+          tx.jobCostCategory.findMany({ where: { jobId: id }, select: { id: true } }),
+          tx.jobCostItem.findMany({
+            where: { jobId: id },
+            include: {
+              supplierInvoiceItems: {
+                where: { invoice: { deletedAt: null, status: { not: "CANCELLED" } } },
+                select: { id: true },
+              },
+              purchaseOrderItems: {
+                where: { purchaseOrder: { deletedAt: null, status: { notIn: ["CANCELLED", "REJECTED"] } } },
+                select: { id: true },
+              },
+            },
+          }),
+        ]);
+
+        const existingCatIdSet = new Set(existingCats.map((c) => c.id));
+        const existingItemMap = new Map(existingItems.map((it) => [it.id, it]));
+
+        const incomingCatIds = new Set<string>();
+        const incomingItemIds = new Set<string>();
+
+        for (const cat of costCategories) {
+          if (cat.id && existingCatIdSet.has(cat.id)) {
+            incomingCatIds.add(cat.id);
+          }
+          for (const it of cat.items || []) {
+            if (it.id && existingItemMap.has(it.id)) {
+              incomingItemIds.add(it.id);
+            }
+          }
+        }
+
+        // Prevent deleting cost lines referenced by active Supplier Invoices or Purchase Orders
+        const removableItemIds: string[] = [];
+        for (const oldItem of existingItems) {
+          if (!incomingItemIds.has(oldItem.id)) {
+            if (
+              oldItem.supplierInvoiceItems.length > 0 ||
+              oldItem.purchaseOrderItems.length > 0
+            ) {
+              throw new Error(`LINKED_COST_ITEM:${oldItem.description}`);
+            }
+            removableItemIds.push(oldItem.id);
+          }
+        }
+
+        if (removableItemIds.length > 0) {
+          await tx.jobCostItem.deleteMany({
+            where: { jobId: id, id: { in: removableItemIds } },
+          });
+        }
 
         for (let catIdx = 0; catIdx < costCategories.length; catIdx++) {
           const cat = costCategories[catIdx];
-          const createdCat = await tx.jobCostCategory.create({
-            data: {
-              jobId: id,
-              name: cat.name,
-              sortOrder: cat.sortOrder || catIdx + 1,
-              subtotal: roundFinancial(cat.subtotal || 0, 2).toString(),
-            },
-          });
+          let targetCatId: string;
+
+          if (cat.id && existingCatIdSet.has(cat.id)) {
+            await tx.jobCostCategory.update({
+              where: { id: cat.id },
+              data: {
+                name: cat.name,
+                sortOrder: cat.sortOrder || catIdx + 1,
+                subtotal: roundFinancial(cat.subtotal || 0, 2).toString(),
+              },
+            });
+            targetCatId = cat.id;
+          } else {
+            const createdCat = await tx.jobCostCategory.create({
+              data: {
+                jobId: id,
+                name: cat.name,
+                sortOrder: cat.sortOrder || catIdx + 1,
+                subtotal: roundFinancial(cat.subtotal || 0, 2).toString(),
+              },
+            });
+            targetCatId = createdCat.id;
+          }
 
           const items = cat.items || [];
-          if (items.length > 0) {
-            await tx.jobCostItem.createMany({
-              data: items.map((i, iIdx) => ({
+          const toCreate: any[] = [];
+          for (let iIdx = 0; iIdx < items.length; iIdx++) {
+            const i = items[iIdx];
+            const itemPayload = {
+              categoryId: targetCatId,
+              itemNumber: i.itemNumber || iIdx + 1,
+              description: i.description,
+              rcNrc: i.rcNrc || "NRC",
+              quantity: roundFinancial(i.quantity || 1, 4).toString(),
+              rate: roundFinancial(i.rate || 0, 2).toString(),
+              totalCost: roundFinancial(i.totalCost || 0, 2).toString(),
+              sortOrder: i.sortOrder || iIdx + 1,
+              notes: i.notes || null,
+            };
+
+            if (i.id && existingItemMap.has(i.id)) {
+              await tx.jobCostItem.update({
+                where: { id: i.id },
+                data: itemPayload,
+              });
+            } else {
+              toCreate.push({
                 jobId: id,
-                categoryId: createdCat.id,
-                itemNumber: i.itemNumber || iIdx + 1,
-                description: i.description,
-                rcNrc: i.rcNrc || "NRC",
-                quantity: roundFinancial(i.quantity || 1, 4).toString(),
-                rate: roundFinancial(i.rate || 0, 2).toString(),
-                totalCost: roundFinancial(i.totalCost || 0, 2).toString(),
-                sortOrder: i.sortOrder || iIdx + 1,
-                notes: i.notes || null,
-              })),
-            });
+                ...itemPayload,
+              });
+            }
           }
+
+          if (toCreate.length > 0) {
+            await tx.jobCostItem.createMany({ data: toCreate });
+          }
+        }
+
+        // Remove categories that were deleted (their unlinked items were removed/reassigned above)
+        const removableCatIds = existingCats
+          .map((c) => c.id)
+          .filter((cid) => !incomingCatIds.has(cid));
+        if (removableCatIds.length > 0) {
+          await tx.jobCostCategory.deleteMany({
+            where: { jobId: id, id: { in: removableCatIds } },
+          });
         }
       }
 
@@ -709,6 +1063,8 @@ export async function PUT(
           update: csData,
         });
       }
+
+      await recalculateJobFinances(id, tx);
 
       return job;
     });
@@ -746,6 +1102,16 @@ export async function PUT(
     });
   } catch (err: any) {
     console.error(`PUT /api/jobs/${id} error:`, err);
+    if (err?.message?.startsWith("LINKED_COST_ITEM:")) {
+      const desc = err.message.replace("LINKED_COST_ITEM:", "");
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Cannot delete cost item "${desc}" because it is linked to active Supplier Invoice(s) or Purchase Order(s).`,
+        },
+        { status: 422 }
+      );
+    }
     return NextResponse.json(
       { success: false, error: "Failed to update job record." },
       { status: 500 }
@@ -815,8 +1181,8 @@ export async function DELETE(
       }
 
       // 1. Strict Financial Dependency Protection (Section 2 & 5)
-      // Block permanent deletion if Job has active supplier invoices, customer invoices, or Purchase Orders
-      const [activeSupplierInvoices, customerInvoice, linkedPurchaseOrders] = await Promise.all([
+      // Block permanent deletion if Job has active supplier invoices, active additional expenses, customer invoices, or Purchase Orders
+      const [activeSupplierInvoices, activeAdditionalExpenses, customerInvoice, linkedPurchaseOrders] = await Promise.all([
         prisma.supplierInvoice.findMany({
           where: {
             jobId: id,
@@ -825,6 +1191,15 @@ export async function DELETE(
           },
           select: { id: true, invoiceNumber: true, totalAmount: true },
         }),
+        (prisma as any).jobAdditionalExpense
+          ? (prisma as any).jobAdditionalExpense.findMany({
+              where: {
+                jobId: id,
+                status: "ACTIVE",
+              },
+              select: { id: true, description: true, amount: true },
+            })
+          : Promise.resolve([]),
         prisma.invoice.findFirst({
           where: { jobId: id },
           select: { id: true, invoiceNumber: true, grandTotal: true, status: true },
@@ -835,12 +1210,25 @@ export async function DELETE(
         }),
       ]);
 
-      if (activeSupplierInvoices.length > 0 || customerInvoice || linkedPurchaseOrders.length > 0) {
+      if (
+        activeSupplierInvoices.length > 0 ||
+        activeAdditionalExpenses.length > 0 ||
+        customerInvoice ||
+        linkedPurchaseOrders.length > 0
+      ) {
         const reasons: string[] = [];
         if (activeSupplierInvoices.length > 0) {
           reasons.push(
             `${activeSupplierInvoices.length} active Supplier Invoice(s) (${activeSupplierInvoices
               .map((s) => s.invoiceNumber)
+              .slice(0, 3)
+              .join(", ")})`
+          );
+        }
+        if (activeAdditionalExpenses.length > 0) {
+          reasons.push(
+            `${activeAdditionalExpenses.length} active Additional Expense(s) (${activeAdditionalExpenses
+              .map((e: any) => e.description)
               .slice(0, 3)
               .join(", ")})`
           );
@@ -866,6 +1254,7 @@ export async function DELETE(
             )}). Accounting and audit history must be preserved.`,
             financialDependencies: {
               supplierInvoicesCount: activeSupplierInvoices.length,
+              additionalExpensesCount: activeAdditionalExpenses.length,
               customerInvoiceNumber: customerInvoice?.invoiceNumber || null,
               purchaseOrdersCount: linkedPurchaseOrders.length,
             },
@@ -911,7 +1300,13 @@ export async function DELETE(
         // Delete job approvals
         await tx.jobApproval.deleteMany({ where: { jobId: id } });
 
-        // Delete cost items, cost categories, and cost summary
+        // Delete cost items, cost categories, cost summary, and any cancelled additional expense records
+        if ((tx as any).jobAdditionalExpenseAuditLog) {
+          await (tx as any).jobAdditionalExpenseAuditLog.deleteMany({ where: { jobId: id } });
+        }
+        if ((tx as any).jobAdditionalExpense) {
+          await (tx as any).jobAdditionalExpense.deleteMany({ where: { jobId: id } });
+        }
         await tx.jobCostItem.deleteMany({ where: { jobId: id } });
         await tx.jobCostCategory.deleteMany({ where: { jobId: id } });
         await tx.jobCostSummary.deleteMany({ where: { jobId: id } });

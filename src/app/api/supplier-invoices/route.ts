@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import { Decimal } from "decimal.js";
+import { Decimal } from "@/lib/financial";
 import {
   uploadSupplierInvoiceAttachment,
   cleanupOrphanedStorageFiles,
@@ -14,6 +14,32 @@ import { checkSessionPermission } from "@/lib/permissions";
 import { buildRecordVisibilityFilter } from "@/lib/data-visibility";
 import { PO_ELIGIBLE_FOR_INVOICE_STATUSES } from "@/lib/po-financial";
 import { syncPurchaseOrderInvoicedTotalsTx } from "@/lib/po-helpers";
+import {
+  SUPPLIER_INVOICE_ELIGIBLE_JOB_STATUSES,
+  canAccessJobForSupplierInvoice,
+  isJobEligibleForSupplierInvoice,
+  validateAndNormalizeSupplierInvoiceItems,
+  RawSupplierInvoiceItemInput,
+} from "@/lib/supplier-invoice-helpers";
+import {
+  addCalendarDays,
+  diffCalendarDays,
+  getTodayDateKeyInTimezone,
+  parseDateKeyToUtcMidnight,
+  toDateKey,
+} from "@/lib/supplier-payment-date";
+import { enrichInvoiceWithPaymentSummary } from "@/lib/supplier-payment-helpers";
+import { getOrCreateSupplierPaymentSettings } from "@/lib/supplier-payment-notifications";
+
+class HttpValidationError extends Error {
+  status: number;
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
 
 // GET /api/supplier-invoices
 export async function GET(req: NextRequest) {
@@ -45,11 +71,11 @@ export async function GET(req: NextRequest) {
     const skip = (page - 1) * limit;
 
     // 1. Resolve record visibility scope from database-driven permissions
-    const { filter: visibilityFilter, scope, authorizedIds } = await buildRecordVisibilityFilter(
-      session,
-      "supplierInvoices",
-      "createdById"
-    );
+    const [{ filter: visibilityFilter, scope, authorizedIds }, { filter: jobVisibilityFilter }] =
+      await Promise.all([
+        buildRecordVisibilityFilter(session, "supplierInvoices", "createdById"),
+        buildRecordVisibilityFilter(session, "jobs", "submittedById"),
+      ]);
 
     const where: any = {
       deletedAt: null,
@@ -101,6 +127,7 @@ export async function GET(req: NextRequest) {
     }
 
     const db = getPrisma();
+    const paymentSettings = await getOrCreateSupplierPaymentSettings(db);
     const [invoices, totalCount, allActiveInvoices, approvedJobs] = await Promise.all([
       (db.supplierInvoice as any).findMany({
         where,
@@ -134,6 +161,15 @@ export async function GET(req: NextRequest) {
               poNumber: true,
               status: true,
               grandTotal: true,
+            },
+          },
+          payments: {
+            where: { status: "SUCCESS" },
+            select: {
+              id: true,
+              amount: true,
+              status: true,
+              paymentDate: true,
             },
           },
           items: {
@@ -178,13 +214,20 @@ export async function GET(req: NextRequest) {
         },
         select: {
           totalAmount: true,
+          paidAmount: true,
           status: true,
+          paymentStatus: true,
         },
       }),
       (db.job as any).findMany({
         where: {
           deletedAt: null,
-          status: { in: ["APPROVED", "Approved", "ACTIVE", "Active", "INVOICED", "Invoiced"] },
+          status: { in: SUPPLIER_INVOICE_ELIGIBLE_JOB_STATUSES },
+          ...(jobVisibilityFilter.submittedById
+            ? { submittedById: jobVisibilityFilter.submittedById }
+            : jobVisibilityFilter.OR
+            ? { OR: jobVisibilityFilter.OR }
+            : {}),
         },
         select: {
           grandTotal: true,
@@ -199,7 +242,7 @@ export async function GET(req: NextRequest) {
 
     allActiveInvoices.forEach((inv: any) => {
       totalSupplierInvoicesAmount = totalSupplierInvoicesAmount.plus(new Decimal(inv.totalAmount || 0));
-      if (inv.status !== "PAID") {
+      if (inv.status !== "PAID" && inv.paymentStatus !== "PAID") {
         pendingPaymentsCount++;
       }
     });
@@ -211,45 +254,59 @@ export async function GET(req: NextRequest) {
 
     const totalEstimatedProfit = totalApprovedJobValue.minus(totalSupplierInvoicesAmount);
 
-    const formattedInvoices = invoices.map((inv: any) => ({
-      id: inv.id,
-      invoiceNumber: inv.invoiceNumber,
-      supplierId: inv.supplierId,
-      supplierName: inv.supplier?.name || "Unknown Supplier",
-      supplierCode: inv.supplier?.code || "—",
-      jobId: inv.jobId,
-      jobCode: inv.job?.jobCode || "NO-CODE",
-      jobName: inv.job?.name || "General Job",
-      purchaseOrderId: inv.purchaseOrderId || null,
-      purchaseOrderNumber: inv.purchaseOrder?.poNumber || null,
-      clientName: inv.job?.clientName || "Valued Client",
-      invoiceDate: inv.invoiceDate ? new Date(inv.invoiceDate).toISOString().split("T")[0] : "",
-      totalAmount: Number(inv.totalAmount || 0),
-      status: inv.status,
-      notes: inv.notes || "",
-      cancellationReason: inv.cancellationReason || null,
-      cancelledAt: inv.cancelledAt ? new Date(inv.cancelledAt).toISOString() : null,
-      cancelledByName: inv.cancelledBy?.name || null,
-      createdById: inv.createdById,
-      createdByName: inv.createdBy?.name || "System Admin",
-      createdByEmail: inv.createdBy?.email || null,
-      updatedById: inv.updatedById || null,
-      updatedByName: inv.updatedBy?.name || null,
-      items: (inv.items || []).map((item: any) => ({
-        id: item.id,
-        rowNumber: item.rowNumber,
-        purchaseOrderItemId: item.purchaseOrderItemId || null,
-        description: item.description,
-        quantity: item.quantity != null ? Number(item.quantity) : undefined,
-        amount: Number(item.amount || 0),
-        notes: item.notes || "",
-        attachments: item.attachments || [],
-      })),
-      attachments: inv.attachments || [],
-      createdAt: inv.createdAt ? new Date(inv.createdAt).toISOString().split("T")[0] : "",
-      createdDateTime: inv.createdAt ? new Date(inv.createdAt).toISOString() : "",
-      updatedAt: inv.updatedAt ? new Date(inv.updatedAt).toISOString() : "",
-    }));
+    const formattedInvoices = invoices.map((inv: any) => {
+      const paymentSummary = enrichInvoiceWithPaymentSummary(inv, paymentSettings.timezone);
+      return {
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        supplierId: inv.supplierId,
+        supplierName: inv.supplier?.name || "Unknown Supplier",
+        supplierCode: inv.supplier?.code || "—",
+        jobId: inv.jobId,
+        jobCode: inv.job?.jobCode || "NO-CODE",
+        jobName: inv.job?.name || "General Job",
+        purchaseOrderId: inv.purchaseOrderId || null,
+        purchaseOrderNumber: inv.purchaseOrder?.poNumber || null,
+        clientName: inv.job?.clientName || "Valued Client",
+        invoiceDate: toDateKey(inv.invoiceDate) || "",
+        ...paymentSummary,
+        totalAmount: Number(inv.totalAmount || 0),
+        status: inv.status,
+        notes: inv.notes || "",
+        budgetOverrideUsed: Boolean(inv.budgetOverrideUsed),
+        budgetOverrideReason: inv.budgetOverrideReason || null,
+        cancellationReason: inv.cancellationReason || null,
+        cancelledAt: inv.cancelledAt ? new Date(inv.cancelledAt).toISOString() : null,
+        cancelledByName: inv.cancelledBy?.name || null,
+        createdById: inv.createdById,
+        createdByName: inv.createdBy?.name || "System Admin",
+        createdByEmail: inv.createdBy?.email || null,
+        updatedById: inv.updatedById || null,
+        updatedByName: inv.updatedBy?.name || null,
+        items: (inv.items || []).map((item: any) => ({
+          id: item.id,
+          rowNumber: item.rowNumber,
+          purchaseOrderItemId: item.purchaseOrderItemId || null,
+          jobCostCategoryId: item.jobCostCategoryId || null,
+          jobCostCategoryName: item.jobCostCategoryName || null,
+          jobCostItemId: item.jobCostItemId || null,
+          description: item.description,
+          originalJobAmount: item.originalJobAmount != null ? Number(item.originalJobAmount) : null,
+          quantity: item.quantity != null ? Number(item.quantity) : undefined,
+          unit: item.unit || null,
+          unitRate: item.unitRate != null ? Number(item.unitRate) : null,
+          amount: Number(item.amount || 0),
+          isAdditionalItem: Boolean(item.isAdditionalItem),
+          budgetOverrideReason: item.budgetOverrideReason || null,
+          notes: item.notes || "",
+          attachments: item.attachments || [],
+        })),
+        attachments: inv.attachments || [],
+        createdAt: inv.createdAt ? new Date(inv.createdAt).toISOString().split("T")[0] : "",
+        createdDateTime: inv.createdAt ? new Date(inv.createdAt).toISOString() : "",
+        updatedAt: inv.updatedAt ? new Date(inv.updatedAt).toISOString() : "",
+      };
+    });
 
     return NextResponse.json({
       success: true,
@@ -318,17 +375,14 @@ export async function POST(req: NextRequest) {
     let jobId = "";
     let purchaseOrderId: string | null = null;
     let invoiceNumber = "";
-    let invoiceDate = new Date().toISOString().split("T")[0];
+    let invoiceDate = getTodayDateKeyInTimezone();
+    let paymentDueDateInput = "";
+    let paymentTerms: string | null = null;
+    let creditPeriodDaysInput: number | null = null;
     let notes = "";
+    let budgetOverrideReason = "";
     let poOverInvoiceOverride = false;
-    let parsedItems: Array<{
-      description: string;
-      amount: number;
-      fileIndex?: number;
-      notes?: string;
-      purchaseOrderItemId?: string | null;
-      quantity?: number | null;
-    }> = [];
+    let parsedItems: RawSupplierInvoiceItemInput[] = [];
     interface RowAttachmentUpload {
       itemIndex: number;
       file: File;
@@ -341,8 +395,23 @@ export async function POST(req: NextRequest) {
       jobId = (formData.get("jobId") as string) || "";
       purchaseOrderId = ((formData.get("purchaseOrderId") as string) || "").trim() || null;
       invoiceNumber = (formData.get("invoiceNumber") as string)?.trim() || "";
-      invoiceDate = (formData.get("invoiceDate") as string) || invoiceDate;
+      invoiceDate = (formData.get("invoiceDate") as string)?.trim() || invoiceDate;
+      paymentDueDateInput = (formData.get("paymentDueDate") as string)?.trim() || "";
+      const rawTerms = (formData.get("paymentTerms") as string)?.trim();
+      paymentTerms = rawTerms ? rawTerms : null;
+      const rawCreditDays = (formData.get("creditPeriodDays") as string)?.trim();
+      if (rawCreditDays !== undefined && rawCreditDays !== "") {
+        const parsedDays = Number(rawCreditDays);
+        if (!Number.isInteger(parsedDays) || parsedDays < 0 || parsedDays > 3650) {
+          return NextResponse.json(
+            { success: false, error: "Credit Period / Payment Within days must be an integer between 0 and 3650." },
+            { status: 400 }
+          );
+        }
+        creditPeriodDaysInput = parsedDays;
+      }
       notes = (formData.get("notes") as string) || "";
+      budgetOverrideReason = (formData.get("budgetOverrideReason") as string)?.trim() || "";
       poOverInvoiceOverride = formData.get("poOverInvoiceOverride") === "true";
 
       const rawItems = formData.get("items") as string;
@@ -378,7 +447,9 @@ export async function POST(req: NextRequest) {
         // Also check if indexed: file_${i}_0, files_${i}_0, etc.
         let subIndex = 0;
         while (formData.has(`file_${i}_${subIndex}`) || formData.has(`files_${i}_${subIndex}`)) {
-          const subFile = (formData.get(`file_${i}_${subIndex}`) as File) || (formData.get(`files_${i}_${subIndex}`) as File);
+          const subFile =
+            (formData.get(`file_${i}_${subIndex}`) as File) ||
+            (formData.get(`files_${i}_${subIndex}`) as File);
           if (subFile instanceof File && subFile.size > 0 && !rowFiles.includes(subFile)) {
             rowFiles.push(subFile);
           }
@@ -392,14 +463,88 @@ export async function POST(req: NextRequest) {
     } else {
       // JSON payload
       const body = await req.json();
+      if (
+        String(body.status || "").toUpperCase() === "PAID" ||
+        String(body.paymentStatus || "").toUpperCase() === "PAID"
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Payment Status cannot be manually set to PAID. Record a real payment instead.",
+          },
+          { status: 400 }
+        );
+      }
       supplierId = body.supplierId || "";
       jobId = body.jobId || "";
-      purchaseOrderId = typeof body.purchaseOrderId === "string" && body.purchaseOrderId.trim() ? body.purchaseOrderId.trim() : null;
+      purchaseOrderId =
+        typeof body.purchaseOrderId === "string" && body.purchaseOrderId.trim()
+          ? body.purchaseOrderId.trim()
+          : null;
       invoiceNumber = body.invoiceNumber?.trim() || "";
-      invoiceDate = body.invoiceDate || invoiceDate;
+      invoiceDate = body.invoiceDate ? String(body.invoiceDate).trim() : invoiceDate;
+      paymentDueDateInput = body.paymentDueDate ? String(body.paymentDueDate).trim() : "";
+      paymentTerms =
+        typeof body.paymentTerms === "string" && body.paymentTerms.trim()
+          ? body.paymentTerms.trim()
+          : null;
+      if (body.creditPeriodDays !== undefined && body.creditPeriodDays !== null && body.creditPeriodDays !== "") {
+        const parsedDays = Number(body.creditPeriodDays);
+        if (!Number.isInteger(parsedDays) || parsedDays < 0 || parsedDays > 3650) {
+          return NextResponse.json(
+            { success: false, error: "Credit Period / Payment Within days must be an integer between 0 and 3650." },
+            { status: 400 }
+          );
+        }
+        creditPeriodDaysInput = parsedDays;
+      }
       notes = body.notes || "";
+      budgetOverrideReason =
+        typeof body.budgetOverrideReason === "string" ? body.budgetOverrideReason.trim() : "";
       poOverInvoiceOverride = Boolean(body.poOverInvoiceOverride);
       parsedItems = Array.isArray(body.items) ? body.items : [];
+    }
+
+    // Validate Invoice Date & Payment Due Date
+    const invoiceDateKey = toDateKey(invoiceDate);
+    const parsedInvoiceDateObj = parseDateKeyToUtcMidnight(invoiceDateKey);
+    if (!invoiceDateKey || !parsedInvoiceDateObj) {
+      return NextResponse.json(
+        { success: false, error: "Please provide a valid Invoice Date (YYYY-MM-DD)." },
+        { status: 400 }
+      );
+    }
+
+    let dueDateKey: string | null = null;
+    if (paymentDueDateInput) {
+      dueDateKey = toDateKey(paymentDueDateInput);
+      if (!dueDateKey || !parseDateKeyToUtcMidnight(dueDateKey)) {
+        return NextResponse.json(
+          { success: false, error: "Please provide a valid Payment Due Date (YYYY-MM-DD)." },
+          { status: 400 }
+        );
+      }
+    } else if (creditPeriodDaysInput !== null) {
+      dueDateKey = addCalendarDays(invoiceDateKey, creditPeriodDaysInput);
+    } else {
+      dueDateKey = invoiceDateKey;
+    }
+
+    const parsedDueDateObj = parseDateKeyToUtcMidnight(dueDateKey)!;
+    if (diffCalendarDays(invoiceDateKey, dueDateKey!) < 0) {
+      const canOverrideDueDate =
+        (await checkSessionPermission(session, "supplierInvoices", "overrideDueDate")) ||
+        (await checkSessionPermission(session, "supplierPayments", "overrideDueDate"));
+      if (!canOverrideDueDate) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "DUE_DATE_BEFORE_INVOICE_DATE",
+            error: `Payment Due Date (${dueDateKey}) cannot be earlier than Invoice Date (${invoiceDateKey}) unless an authorized administrator overrides it.`,
+          },
+          { status: 422 }
+        );
+      }
     }
 
     // 1. Validate Supplier
@@ -420,7 +565,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Validate Approved Job (STRICT: only APPROVED jobs permitted)
+    // 2. Validate Approved Job (Strict visibility & status check)
     if (!jobId) {
       return NextResponse.json(
         { success: false, error: "Please select an approved Job." },
@@ -437,19 +582,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const jobStatusUpper = (job.status || "").toUpperCase();
-    const isApprovedJob =
-      jobStatusUpper === "APPROVED" ||
-      jobStatusUpper === "ACTIVE" ||
-      jobStatusUpper === "INVOICED";
+    const canAccessJob = await canAccessJobForSupplierInvoice(session, job.submittedById);
+    if (!canAccessJob) {
+      return NextResponse.json(
+        { success: false, error: "Selected Job was not found within your authorized access scope." },
+        { status: 404 }
+      );
+    }
 
-    if (!isApprovedJob) {
+    if (!isJobEligibleForSupplierInvoice(job.status, job.deletedAt)) {
       return NextResponse.json(
         {
           success: false,
           error: `Invoices can only be created for APPROVED Jobs. Job "${job.jobCode}" is currently ${job.status}.`,
         },
-        { status: 400 }
+        { status: 422 }
       );
     }
 
@@ -461,27 +608,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Validate descriptions and amounts, calculate total
-    let totalInvoiceAmount = new Decimal(0);
-    for (let i = 0; i < parsedItems.length; i++) {
-      const item = parsedItems[i];
-      if (!item.description || !item.description.trim()) {
-        return NextResponse.json(
-          { success: false, error: `Row ${i + 1}: Description is required.` },
-          { status: 400 }
-        );
-      }
-      const amt = new Decimal(item.amount || 0);
-      if (amt.isNaN() || amt.lte(0)) {
-        return NextResponse.json(
-          { success: false, error: `Row ${i + 1}: Invoice amount must be greater than 0.00.` },
-          { status: 400 }
-        );
-      }
-      totalInvoiceAmount = totalInvoiceAmount.plus(amt);
-    }
-
-    // 4B. Optional Purchase Order Linking Validation
+    // 4A. Optional Purchase Order Linking Validation (resolve valid PO line items first)
     let linkedPo: any = null;
     const validPoItemIds = new Set<string>();
     if (purchaseOrderId) {
@@ -524,7 +651,39 @@ export async function POST(req: NextRequest) {
       }
 
       (linkedPo.items || []).forEach((it: any) => validPoItemIds.add(it.id));
+    }
 
+    // 4B. Validate and normalize cost-item links, quantities, units, rates, Decimal totals & per-line budgets
+    const [canManualEntry, canOverrideBudget] = await Promise.all([
+      checkSessionPermission(session, "supplierInvoices", "manualEntry"),
+      checkSessionPermission(session, "supplierInvoices", "overrideJobBudget"),
+    ]);
+
+    const itemValidation = await validateAndNormalizeSupplierInvoiceItems({
+      jobId,
+      items: parsedItems,
+      validPoItemIds: linkedPo ? validPoItemIds : undefined,
+      canManualEntry,
+      canOverrideBudget,
+      invoiceOverrideReason: budgetOverrideReason,
+      client: db,
+    });
+
+    if (!itemValidation.valid) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: itemValidation.code,
+          error: itemValidation.error || "Invalid supplier invoice line items.",
+        },
+        { status: itemValidation.status || 400 }
+      );
+    }
+
+    const totalInvoiceAmount = itemValidation.totalAmount;
+
+    // 4C. PO Ceiling Validation against authoritative Decimal total
+    if (linkedPo) {
       const alreadyInvoiced = (linkedPo.supplierInvoices || []).reduce(
         (sum: Decimal, inv: any) => sum.plus(new Decimal(inv.totalAmount || 0)),
         new Decimal(0)
@@ -533,12 +692,12 @@ export async function POST(req: NextRequest) {
       const remainingPoBalance = Decimal.max(0, poCeiling.minus(alreadyInvoiced));
 
       if (alreadyInvoiced.plus(totalInvoiceAmount).gt(poCeiling.plus(0.01))) {
-        const canOverride = await checkSessionPermission(
+        const canOverridePo = await checkSessionPermission(
           session,
           "purchaseOrders",
           "overrideJobBudget"
         );
-        if (!poOverInvoiceOverride || !canOverride) {
+        if (!poOverInvoiceOverride || !canOverridePo) {
           return NextResponse.json(
             {
               success: false,
@@ -633,41 +792,75 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 7. Commit Database Transaction
+    // 7. Commit Database Transaction (with in-transaction re-validation for concurrency safety)
     const newInvoice = await db.$transaction(async (tx) => {
+      const txValidation = await validateAndNormalizeSupplierInvoiceItems({
+        jobId,
+        items: parsedItems,
+        validPoItemIds: linkedPo ? validPoItemIds : undefined,
+        canManualEntry,
+        canOverrideBudget,
+        invoiceOverrideReason: budgetOverrideReason,
+        client: tx,
+      });
+
+      if (!txValidation.valid) {
+        throw new HttpValidationError(
+          txValidation.status || 422,
+          txValidation.error || "Supplier invoice item validation failed inside transaction.",
+          txValidation.code
+        );
+      }
+
+      const txTotalAmount = txValidation.totalAmount;
+      const effectiveOverrideReason = txValidation.budgetOverrideUsed
+        ? budgetOverrideReason ||
+          txValidation.items.find((it) => it.budgetOverrideReason)?.budgetOverrideReason ||
+          null
+        : null;
+
       const createdInvoice = await (tx.supplierInvoice as any).create({
         data: {
           invoiceNumber,
           supplierId,
           jobId,
           purchaseOrderId: linkedPo ? linkedPo.id : null,
-          invoiceDate: new Date(invoiceDate),
-          totalAmount: totalInvoiceAmount.toFixed(2),
+          invoiceDate: parsedInvoiceDateObj,
+          paymentDueDate: parsedDueDateObj,
+          paymentTerms,
+          creditPeriodDays: creditPeriodDaysInput,
+          paymentStatus: "UNPAID",
+          paidAmount: "0.00",
+          lastPaymentDate: null,
+          totalAmount: txTotalAmount.toFixed(2),
           status: "APPROVED",
           notes,
+          budgetOverrideUsed: txValidation.budgetOverrideUsed,
+          budgetOverrideReason: effectiveOverrideReason,
           createdById: session.userId,
         },
       });
 
-      // Create each row item and link all attachments for that row
-      for (let i = 0; i < parsedItems.length; i++) {
-        const item = parsedItems[i];
-        const validPoItemId =
-          linkedPo && item.purchaseOrderItemId && validPoItemIds.has(item.purchaseOrderItemId)
-            ? item.purchaseOrderItemId
-            : null;
+      // Create each normalized row item and link all attachments for that row
+      for (let i = 0; i < txValidation.items.length; i++) {
+        const normItem = txValidation.items[i];
         const createdItem = await (tx.supplierInvoiceItem as any).create({
           data: {
             invoiceId: createdInvoice.id,
-            purchaseOrderItemId: validPoItemId,
-            rowNumber: i + 1,
-            description: item.description.trim(),
-            quantity:
-              item.quantity !== undefined && item.quantity !== null && Number(item.quantity) >= 0
-                ? new Decimal(item.quantity).toFixed(4)
-                : null,
-            amount: new Decimal(item.amount).toFixed(2),
-            notes: item.notes || "",
+            purchaseOrderItemId: normItem.purchaseOrderItemId,
+            jobCostCategoryId: normItem.jobCostCategoryId,
+            jobCostCategoryName: normItem.jobCostCategoryName,
+            jobCostItemId: normItem.jobCostItemId,
+            rowNumber: normItem.rowNumber,
+            description: normItem.description,
+            originalJobAmount: normItem.originalJobAmount,
+            quantity: normItem.quantity,
+            unit: normItem.unit,
+            unitRate: normItem.unitRate,
+            amount: normItem.amount,
+            isAdditionalItem: normItem.isAdditionalItem,
+            budgetOverrideReason: normItem.budgetOverrideReason,
+            notes: normItem.notes,
           },
         });
 
@@ -708,7 +901,7 @@ export async function POST(req: NextRequest) {
           invoiceId: createdInvoice.id,
           userId: session.userId,
           action: "CREATE",
-          reason: `Created supplier invoice ${invoiceNumber} for Job ${job.jobCode} (${job.name}) with ${uploadedAttachments.length} attachments stored in Supabase`,
+          reason: `Created supplier invoice ${invoiceNumber} for Job ${job.jobCode} (${job.name}) with ${txValidation.items.length} line item(s) and ${uploadedAttachments.length} attachment(s)`,
           newData: {
             invoiceNumber,
             supplierId,
@@ -717,9 +910,28 @@ export async function POST(req: NextRequest) {
             jobCode: job.jobCode,
             purchaseOrderId: linkedPo ? linkedPo.id : null,
             purchaseOrderNumber: linkedPo ? linkedPo.poNumber : null,
-            totalAmount: totalInvoiceAmount.toFixed(2),
-            itemCount: parsedItems.length,
+            invoiceDate: invoiceDateKey,
+            paymentDueDate: dueDateKey,
+            paymentTerms,
+            creditPeriodDays: creditPeriodDaysInput,
+            totalAmount: txTotalAmount.toFixed(2),
+            budgetOverrideUsed: txValidation.budgetOverrideUsed,
+            budgetOverrideReason: effectiveOverrideReason,
+            itemCount: txValidation.items.length,
             attachmentsCount: uploadedAttachments.length,
+            items: txValidation.items.map((it) => ({
+              rowNumber: it.rowNumber,
+              jobCostCategoryName: it.jobCostCategoryName,
+              jobCostItemId: it.jobCostItemId,
+              description: it.description,
+              originalJobAmount: it.originalJobAmount,
+              quantity: it.quantity,
+              unit: it.unit,
+              unitRate: it.unitRate,
+              amount: it.amount,
+              isAdditionalItem: it.isAdditionalItem,
+              budgetOverrideReason: it.budgetOverrideReason,
+            })),
           },
         },
       });
@@ -731,7 +943,7 @@ export async function POST(req: NextRequest) {
       // Recalculate Job's actual costs and budget atomically within the transaction
       const financialSnapshot = await recalculateJobFinances(job.id, tx);
 
-      return { createdInvoice, financialSnapshot };
+      return { createdInvoice, financialSnapshot, itemCount: txValidation.items.length, txTotalAmount };
     });
 
     // Log general security audit log
@@ -744,7 +956,8 @@ export async function POST(req: NextRequest) {
         invoiceNumber,
         supplierName: supplier.name,
         jobCode: job.jobCode,
-        totalAmount: totalInvoiceAmount.toFixed(2),
+        totalAmount: newInvoice.txTotalAmount.toFixed(2),
+        itemCount: newInvoice.itemCount,
         attachmentsCount: uploadedAttachments.length,
       },
       req,
@@ -760,8 +973,15 @@ export async function POST(req: NextRequest) {
           supplierName: supplier.name,
           jobCode: job.jobCode,
           jobName: job.name,
-          totalAmount: totalInvoiceAmount.toNumber(),
-          itemCount: parsedItems.length,
+          invoiceDate: invoiceDateKey,
+          paymentDueDate: dueDateKey,
+          paymentTerms,
+          creditPeriodDays: creditPeriodDaysInput,
+          paymentStatus: "UNPAID",
+          paidAmount: 0,
+          outstandingBalance: newInvoice.txTotalAmount.toNumber(),
+          totalAmount: newInvoice.txTotalAmount.toNumber(),
+          itemCount: newInvoice.itemCount,
           attachmentsCount: uploadedAttachments.length,
           financialOverview: newInvoice.financialSnapshot,
         },
@@ -773,6 +993,38 @@ export async function POST(req: NextRequest) {
     if (uploadedAttachments.length > 0) {
       await cleanupOrphanedStorageFiles(uploadedAttachments.map((a) => a.storagePath));
     }
+
+    if (err instanceof HttpValidationError) {
+      return NextResponse.json(
+        { success: false, code: err.code, error: err.message },
+        { status: err.status }
+      );
+    }
+
+    if (err?.code === "P2002") {
+      const targetStr = Array.isArray(err?.meta?.target)
+        ? err.meta.target.join(",")
+        : String(err?.meta?.target || "");
+      if (targetStr.includes("job_cost_item_id") || targetStr.includes("invoice_id_job_cost_item_id")) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "DUPLICATE_JOB_COST_ITEM",
+            error: "Duplicate Job cost line detected in the same Supplier Invoice.",
+          },
+          { status: 422 }
+        );
+      }
+      return NextResponse.json(
+        {
+          success: false,
+          code: "DUPLICATE_RECORD",
+          error: "A Supplier Invoice with this invoice number already exists.",
+        },
+        { status: 409 }
+      );
+    }
+
     console.error("POST /api/supplier-invoices error:", err?.message || String(err));
     return NextResponse.json(
       { success: false, error: err?.message || "Internal server error saving supplier invoice." },

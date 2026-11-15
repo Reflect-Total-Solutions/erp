@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   ShieldAlert,
   Loader2,
+  Eye,
 } from "lucide-react";
 import { useAdminData } from "@/context/admin-data-context";
 import { Modal } from "@/components/admin/ui/modal";
@@ -25,8 +26,10 @@ import { Pagination } from "@/components/admin/ui/pagination";
 import { SearchField } from "@/components/admin/ui/search-field";
 import { TableSkeleton } from "@/components/ui/loading/table-skeleton";
 import { RegisterSupplierModal } from "@/components/admin/modals/register-supplier-modal";
+import { SupplierDetailsModal } from "@/components/admin/modals/supplier-details-modal";
 import { Supplier } from "@/types/admin";
 import { supplierCreateSchema } from "@/lib/validations/supplier";
+import { formatCurrency } from "@/lib/financial";
 
 export function SuppliersView() {
   const {
@@ -37,6 +40,7 @@ export function SuppliersView() {
     softDeleteSupplier,
     restoreSupplier,
     permanentlyDeleteSupplier,
+    refreshSuppliers,
     showToast,
     can,
     currentRole,
@@ -54,6 +58,7 @@ export function SuppliersView() {
 
   // Modals
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
+  const [viewingSupplierId, setViewingSupplierId] = useState<string | null>(null);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [softDeletingSupplier, setSoftDeletingSupplier] = useState<Supplier | null>(null);
   const [permanentDeletingSupplier, setPermanentDeletingSupplier] = useState<Supplier | null>(null);
@@ -330,7 +335,7 @@ export function SuppliersView() {
       {/* Suppliers Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
         {isLoadingSuppliers && suppliers.length === 0 ? (
-          <TableSkeleton rows={6} columns={7} />
+          <TableSkeleton rows={6} columns={8} />
         ) : filteredSuppliers.length === 0 ? (
           <div className="p-10 text-center text-xs text-slate-500">
             {activeTab === "active" ? (
@@ -358,6 +363,7 @@ export function SuppliersView() {
                     <th className="px-4 py-3">Contact Person</th>
                     <th className="px-4 py-3">Phone</th>
                     <th className="px-4 py-3">Email</th>
+                    <th className="px-4 py-3 text-right">Payables Summary</th>
                     <th className="px-4 py-3 text-center">Status</th>
                     <th className="px-5 py-3 text-right">Actions</th>
                   </tr>
@@ -365,6 +371,10 @@ export function SuppliersView() {
                 <tbody className="divide-y divide-slate-100">
                   {paginatedSuppliers.map((s) => {
                     const jobCount = jobs.filter((j) => j.supplierIds.includes(s.id)).length;
+                    const billed = Number(s.totalBilled ?? 0);
+                    const paid = Number(s.totalPaid ?? 0);
+                    const outstanding = Number(s.outstandingBalance ?? 0);
+                    const overdueCount = Number(s.overdueInvoiceCount ?? 0);
 
                     return (
                       <tr key={s.id} className="hover:bg-slate-50 transition-colors">
@@ -372,9 +382,13 @@ export function SuppliersView() {
                           {s.code}
                         </td>
                         <td className="px-4 py-3.5">
-                          <span className="font-semibold text-slate-900 block">
+                          <button
+                            type="button"
+                            onClick={() => setViewingSupplierId(s.id)}
+                            className="font-semibold text-slate-900 hover:text-blue-600 hover:underline text-left block cursor-pointer"
+                          >
                             {s.name}
-                          </span>
+                          </button>
                           <div className="flex items-center gap-2 text-[10px] text-slate-400">
                             {s.address && <span className="truncate max-w-xs">{s.address}</span>}
                             {s.createdByName && (
@@ -392,6 +406,36 @@ export function SuppliersView() {
                         </td>
                         <td className="px-4 py-3.5 text-slate-600">
                           {s.email}
+                        </td>
+                        <td className="px-4 py-3.5 text-right font-mono whitespace-nowrap">
+                          {billed > 0 || (s.invoiceCount ?? 0) > 0 ? (
+                            <div className="text-[11px] space-y-0.5">
+                              <span className="block text-slate-700">
+                                Billed: <strong>{formatCurrency(billed)}</strong>
+                              </span>
+                              <span className="block text-emerald-700">
+                                Paid: {formatCurrency(paid)}
+                              </span>
+                              <span
+                                className={`block font-bold ${
+                                  overdueCount > 0
+                                    ? "text-rose-700"
+                                    : outstanding > 0
+                                    ? "text-blue-800"
+                                    : "text-slate-400"
+                                }`}
+                              >
+                                Due: {formatCurrency(outstanding)}
+                              </span>
+                              {overdueCount > 0 && (
+                                <span className="inline-flex px-1.5 py-0.2 rounded-full bg-rose-100 text-rose-700 font-sans font-bold text-[9px]">
+                                  {overdueCount} Overdue
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 font-sans">No bills</span>
+                          )}
                         </td>
                         <td className="px-4 py-3.5 text-center">
                           {s.isDeleted ? (
@@ -418,6 +462,14 @@ export function SuppliersView() {
                           <div className="flex items-center justify-end gap-1.5">
                             {!s.isDeleted ? (
                               <>
+                                <button
+                                  type="button"
+                                  onClick={() => setViewingSupplierId(s.id)}
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
+                                  title="View Supplier Invoices & Payments"
+                                >
+                                  <Eye className="h-3.5 w-3.5" />
+                                </button>
                                 {can("suppliers", "edit") && (
                                   <button
                                     type="button"
@@ -437,9 +489,6 @@ export function SuppliersView() {
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </button>
-                                )}
-                                {!can("suppliers", "edit") && !can("suppliers", "delete") && (
-                                  <span className="text-[11px] text-slate-400 italic">View only</span>
                                 )}
                               </>
                             ) : (
@@ -777,6 +826,16 @@ export function SuppliersView() {
           </div>
         </Modal>
       )}
+
+      {/* Supplier Financial Details, Invoices & Payments Modal */}
+      <SupplierDetailsModal
+        isOpen={Boolean(viewingSupplierId)}
+        onClose={() => setViewingSupplierId(null)}
+        supplierId={viewingSupplierId}
+        onPaymentChanged={() => {
+          if (refreshSuppliers) void refreshSuppliers();
+        }}
+      />
     </div>
   );
 }
