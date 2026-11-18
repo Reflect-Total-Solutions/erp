@@ -12,11 +12,14 @@ interface EditPoPageProps {
   params: Promise<{ id: string }>;
 }
 
-export default async function EditPurchaseOrderPage({
+async function EditPoContent({ params }: EditPoPageProps) {
+  const { id } = await params;
+  return <PoFormView mode="edit" poId={id || ""} />;
+}
+
+export default function EditPurchaseOrderPage({
   params,
 }: EditPoPageProps) {
-  const { id } = await params;
-
   return (
     <Suspense
       fallback={
@@ -25,7 +28,7 @@ export default async function EditPurchaseOrderPage({
         </div>
       }
     >
-      <PoFormView mode="edit" poId={id || ""} />
+      <EditPoContent params={params} />
     </Suspense>
   );
 }

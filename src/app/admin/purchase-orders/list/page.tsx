@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     "Browse, filter, export, and manage active and trashed Purchase Orders across approved Jobs.",
 };
 
-export default async function PurchaseOrdersListPage({
+async function PurchaseOrdersListContent({
   searchParams,
 }: {
   searchParams: Promise<{ supplierId?: string | string[]; search?: string | string[] }>;
@@ -20,6 +20,19 @@ export default async function PurchaseOrdersListPage({
   const initialSearch = Array.isArray(sp?.search) ? sp.search[0] : sp?.search;
 
   return (
+    <PoListView
+      initialSupplierId={initialSupplierId}
+      initialSearch={initialSearch}
+    />
+  );
+}
+
+export default function PurchaseOrdersListPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ supplierId?: string | string[]; search?: string | string[] }>;
+}) {
+  return (
     <Suspense
       fallback={
         <div className="p-8 text-center text-xs text-slate-500">
@@ -27,10 +40,7 @@ export default async function PurchaseOrdersListPage({
         </div>
       }
     >
-      <PoListView
-        initialSupplierId={initialSupplierId}
-        initialSearch={initialSearch}
-      />
+      <PurchaseOrdersListContent searchParams={searchParams} />
     </Suspense>
   );
 }

@@ -12,11 +12,14 @@ interface PoDetailsPageProps {
   params: Promise<{ id: string }>;
 }
 
-export default async function PurchaseOrderDetailsPage({
+async function PoDetailsContent({ params }: PoDetailsPageProps) {
+  const { id } = await params;
+  return <PoDetailsView poId={id || ""} />;
+}
+
+export default function PurchaseOrderDetailsPage({
   params,
 }: PoDetailsPageProps) {
-  const { id } = await params;
-
   return (
     <Suspense
       fallback={
@@ -25,7 +28,7 @@ export default async function PurchaseOrderDetailsPage({
         </div>
       }
     >
-      <PoDetailsView poId={id || ""} />
+      <PoDetailsContent params={params} />
     </Suspense>
   );
 }

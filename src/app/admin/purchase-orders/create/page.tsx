@@ -12,9 +12,7 @@ interface CreatePoPageProps {
   searchParams: Promise<{ jobId?: string | string[] }>;
 }
 
-export default async function CreatePurchaseOrderPage({
-  searchParams,
-}: CreatePoPageProps) {
+async function CreatePoContent({ searchParams }: CreatePoPageProps) {
   const resolvedParams = await searchParams;
   const rawJobId = resolvedParams?.jobId;
   const initialJobId =
@@ -22,6 +20,12 @@ export default async function CreatePurchaseOrderPage({
       ? rawJobId.trim()
       : undefined;
 
+  return <PoFormView mode="create" initialJobId={initialJobId} />;
+}
+
+export default function CreatePurchaseOrderPage({
+  searchParams,
+}: CreatePoPageProps) {
   return (
     <Suspense
       fallback={
@@ -30,7 +34,7 @@ export default async function CreatePurchaseOrderPage({
         </div>
       }
     >
-      <PoFormView mode="create" initialJobId={initialJobId} />
+      <CreatePoContent searchParams={searchParams} />
     </Suspense>
   );
 }
