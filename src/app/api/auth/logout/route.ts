@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
-import { verifySessionToken, clearSessionCookie, SESSION_COOKIE } from "@/lib/auth";
+import {
+  verifySessionToken,
+  getSessionCookieOptions,
+  SESSION_COOKIE,
+} from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
   const cookieStore = await cookies();
@@ -37,7 +41,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  await clearSessionCookie();
-
-  return NextResponse.json({ ok: true });
+  const response = NextResponse.json({ ok: true });
+  response.cookies.set(SESSION_COOKIE, "", {
+    ...getSessionCookieOptions(req),
+    maxAge: 0,
+  });
+  return response;
 }

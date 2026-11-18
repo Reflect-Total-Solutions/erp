@@ -72,30 +72,67 @@ export async function verifySessionToken(
   }
 }
 
+type RequestLike = {
+  headers?: Headers;
+  nextUrl?: { protocol?: string };
+  url?: string;
+};
+
+/**
+ * Determines whether the incoming request arrived over HTTPS (including behind
+ * reverse proxies like Vercel/Cloudflare via `x-forwarded-proto`).
+ * Prevents browsers on non-HTTPS LAN IPs (e.g. http://192.168.x.x:3100) from
+ * silently rejecting the session cookie while keeping `Secure` strictly enabled on HTTPS.
+ */
+export function isHttpsRequest(req?: RequestLike): boolean {
+  if (!req) {
+    return process.env.NODE_ENV === "production";
+  }
+  const forwardedProto = req.headers
+    ?.get("x-forwarded-proto")
+    ?.split(",")[0]
+    ?.trim()
+    .toLowerCase();
+  if (forwardedProto) {
+    return forwardedProto === "https";
+  }
+  if (req.nextUrl?.protocol) {
+    return req.nextUrl.protocol === "https:";
+  }
+  if (req.url) {
+    return req.url.startsWith("https://");
+  }
+  return process.env.NODE_ENV === "production";
+}
+
+export function getSessionCookieOptions(req?: RequestLike) {
+  return {
+    httpOnly: true,
+    secure: isHttpsRequest(req),
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: JWT_EXPIRY_SECONDS,
+  };
+}
+
 /**
  * Set the session cookie on the response (server action / route handler).
  */
-export async function setSessionCookie(token: string): Promise<void> {
+export async function setSessionCookie(
+  token: string,
+  req?: RequestLike
+): Promise<void> {
   const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: JWT_EXPIRY_SECONDS,
-  });
+  cookieStore.set(SESSION_COOKIE, token, getSessionCookieOptions(req));
 }
 
 /**
  * Clear the session cookie (logout).
  */
-export async function clearSessionCookie(): Promise<void> {
+export async function clearSessionCookie(req?: RequestLike): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, "", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
+    ...getSessionCookieOptions(req),
     maxAge: 0,
   });
 }

@@ -1,12 +1,12 @@
-import React, { Suspense, use } from "react";
+import React, { Suspense } from "react";
 import { JobDetailsView } from "@/components/admin/views/job-details-view";
 
 interface PageProps {
   params: Promise<{ id: string }>;
 }
 
-function JobDetailsContent({ params }: PageProps) {
-  const { id } = use(params);
+async function JobDetailsContent({ params }: PageProps) {
+  const { id } = await params;
   return <JobDetailsView jobId={id || ""} />;
 }
 

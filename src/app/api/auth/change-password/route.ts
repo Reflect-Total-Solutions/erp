@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/password";
-import { createSessionToken, setSessionCookie } from "@/lib/auth";
+import {
+  SESSION_COOKIE,
+  createSessionToken,
+  getSessionCookieOptions,
+} from "@/lib/auth";
 import { checkRateLimit, LOGIN_RATE_LIMIT } from "@/lib/rate-limit";
 import { changePasswordSchema } from "@/lib/validations/user";
 
@@ -106,8 +110,6 @@ export async function POST(req: NextRequest) {
       roles,
     });
 
-    await setSessionCookie(token);
-
     // Record audit log
     await prisma.auditLog.create({
       data: {
@@ -120,12 +122,14 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       ok: true,
       message: "Password updated successfully. Logging in...",
       user: { id: user.id, email: user.email, name: user.name, roles },
       expiresAt: expiresAt.toISOString(),
     });
+    response.cookies.set(SESSION_COOKIE, token, getSessionCookieOptions(req));
+    return response;
   } catch (err) {
     console.error("Change password error:", err);
 

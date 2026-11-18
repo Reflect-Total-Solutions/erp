@@ -26,6 +26,9 @@ export const PasswordInput = React.forwardRef<
         )}
         <input
           type={showPassword ? "text" : "password"}
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           className={cn(
             "flex h-9 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 pr-10 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-colors duration-200",
             leftIcon && "pl-8",

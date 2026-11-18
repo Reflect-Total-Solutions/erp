@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
 import { Mail, Lock, Loader2, ArrowLeft, CheckCircle2, ShieldCheck, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PasswordInput } from "@/components/login/password-input";
@@ -15,11 +14,10 @@ interface FormErrors {
 }
 
 export function LoginForm() {
-  const router = useRouter();
   const { theme, toggleTheme } = useTheme();
 
-  // Mode: "login" | "forgot" | "change-password"
-  const [viewMode, setViewMode] = React.useState<"login" | "forgot" | "change-password">("login");
+  // Mode: "login" | "change-password"
+  const [viewMode, setViewMode] = React.useState<"login" | "change-password">("login");
 
   // First-time login password change state
   const [firstLoginEmail, setFirstLoginEmail] = React.useState("");
@@ -58,135 +56,89 @@ export function LoginForm() {
   const emailInputRef = React.useRef<HTMLInputElement>(null);
   const passwordInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Only genuine user physical typing turns this true
-  const hasUserTypedRef = React.useRef(false);
-
   // Login form state
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
-  const [rememberMe, setRememberMe] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [errors, setErrors] = React.useState<FormErrors>({});
 
-  // Helper to directly wipe DOM input elements (no React state updates, safe for effect body)
-  const resetDOMInputs = React.useCallback(() => {
+  // Full clear of both React state and DOM inputs (only invoked explicitly on logout/bfcache)
+  const clearAllInputs = React.useCallback(() => {
+    setEmail("");
+    setPassword("");
+    setErrors({});
     if (emailInputRef.current) {
       emailInputRef.current.value = "";
-      emailInputRef.current.defaultValue = "";
     }
     if (passwordInputRef.current) {
       passwordInputRef.current.value = "";
-      passwordInputRef.current.defaultValue = "";
     }
     formRef.current?.reset();
   }, []);
 
-  // Full clear of both React state and DOM inputs
-  const clearAllInputs = React.useCallback(() => {
-    setEmail("");
-    setPassword("");
-    setRememberMe(false);
-    setErrors({});
-    resetDOMInputs();
-  }, [resetDOMInputs]);
-
-  // Ensure all input fields are wiped on mount, after logout, or on bfcache back/forward navigation
+  // Clean logout flags once on mount and wipe inputs ONLY on true bfcache restoration
   React.useEffect(() => {
-    // Immediate DOM reset
-    resetDOMInputs();
-
-    // Clean up sessionStorage flag and URL query param without triggering re-renders
     try {
-      if (sessionStorage.getItem("erp_just_logged_out") === "1") {
+      const justLoggedOut =
+        sessionStorage.getItem("erp_just_logged_out") === "1" ||
+        (typeof window !== "undefined" && window.location.search.includes("logged_out"));
+      if (justLoggedOut) {
         sessionStorage.removeItem("erp_just_logged_out");
-      }
-      if (typeof window !== "undefined" && window.location.search.includes("logged_out")) {
-        window.history.replaceState({}, "", "/");
+        if (typeof window !== "undefined" && window.location.search.includes("logged_out")) {
+          window.history.replaceState({}, "", "/");
+        }
       }
     } catch {
       // Ignore storage access errors
     }
 
-    // Schedule enforcement sweeps across first 1.2s to block delayed browser autofills
-    const delays = [30, 80, 160, 300, 500, 850, 1200];
-    const timers = delays.map((d) =>
-      setTimeout(() => {
-        if (!hasUserTypedRef.current) {
-          clearAllInputs();
-        }
-      }, d)
-    );
-
-    // If navigated via browser back/forward or restored from bfcache
-    const handlePageShow = () => {
-      hasUserTypedRef.current = false;
-      clearAllInputs();
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        clearAllInputs();
+      }
     };
     window.addEventListener("pageshow", handlePageShow);
 
     return () => {
-      timers.forEach(clearTimeout);
       window.removeEventListener("pageshow", handlePageShow);
     };
-  }, [clearAllInputs, resetDOMInputs]);
-
-  // Forgot password form state
-  const [forgotEmail, setForgotEmail] = React.useState("");
-  const [forgotError, setForgotError] = React.useState("");
-  const [forgotLoading, setForgotLoading] = React.useState(false);
-  const [forgotSuccess, setForgotSuccess] = React.useState(false);
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    // Only genuine printable keystrokes, backspace, delete, paste count as user interaction
-    if (
-      e.key.length === 1 ||
-      e.key === "Backspace" ||
-      e.key === "Delete" ||
-      (e.ctrlKey && e.key.toLowerCase() === "v") ||
-      (e.metaKey && e.key.toLowerCase() === "v")
-    ) {
-      hasUserTypedRef.current = true;
-      if (!noticeDismissed) setNoticeDismissed(true);
-    }
-  };
+  }, [clearAllInputs]);
 
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.isTrusted && e.target.value.length > 0) {
-      hasUserTypedRef.current = true;
-      if (!noticeDismissed) setNoticeDismissed(true);
-    }
+    if (!noticeDismissed) setNoticeDismissed(true);
     setEmail(e.target.value);
-    if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
+    if (errors.email || errors.general) {
+      setErrors((prev) => ({ ...prev, email: undefined, general: undefined }));
+    }
   };
 
   const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.isTrusted && e.target.value.length > 0) {
-      hasUserTypedRef.current = true;
-      if (!noticeDismissed) setNoticeDismissed(true);
-    }
+    if (!noticeDismissed) setNoticeDismissed(true);
     setPassword(e.target.value);
-    if (errors.password) setErrors((prev) => ({ ...prev, password: undefined }));
-  };
-
-  const validateLoginForm = (): boolean => {
-    const newErrors: FormErrors = {};
-
-    if (!email.trim()) {
-      newErrors.email = "Email or username is required";
+    if (errors.password || errors.general) {
+      setErrors((prev) => ({ ...prev, password: undefined, general: undefined }));
     }
-
-    if (!password) {
-      newErrors.password = "Password is required";
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
   };
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) return;
 
-    if (!validateLoginForm()) return;
+    // Fallback to live DOM input values in case mobile password manager/autofill skipped onChange
+    const currentEmail = (email || emailInputRef.current?.value || "").trim();
+    const currentPassword = password || passwordInputRef.current?.value || "";
+
+    const newErrors: FormErrors = {};
+    if (!currentEmail) {
+      newErrors.email = "Email or username is required";
+    }
+    if (!currentPassword) {
+      newErrors.password = "Password is required";
+    }
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
 
     setIsLoading(true);
     setErrors({});
@@ -195,25 +147,31 @@ export function LoginForm() {
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ email: currentEmail, password: currentPassword }),
       });
 
-      const data = await res.json();
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
 
       if (!res.ok) {
         const message =
           res.status === 429
-            ? (data.error ?? "Too many attempts. Please wait and try again.")
-            : (data.error ?? "Invalid email or password");
+            ? (data?.error ?? "Too many attempts. Please wait and try again.")
+            : (data?.error ?? "Invalid email or password");
         setErrors({ general: message });
         return;
       }
 
       // Check if first-time login requires mandatory password change
-      if (data.mustChangePassword) {
-        setFirstLoginEmail(email.trim().toLowerCase());
-        setFirstLoginTempPassword(password);
+      if (data?.mustChangePassword) {
+        setFirstLoginEmail(currentEmail.toLowerCase());
+        setFirstLoginTempPassword(currentPassword);
         setFirstLoginUserName(data.user?.name || "");
         setChangePasswordError("");
         setNewPassword("");
@@ -224,16 +182,18 @@ export function LoginForm() {
 
       // Redirect to originally requested page or dashboard
       const params = new URLSearchParams(window.location.search);
-      const redirectTo = params.get("redirect") ?? "/admin";
+      const rawRedirect = params.get("redirect");
+      const redirectTo =
+        rawRedirect && rawRedirect.startsWith("/") && !rawRedirect.startsWith("//")
+          ? rawRedirect
+          : "/admin";
       clearAllInputs();
       window.location.replace(redirectTo);
     } catch {
-      // In UI prototype mode (backend offline), set demo preview cookie and allow entry
-      document.cookie = "erp_session=demo-preview-token; path=/; max-age=86400; SameSite=Lax";
-      const params = new URLSearchParams(window.location.search);
-      const redirectTo = params.get("redirect") ?? "/admin";
-      clearAllInputs();
-      window.location.replace(redirectTo);
+      setErrors({
+        general:
+          "Unable to reach the server. Please check your internet connection and try again.",
+      });
     } finally {
       setIsLoading(false);
     }
@@ -273,6 +233,7 @@ export function LoginForm() {
     try {
       const res = await fetch("/api/auth/change-password", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: firstLoginEmail,
@@ -301,26 +262,6 @@ export function LoginForm() {
       setIsLoading(false);
       setChangePasswordLoading(false);
     }
-  };
-
-  const handleForgotSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setForgotError("");
-
-    if (!forgotEmail.trim()) {
-      setForgotError("Please enter your registered email address");
-      return;
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(forgotEmail)) {
-      setForgotError("Please enter a valid email address");
-      return;
-    }
-
-    setForgotLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    setForgotLoading(false);
-    setForgotSuccess(true);
   };
 
   return (
@@ -402,35 +343,9 @@ export function LoginForm() {
               key={formKey}
               ref={formRef}
               onSubmit={handleLoginSubmit}
-              autoComplete="off"
+              noValidate
               className="space-y-4"
             >
-              {/* Invisible decoy inputs to absorb browser autofill after logout */}
-              <div
-                style={{
-                  position: "absolute",
-                  left: "-9999px",
-                  opacity: 0,
-                  height: 0,
-                  width: 0,
-                  pointerEvents: "none",
-                }}
-                aria-hidden="true"
-              >
-                <input
-                  type="text"
-                  name="fake_user_autofill"
-                  tabIndex={-1}
-                  autoComplete="off"
-                />
-                <input
-                  type="password"
-                  name="fake_pass_autofill"
-                  tabIndex={-1}
-                  autoComplete="off"
-                />
-              </div>
-
               {/* Email / Username */}
               <div className="space-y-1">
                 <label
@@ -446,13 +361,15 @@ export function LoginForm() {
                   <input
                     ref={emailInputRef}
                     id="email"
-                    name="erp_login_email"
-                    type="text"
+                    name="email"
+                    type="email"
+                    inputMode="email"
                     value={email}
-                    onKeyDown={handleKeyDown}
                     onChange={handleEmailChange}
                     placeholder="admin@company.com"
-                    autoComplete="off"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    autoCorrect="off"
                     spellCheck={false}
                     disabled={isLoading}
                     className={cn(
@@ -477,43 +394,19 @@ export function LoginForm() {
                 <PasswordInput
                   ref={passwordInputRef}
                   id="password"
-                  name="erp_login_password"
+                  name="password"
                   value={password}
                   leftIcon={<Lock className="h-3.5 w-3.5" />}
-                  onKeyDown={handleKeyDown}
                   onChange={handlePasswordChange}
                   placeholder="••••••••"
-                  autoComplete="new-password"
+                  autoComplete="current-password"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   disabled={isLoading}
                   error={errors.password}
                   className="h-9 text-xs"
                 />
-              </div>
-
-              {/* Remember Me & Forgot Password */}
-              <div className="flex items-center justify-between text-xs pt-0.5">
-                <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-600">
-                  <input
-                    type="checkbox"
-                    checked={rememberMe}
-                    onChange={(e) => setRememberMe(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                  />
-                  <span>Remember me</span>
-                </label>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setViewMode("forgot");
-                    setForgotSuccess(false);
-                    setForgotError("");
-                    setNoticeDismissed(true);
-                  }}
-                  className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
-                >
-                  Forgot password?
-                </button>
               </div>
 
               {/* Sign In Button */}
@@ -532,106 +425,6 @@ export function LoginForm() {
                 )}
               </button>
             </form>
-          </div>
-        )}
-
-        {/* ================= VIEW: FORGOT PASSWORD ================= */}
-        {viewMode === "forgot" && (
-          <div>
-            <button
-              type="button"
-              onClick={() => {
-                setViewMode("login");
-                setForgotSuccess(false);
-                hasUserTypedRef.current = false;
-                clearAllInputs();
-              }}
-              className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-blue-600 mb-4 transition-colors"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              Back to Login
-            </button>
-
-            <div className="mb-5">
-              <h1 className="text-lg font-bold text-slate-900">Forgot Password</h1>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Enter your work email and we will send you a password reset link.
-              </p>
-            </div>
-
-            {forgotSuccess ? (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 text-center space-y-2">
-                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-                  <CheckCircle2 className="h-5 w-5" />
-                </div>
-                <h3 className="text-xs font-bold text-emerald-900">Reset Link Sent</h3>
-                <p className="text-[11px] text-emerald-700 leading-relaxed">
-                  We have sent instructions to <strong>{forgotEmail}</strong>. Please check your inbox.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setViewMode("login");
-                    setForgotSuccess(false);
-                    hasUserTypedRef.current = false;
-                    clearAllInputs();
-                  }}
-                  className="mt-2 inline-block text-xs font-semibold text-blue-600 hover:underline"
-                >
-                  Return to Sign In
-                </button>
-              </div>
-            ) : (
-              <form onSubmit={handleForgotSubmit} className="space-y-4">
-                {forgotError && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-600">
-                    {forgotError}
-                  </div>
-                )}
-
-                <div className="space-y-1">
-                  <label
-                    htmlFor="forgot-email"
-                    className="block text-xs font-semibold text-slate-700"
-                  >
-                    Email Address
-                  </label>
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-                      <Mail className="h-3.5 w-3.5" />
-                    </div>
-                    <input
-                      id="forgot-email"
-                      type="email"
-                      value={forgotEmail}
-                      onChange={(e) => {
-                        setForgotEmail(e.target.value);
-                        if (forgotError) setForgotError("");
-                      }}
-                      placeholder="name@company.com"
-                      autoFocus
-                      disabled={forgotLoading}
-                      className="flex h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-colors"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={forgotLoading}
-                  className="flex h-9 w-full items-center justify-center rounded-lg bg-[#2563EB] text-xs font-semibold text-white shadow-xs hover:bg-[#1d4ed8] disabled:opacity-70 transition-colors"
-                >
-                  {forgotLoading ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                      Sending reset link...
-                    </>
-                  ) : (
-                    "Send Reset Link"
-                  )}
-                </button>
-              </form>
-            )}
           </div>
         )}
 
